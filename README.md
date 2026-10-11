@@ -12,9 +12,12 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.5.0**: **LMBX**, the variable-rate profile of our LMBD codec — YCoCg, an
+This is release **0.6.0**: **LMBX bitstream v2** — flat and palette tiles chosen per tile by
+rate-distortion, and Zstandard frames — which lifts real-alpha footage past LMB7 at LMB7's size and
+brings flat graphics from 17 dB behind to within 14% more bytes of it ([LMBX](#lmbx)); v1 files
+still decode bit-exact. 0.5.0 added **LMBX**, the variable-rate profile of our LMBD codec — YCoCg, an
 integer DCT and rANS, decoded on the GPU by compute shaders bit-exactly with the CPU, with a
-frozen specification ([LMBX](#lmbx)). 0.4.0 added **DXV**: it decodes — DXV3 Normal and High Quality, with and without alpha,
+frozen specification. 0.4.0 added **DXV**: it decodes — DXV3 Normal and High Quality, with and without alpha,
 and legacy DXV1/2 — through a safe-Rust port of DXVKit's decoder that is bit-exact on DXVKit's 334
 test vectors and against its C core; High Quality converts on the GPU bit-exactly with the CPU;
 alpha reads as straight (Resolume Alley's convention, the default) or premultiplied, per clip
@@ -42,7 +45,7 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
-| LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec + conformance vectors |
+| LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate; flat and palette tiles) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec (v1, v2) + conformance vectors |
 | DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit |
 | DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied |
 | DXV3 High Quality (`YCG6`) | ✅ pure Rust | Y BC4 + CoCg BC5 → RGB in WGSL, bit-exact with the CPU | FSE-coded opcode streams; the two sections decode in parallel |
@@ -72,9 +75,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -132,7 +135,7 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.5.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.6.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
@@ -177,8 +180,9 @@ and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and
 LMBX is LMBD's second profile (`0x10`): instead of BC7's fixed 8 bits per pixel it spends bits
 where the picture needs them — YCoCg-R, an 8x8 DCT, a quantiser per 8x8 block chosen by rate-
 distortion optimisation, and rANS — and the GPU decodes it with compute shaders (only the
-compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is frozen here as
-bitstream v1 ([`docs/LMBD.md`](docs/LMBD.md) §11):
+compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is specified in
+[`docs/LMBD.md`](docs/LMBD.md) §11 as two frozen bitstream versions — v1 (0.5.0, DCT only) and v2
+(0.6.0, what the encoder writes):
 
 - **Exact integer decoding** (LMBX-D1). The inverse transform, the colour conversion and every
   rounding are specified in integers, so every conforming decoder — CPU or GPU, ours or anyone's —
@@ -188,16 +192,42 @@ bitstream v1 ([`docs/LMBD.md`](docs/LMBD.md) §11):
   (half-width chroma, interpolated across tile edges; ~26% faster to decode), signalled per clip.
 - **Parallel by construction.** Every plane of every 32x32 tile is its own stream: a 1080p frame is
   6,000-8,000 independent streams.
+- **Tile modes** (v2, LMBX-D3). Each 32x32 tile is coded as DCT, as one flat colour, or as a palette
+  of up to 16 colours (exact, or a lossy palette of 2-16 refined colours), whichever costs least in
+  rate and distortion. Flat graphics, UI and mattes stop paying for a transform they don't need.
+  Frames are stored Zstandard-compressed when that is smaller. `--modes dct` writes v1.
 
 ```sh
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --quality 16                 # 4:4:4
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 422halo --quality 16
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 444 --frame-bytes 400000   # rate control
+dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --modes dct --compressor none        # bitstream v1
 dxvkit-plus compare frames/ clip.lmbd --frame 3 [--float]
 ```
 
-**Quality at matched size** (one frame each, PSNR of RGB / SSIM; LMBX rate-controlled to the other
-codec's frame size, the better chroma mode shown; `docs/data/w5-lmbx-quality.txt` has every row):
+**Bitstream v2 at LMB7's size** (0.6.0; one frame each, LMBX rate-controlled to LMB7's frame size,
+4:4:4; PSNR of RGB, and for alpha content of RGB as shown — premultiplied — and of alpha;
+`docs/data/w6-lmbx-v2-ab.txt` has every arm, including the candidates that were measured and
+removed):
+
+| Content | LMB7 (λ 1) | LMBX v1 (0.5.0) | LMBX v2 (0.6.0) |
+|---|---|---|---|
+| Amrit's real-alpha clip, 1080p (362 KB) | 46.85 dB, shown 52.51, alpha 45.0 | 45.49, shown 52.37, alpha 48.1 | **48.21, shown 55.20, alpha 50.2** |
+| Amrit's glow-over-dark clip, 1080p (753 KB) | 41.40 | 41.97 | **43.00** |
+| graphics card, 960x540 (5.8 KB) | **45.50** | 27.82 (25 KB: its floor) | 38.41 (5.7 KB); **equal quality at +14% bytes** |
+| graphics card with alpha (5.2 KB) | **49.65, shown 46.66** | 27.79 (38 KB: its floor) | 42.61, shown 35.92 (5.7 KB); equal quality at +23% bytes |
+| synthetic alpha (175 KB) | 46.64, alpha 45.5 | **52.56**, alpha 53.4 (151 KB) | **52.56**, alpha 53.4 (138 KB) |
+| film grain (321 KB) | 44.76 | 50.88 | **52.30** |
+| noise-like detail (353 KB) | 16.99 | 18.27 | **21.31** |
+
+v2 passes LMB7 on real alpha at its size (+1.4 dB RGB, +2.7 dB as shown, +5.2 dB alpha) and gains
+on every other natural row. Flat graphics remain LMB7's strength: BC7 + Zstd codes a flat card in a
+few kilobytes, and at exactly that size v2 is still 7 dB short; v2 reaches LMB7's quality there at
+14% (opaque) / 23% (alpha) more bytes, where v1 could not get below 25-38 KB at all.
+
+**Quality at matched size, bitstream v1** (0.5.0; one frame each, PSNR of RGB / SSIM; LMBX
+rate-controlled to the other codec's frame size, the better chroma mode shown;
+`docs/data/w5-lmbx-quality.txt` has every row):
 
 | Content | LMB7 (λ 1) | LMBX at LMB7's size | HAP Q | LMBX at HAP Q's size |
 |---|---|---|---|---|
@@ -213,7 +243,20 @@ flat graphics (where BC7 + Zstd is nearly free) and slightly on the real-alpha f
 transform costs nothing measurable: decoding the same bitstreams with a floating-point inverse DCT
 gives equal or lower PSNR in every row (0 to 1.8 dB lower) and SSIM within 0.001.
 
-**Decode speed** (Mac Studio, release, Arena not running, two rounds; `docs/data/w5-lmbx-speed-macstudio.jsonl`):
+**Decode speed, bitstream v2** (0.6.0; Mac Studio, release, two rounds, Arena running;
+`docs/data/w6-lmbx-v2-speed-macstudio.jsonl`):
+
+| Clip (v2, quality 16) | Layers | GPU per layer, steps/s | CPU (reference decoder) |
+|---|---|---|---|
+| 1080p Shroomies glow, 4:4:4 / 4:2:2 halo | 16 | 67.4-67.6 / 80.6-81.5 | 6.2-6.4 / 6.6-6.7 ms on all cores |
+| 1080p Shroomies alpha, 4:4:4 / 4:2:2 halo | 16 | 69.3-69.8 / 78.7-79.1 | 5.0 / 5.0-5.2 ms |
+| 1080p graphics card, 4:4:4 / 4:2:2 halo | 16 | 155.9-157.2 / 154.0-155.5 | 3.8 / 3.7 ms |
+| 4K Shroomies (alpha), 4:4:4 / 4:2:2 halo | 4 | 117.7-120.1 / 135.1-135.2 (8.3-8.5 / 7.4 ms) | 17.8-17.9 ms |
+
+Flat and palette tiles skip the transform, so graphics decode about twice as fast as natural
+footage. On the same frames v2 costs within 4% of v1's GPU time.
+
+**Decode speed, bitstream v1** (0.5.0; Mac Studio, release, Arena not running, two rounds; `docs/data/w5-lmbx-speed-macstudio.jsonl`):
 
 | Clip | Layers | GPU per layer, steps/s | CPU (reference decoder) |
 |---|---|---|---|

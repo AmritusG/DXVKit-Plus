@@ -165,7 +165,7 @@ fn lmbx_end_to_end() {
         .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbx_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
         .collect();
     vectors.sort();
-    assert_eq!(vectors.len(), 5);
+    assert_eq!(vectors.len(), 9);
     for f in &vectors {
         let p = &run(bin().arg("probe").arg(f))[0];
         assert_eq!((p["kind"].as_str(), p["codec"].as_str()), (Some("lmbd"), Some("LMBX")));
@@ -189,9 +189,17 @@ fn lmbx_end_to_end() {
         assert!(c["psnr_rgb"].as_f64().unwrap() > 30.0 && f["psnr_rgb"].as_f64().unwrap() > 30.0, "{c:#} {f:#}");
         assert_eq!(f["float_reference"], true);
     }
+    // v2 (the default: tile modes, Zstandard frames).
+    run(bin().arg("gen-pattern").arg(tmp.join("gfx")).args(["--frames", "2", "--width", "150", "--height", "90", "--graphics", "--alpha"]));
+    let v2 = tmp.join("v2.lmbd");
+    run(bin().arg("encode-lmbd").arg(tmp.join("gfx")).arg(&v2).args(["--profile", "lmbx", "--chroma", "422halo", "--quiet"]));
+    let v = &run(bin().arg("verify").arg(&v2))[0];
+    assert_eq!(v["pass"], true, "{v:#}");
+    let c = &run(bin().arg("compare").arg(tmp.join("gfx")).arg(&v2).args(["--frame", "1"]))[0];
+    assert!(c["psnr_rgb"].as_f64().unwrap() > 40.0, "{c:#}");
     let rc = &run(bin().arg("encode-lmbd").arg(tmp.join("src")).arg(tmp.join("rc.lmbd")).args(["--profile", "lmbx", "--frame-bytes", "3000", "--quiet"]))[0];
     assert!(rc["bytes_per_frame"].as_u64().unwrap() <= 3000 + 60, "{rc:#}");
-    for bad in [vec!["--profile", "lmbz"], vec!["--profile", "lmbx", "--chroma", "420"]] {
+    for bad in [vec!["--profile", "lmbz"], vec!["--profile", "lmbx", "--chroma", "420"], vec!["--profile", "lmbx", "--modes", "copy"]] {
         let o = bin().arg("encode-lmbd").arg(tmp.join("src")).arg(tmp.join("bad.lmbd")).args(&bad).output().unwrap();
         assert!(!o.status.success(), "{bad:?}");
     }

@@ -1,0 +1,225 @@
+# W6 — LMBX v2 candidates, A/B at matched bytes (Mac Studio, 2026-10-12)
+# Every arm is rate-controlled to the content's LMB7 bytes per frame ("budget"; one frame, source
+# frame 1). RGB = PSNR of straight RGB; shown = PSNR of RGB premultiplied by alpha (what is seen
+# over black); A = alpha PSNR. Rows where bytes < budget hit the best quality (q 1); rows above it
+# hit the coarsest (the rate floor).
+# Content: shroom_alpha = ShroomiesKingdom_05 (real alpha, 1080p; local only, never committed);
+# shroom_glow = ShroomiesKingdom_31 (glow over dark, 1080p; local only); alpha = synthetic alpha;
+# gfx / gfx_a = testpattern::graphics 960x540 without / with alpha (CC0); film_grain, detail =
+# synthetic (CC0).
+# Arms: v1 = 0.5.0 (DCT only, stored); Z = v1 + Zstandard frames; Z+fill / Z+fill+wt = alpha-aware
+# colour fill (+ visibility-weighted RDO); M = Z + flat + palette(16, exact) + lossless tiles;
+# M8 = palette 8; F+L = no palette; P = premultiplied colour; ARx = alpha quantiser ratio x;
+# M+aa = M + alpha-aware; MC = M + copy tiles; MPL = M + lossy palettes; MARx = MPL + alpha ratio;
+# V2 = MPL + length directory; V2-no* = V2 without one mode; V2nl = V2 without lossless,
+# -aw = alpha-weighted direct-mode distortion; v2 (final) = the 0.6.0 defaults (flat, palette,
+# lossy palettes, 4:4:4, Zstandard).
+
+## Round 1 (diagnose, LMB7 reference, Zstandard, alpha-aware)
+shroom_alpha  LMB7         budget        - bytes   361703 RGB  46.8498 shown  52.5147 A  45.0333 SSIM 0.99747
+alpha         LMB7         budget        - bytes   175434 RGB   46.643 shown  47.2677 A  45.5392 SSIM 0.994202
+gfx           LMB7         budget        - bytes     5807 RGB  45.5046 shown  45.3361 A  48.7147 SSIM 0.996486
+shroom_glow   LMB7         budget        - bytes   752814 RGB  41.3972 shown  41.3653 A  54.0842 SSIM 0.982654
+film_grain    LMB7         budget        - bytes   321197 RGB  44.7599 shown  44.7387 A  52.8098 SSIM 0.98948
+detail        LMB7         budget        - bytes   353406 RGB  16.9904 shown  16.9904 A  78.8134 SSIM 0.981594
+shroom_alpha  v1           budget   361703 bytes   361364 RGB  45.4861 shown  52.3674 A  48.0672 SSIM 0.994862
+alpha         v1           budget   175434 bytes   150756 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           v1           budget     5807 bytes    25406 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   v1           budget   752814 bytes   643893 RGB  41.9693 shown  41.9693 A inf      SSIM 0.982998
+film_grain    v1           budget   321197 bytes   299489 RGB  50.8769 shown  50.8769 A inf      SSIM 0.997967
+detail        v1           budget   353406 bytes   350464 RGB   18.273 shown   18.273 A inf      SSIM 0.948812
+shroom_alpha  Z            budget   361703 bytes   360700 RGB  47.2841 shown  54.3667 A  49.7529 SSIM 0.996768
+alpha         Z            budget   175434 bytes   139852 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           Z            budget     5807 bytes     8002 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   Z            budget   752814 bytes   751505 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    Z            budget   321197 bytes   320910 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        Z            budget   353406 bytes   352153 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  Z+fill       budget   361703 bytes   360104 RGB   7.4626 shown  53.9286 A  49.6773 SSIM 0.207711
+alpha         Z+fill       budget   175434 bytes   148713 RGB  45.9013 shown  54.3958 A  53.4946 SSIM 0.995644
+shroom_alpha  Z+fill+wt    budget   361703 bytes   354462 RGB   7.4625 shown  53.5502 A  54.8043 SSIM 0.202474
+alpha         Z+fill+wt    budget   175434 bytes   157807 RGB   46.417 shown  55.4715 A  55.5446 SSIM 0.996025
+
+## Round 2 (tile modes, premultiplied, alpha ratio, alpha-aware)
+shroom_alpha  Z2           budget   361703 bytes   360700 RGB  47.2841 shown  54.3667 A  49.7529 SSIM 0.996768
+alpha         Z2           budget   175434 bytes   139852 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           Z2           budget     5807 bytes     8002 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   Z2           budget   752814 bytes   751505 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    Z2           budget   321197 bytes   320910 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        Z2           budget   353406 bytes   352153 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  M            budget   361703 bytes   360430 RGB  47.8017 shown  54.8268 A  50.2458 SSIM 0.997139
+alpha         M            budget   175434 bytes   139862 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           M            budget     5807 bytes     5632 RGB  34.9202 shown  34.9202 A inf      SSIM 0.988953
+shroom_glow   M            budget   752814 bytes   751571 RGB  42.7742 shown  42.7742 A inf      SSIM 0.987297
+film_grain    M            budget   321197 bytes   320900 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        M            budget   353406 bytes   352167 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  M8           budget   361703 bytes   360933 RGB  47.7976 shown  54.8267 A  50.2415 SSIM 0.997128
+alpha         M8           budget   175434 bytes   139862 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           M8           budget     5807 bytes     5604 RGB  34.7754 shown  34.7754 A inf      SSIM 0.9884
+shroom_glow   M8           budget   752814 bytes   751606 RGB  42.7746 shown  42.7746 A inf      SSIM 0.987297
+film_grain    M8           budget   321197 bytes   320900 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        M8           budget   353406 bytes   352167 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  F+L          budget   361703 bytes   361318 RGB  47.7952 shown  54.8266 A  50.2366 SSIM 0.997123
+alpha         F+L          budget   175434 bytes   139862 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           F+L          budget     5807 bytes     5818 RGB  34.5939 shown  34.5939 A inf      SSIM 0.987789
+shroom_glow   F+L          budget   752814 bytes   751564 RGB  42.7739 shown  42.7739 A inf      SSIM 0.987296
+film_grain    F+L          budget   321197 bytes   320900 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        F+L          budget   353406 bytes   352167 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  P            budget   361703 bytes   288356 RGB  26.5304 shown  52.0111 A  52.5349 SSIM 0.943918
+alpha         P            budget   175434 bytes   137740 RGB  19.9655 shown  52.1705 A     53.4 SSIM 0.866816
+gfx           P            budget     5807 bytes     8002 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   P            budget   752814 bytes   751505 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    P            budget   321197 bytes   320910 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        P            budget   353406 bytes   352153 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  AR0.5        budget   361703 bytes   361587 RGB  45.7577 shown  53.9676 A  53.1629 SSIM 0.995136
+alpha         AR0.5        budget   175434 bytes   157268 RGB  52.5988 shown  55.1485 A  55.6268 SSIM 0.998067
+gfx           AR0.5        budget     5807 bytes     8012 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   AR0.5        budget   752814 bytes   751484 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    AR0.5        budget   321197 bytes   320915 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        AR0.5        budget   353406 bytes   352165 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  AR2          budget   361703 bytes   329639 RGB  48.1182 shown  53.3665 A  46.1632 SSIM 0.997201
+alpha         AR2          budget   175434 bytes   162424 RGB  53.5064 shown  54.9256 A  53.4746 SSIM 0.998438
+gfx           AR2          budget     5807 bytes     8013 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+shroom_glow   AR2          budget   752814 bytes   751523 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    AR2          budget   321197 bytes   320925 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        AR2          budget   353406 bytes   352173 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  M+aa         budget   361703 bytes   360804 RGB  21.3529 shown  54.4411 A  50.1129 SSIM 0.883966
+alpha         M+aa         budget   175434 bytes   148746 RGB  45.9013 shown  54.3958 A  53.4946 SSIM 0.995644
+gfx           M+aa         budget     5807 bytes     5632 RGB  34.9202 shown  34.9202 A inf      SSIM 0.988953
+shroom_glow   M+aa         budget   752814 bytes   751571 RGB  42.7742 shown  42.7742 A inf      SSIM 0.987297
+film_grain    M+aa         budget   321197 bytes   320900 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        M+aa         budget   353406 bytes   352167 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+
+## Copy tiles (gfx)
+gfx           MC           budget     5807 bytes     5522 RGB  34.9202 (M: 5632 B, 34.9202)
+
+## Round 3 (lossy palettes, alpha ratio near 1)
+shroom_alpha  MAR0.75      budget   361703 bytes   361512 RGB  47.1179 shown  54.3447 A  50.2373 SSIM 0.997002
+alpha         MAR0.75      budget   175434 bytes   139859 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+shroom_alpha  MAR1.25      budget   361703 bytes   335997 RGB  48.2473 shown  54.6268 A  48.8107 SSIM 0.997467
+alpha         MAR1.25      budget   175434 bytes   130996 RGB  52.5614 shown  53.5484 A  51.7106 SSIM 0.998061
+shroom_alpha  MPL          budget   361703 bytes   360257 RGB  48.2735 shown  55.2776 A  50.3468 SSIM 0.997486
+alpha         MPL          budget   175434 bytes   139862 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           MPL          budget     5807 bytes     5461 RGB  35.7689 shown  35.7689 A inf      SSIM 0.990698
+shroom_glow   MPL          budget   752814 bytes   751883 RGB  42.7885 shown  42.7885 A inf      SSIM 0.987369
+film_grain    MPL          budget   321197 bytes   320900 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        MPL          budget   353406 bytes   347885 RGB  21.3131 shown  21.3131 A inf      SSIM 0.989872
+
+## Round 4 (length directory; each mode removed in turn; 4:2:2)
+gfx_a         v1           budget     5204 bytes    38350 RGB   27.793 shown  28.4051 A  31.3038 SSIM 0.938178
+gfx_a         Z            budget     5204 bytes    12893 RGB   27.793 shown  28.4051 A  31.3038 SSIM 0.938178
+shroom_alpha  V2           budget   361703 bytes   355936 RGB  48.2735 shown  55.2776 A  50.3468 SSIM 0.997486
+alpha         V2           budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           V2           budget     5807 bytes     5600 RGB  38.4068 shown  38.4068 A inf      SSIM 0.994098
+gfx_a         V2           budget     5204 bytes     5810 RGB  43.1971 shown  36.0064 A  36.8279 SSIM 0.99865
+shroom_glow   V2           budget   752814 bytes   751637 RGB  42.8959 shown  42.8959 A inf      SSIM 0.987516
+film_grain    V2           budget   321197 bytes   318297 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        V2           budget   353406 bytes   346626 RGB  21.3131 shown  21.3131 A inf      SSIM 0.989872
+shroom_alpha  V2-noflat    budget   361703 bytes   360049 RGB  48.2735 shown  55.2776 A  50.3515 SSIM 0.997486
+alpha         V2-noflat    budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           V2-noflat    budget     5807 bytes     5511 RGB  37.7896 shown  37.7896 A inf      SSIM 0.99384
+gfx_a         V2-noflat    budget     5204 bytes     5837 RGB  46.2587 shown  36.4476 A  36.8279 SSIM 0.999036
+shroom_glow   V2-noflat    budget   752814 bytes   751918 RGB  42.8963 shown  42.8963 A inf      SSIM 0.987518
+film_grain    V2-noflat    budget   321197 bytes   318297 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        V2-noflat    budget   353406 bytes   346626 RGB  21.3131 shown  21.3131 A inf      SSIM 0.989872
+shroom_alpha  V2-nolossy   budget   361703 bytes   361503 RGB  48.0078 shown  55.0502 A  50.4496 SSIM 0.997246
+alpha         V2-nolossy   budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           V2-nolossy   budget     5807 bytes     5683 RGB  36.4826 shown  36.4826 A inf      SSIM 0.991567
+gfx_a         V2-nolossy   budget     5204 bytes     7191 RGB  39.1389 shown  40.3724 A  43.4577 SSIM 0.997138
+shroom_glow   V2-nolossy   budget   752814 bytes   752033 RGB  42.9085 shown  42.9085 A inf      SSIM 0.987476
+film_grain    V2-nolossy   budget   321197 bytes   318297 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        V2-nolossy   budget   353406 bytes   352912 RGB  18.4929 shown  18.4929 A inf      SSIM 0.951452
+shroom_alpha  V2-nolossless budget   361703 bytes   353425 RGB  48.2067 shown  55.2017 A  50.2159 SSIM 0.997466
+alpha         V2-nolossless budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           V2-nolossless budget     5807 bytes     5674 RGB  38.4068 shown  38.4068 A inf      SSIM 0.994098
+gfx_a         V2-nolossless budget     5204 bytes     5752 RGB  42.6094 shown  35.9192 A  36.6928 SSIM 0.998419
+shroom_glow   V2-nolossless budget   752814 bytes   752349 RGB  43.0034 shown  43.0034 A inf      SSIM 0.987604
+film_grain    V2-nolossless budget   321197 bytes   318297 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        V2-nolossless budget   353406 bytes   346626 RGB  21.3131 shown  21.3131 A inf      SSIM 0.989872
+shroom_alpha  V2-422       budget   361703 bytes   360826 RGB  46.9031 shown  54.3892 A    50.35 SSIM 0.997281
+alpha         V2-422       budget   175434 bytes   147014 RGB  49.3103 shown  52.4384 A  55.7481 SSIM 0.998408
+gfx           V2-422       budget     5807 bytes     5501 RGB  37.8878 shown  37.8878 A inf      SSIM 0.993472
+gfx_a         V2-422       budget     5204 bytes     5885 RGB   42.775 shown  35.9402 A  36.6891 SSIM 0.998422
+shroom_glow   V2-422       budget   752814 bytes   609386 RGB  40.3551 shown  40.3551 A inf      SSIM 0.982517
+film_grain    V2-422       budget   321197 bytes   320908 RGB  52.5066 shown  52.5066 A inf      SSIM 0.998931
+detail        V2-422       budget   353406 bytes   352605 RGB  14.7152 shown  14.7152 A inf      SSIM 0.966203
+
+## Round 5 (alpha-weighted direct-mode distortion, lossless pruned)
+gfx_a         V2nl         budget     5204 bytes     5752 RGB  42.6094 shown  35.9192 A  36.6928 SSIM 0.998419
+shroom_alpha  V2nl         budget   361703 bytes   353425 RGB  48.2067 shown  55.2017 A  50.2159 SSIM 0.997466
+alpha         V2nl         budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx_a         V2nl-aw      budget     5204 bytes     5782 RGB  21.6299 shown  39.9383 A  42.5097 SSIM 0.984469
+shroom_alpha  V2nl-aw      budget   361703 bytes   361515 RGB  42.3415 shown  51.4722 A  47.6087 SSIM 0.988432
+alpha         V2nl-aw      budget   175434 bytes   138272 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+
+## Final (0.6.0 build)
+shroom_alpha  v1           budget   361703 bytes   361364 RGB  45.4861 shown  52.3674 A  48.0672 SSIM 0.994862
+alpha         v1           budget   175434 bytes   150756 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           v1           budget     5807 bytes    25406 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+gfx_a         v1           budget     5204 bytes    38350 RGB   27.793 shown  28.4051 A  31.3038 SSIM 0.938178
+shroom_glow   v1           budget   752814 bytes   643893 RGB  41.9693 shown  41.9693 A inf      SSIM 0.982998
+film_grain    v1           budget   321197 bytes   299489 RGB  50.8769 shown  50.8769 A inf      SSIM 0.997967
+detail        v1           budget   353406 bytes   350464 RGB   18.273 shown   18.273 A inf      SSIM 0.948812
+shroom_alpha  Z            budget   361703 bytes   360700 RGB  47.2841 shown  54.3667 A  49.7529 SSIM 0.996768
+alpha         Z            budget   175434 bytes   139852 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           Z            budget     5807 bytes     8002 RGB  27.8152 shown  27.8152 A inf      SSIM 0.935472
+gfx_a         Z            budget     5204 bytes    12893 RGB   27.793 shown  28.4051 A  31.3038 SSIM 0.938178
+shroom_glow   Z            budget   752814 bytes   751505 RGB  42.8659 shown  42.8659 A inf      SSIM 0.987374
+film_grain    Z            budget   321197 bytes   320910 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        Z            budget   353406 bytes   352153 RGB  18.4162 shown  18.4162 A inf      SSIM 0.950563
+shroom_alpha  v2           budget   361703 bytes   353415 RGB  48.2067 shown  55.2017 A  50.2159 SSIM 0.997466
+alpha         v2           budget   175434 bytes   138270 RGB  52.5648 shown  54.3329 A  53.4046 SSIM 0.998062
+gfx           v2           budget     5807 bytes     5668 RGB  38.4068 shown  38.4068 A inf      SSIM 0.994098
+gfx_a         v2           budget     5204 bytes     5748 RGB  42.6094 shown  35.9192 A  36.6928 SSIM 0.998419
+shroom_glow   v2           budget   752814 bytes   752270 RGB  43.0034 shown  43.0034 A inf      SSIM 0.987604
+film_grain    v2           budget   321197 bytes   318301 RGB  52.2988 shown  52.2988 A inf      SSIM 0.99883
+detail        v2           budget   353406 bytes   346621 RGB  21.3131 shown  21.3131 A inf      SSIM 0.989872
+shroom_alpha  v2-422       budget   361703 bytes   361420 RGB  46.9091 shown  54.4081 A  50.3755 SSIM 0.997289
+alpha         v2-422       budget   175434 bytes   146723 RGB  49.2864 shown  52.4269 A  55.7326 SSIM 0.998402
+gfx           v2-422       budget     5807 bytes     5528 RGB  37.8878 shown  37.8878 A inf      SSIM 0.993472
+gfx_a         v2-422       budget     5204 bytes     5716 RGB  42.2385 shown  35.8606 A  36.5773 SSIM 0.998213
+shroom_glow   v2-422       budget   752814 bytes   609382 RGB  40.3551 shown  40.3551 A inf      SSIM 0.982517
+film_grain    v2-422       budget   321197 bytes   320883 RGB  52.5066 shown  52.5066 A inf      SSIM 0.998931
+detail        v2-422       budget   353406 bytes   352616 RGB  14.7152 shown  14.7152 A inf      SSIM 0.966203
+
+## Bytes LMBX v2 needs to match LMB7's quality on the graphics cards (quality sweep, defaults)
+gfx   LMB7 5807 B 45.50 dB | v2 q64 6619 B 45.33 dB, q48 6660 B 45.99 dB  -> about +14% bytes
+gfx_a LMB7 5204 B shown 46.66 A 46.85 | v2 q96 6382 B shown 47.16 A 48.00 -> about +23% bytes
+
+## Diagnosis (before v2; crates/dxvkit-plus-core/examples/lmbx_diag.rs): real alpha, eye-test frame 30, 1080p, arms at LMB7's size
+alpha_lmb7.lmbd frame 30: 1920x1080, codec LMB7
+  alpha 0        pixels  88.08%  RGB MSE    0.073  shown-RGB MSE    0.000  alpha MSE    0.607  | share of total RGB SE   2.3%  shown   0.0%
+  alpha partial  pixels  11.92%  RGB MSE   23.223  shown-RGB MSE    5.662  alpha MSE   26.768  | share of total RGB SE  97.7%  shown 100.0%
+alpha_lmbx_444.lmbd frame 30: 1920x1080, codec LMBX
+  alpha 0        pixels  88.08%  RGB MSE    1.060  shown-RGB MSE    0.002  alpha MSE    0.522  | share of total RGB SE  14.6%  shown   0.1%
+  alpha partial  pixels  11.92%  RGB MSE   45.933  shown-RGB MSE   10.833  alpha MSE   33.592  | share of total RGB SE  85.4%  shown  99.9%
+  bitstream 257130 B: header+table 1378 B, quantiser map 16320 B, directory 32644 B, streams 206788 B
+  stream bytes by plane (Y, Co, Cg, A): [69205, 38984, 22188, 76411]
+  tiles partial     <=16 colours     145  bytes     7033 (  3.4%)  per tile    48.5  by plane [2266, 1403, 1095, 2269]
+  tiles partial     other            729  bytes   164775 ( 79.7%)  per tile   226.0  by plane [57611, 29419, 12931, 64814]
+  tiles transparent flat            1166  bytes    34980 ( 16.9%)  per tile    30.0  by plane [9328, 8162, 8162, 9328]
+alpha_lmbx_422halo.lmbd frame 30: 1920x1080, codec LMBX
+  alpha 0        pixels  88.08%  RGB MSE    1.126  shown-RGB MSE    0.002  alpha MSE    0.585  | share of total RGB SE  13.9%  shown   0.1%
+  alpha partial  pixels  11.92%  RGB MSE   51.563  shown-RGB MSE   12.341  alpha MSE   37.176  | share of total RGB SE  86.1%  shown  99.9%
+  bitstream 257149 B: header+table 1382 B, quantiser map 16320 B, directory 32644 B, streams 206803 B
+  stream bytes by plane (Y, Co, Cg, A): [66551, 44130, 22674, 73448]
+  tiles partial     <=16 colours     145  bytes     6842 (  3.3%)  per tile    47.2  by plane [2318, 1275, 954, 2295]
+  tiles partial     other            729  bytes   164981 ( 79.8%)  per tile   226.3  by plane [53739, 35859, 14724, 60659]
+  tiles transparent flat            1166  bytes    34980 ( 16.9%)  per tile    30.0  by plane [10494, 6996, 6996, 10494]
+
+## Diagnosis: graphics card 960x540, LMBX v1 (LMB7: 5807 B at 45.50 dB)
+LMBX v1 q16 52780 40.4786 0.993996
+gfx_v1_q16.lmbd frame 0: 960x540, codec LMBX
+  alpha 255      pixels 100.00%  RGB MSE    5.824  shown-RGB MSE    5.824  alpha MSE    0.000  | share of total RGB SE 100.0%  shown 100.0%
+  bitstream 52764 B: header+table 1454 B, quantiser map 4080 B, directory 6124 B, streams 41106 B
+  stream bytes by plane (Y, Co, Cg, A): [20169, 12447, 8490]
+  tiles opaque      <=16 colours     219  bytes    29006 ( 70.6%)  per tile   132.4  by plane [15300, 8615, 5091]
+  tiles opaque      flat             227  bytes     5959 ( 14.5%)  per tile    26.3  by plane [2043, 2043, 1873]
+  tiles opaque      other             64  bytes     6141 ( 14.9%)  per tile    96.0  by plane [2826, 1789, 1526]
+LMBX v1 q600 25406 27.8152 0.935472
+gfx_v1_q600.lmbd frame 0: 960x540, codec LMBX
+  alpha 255      pixels 100.00%  RGB MSE  107.537  shown-RGB MSE  107.537  alpha MSE    0.000  | share of total RGB SE 100.0%  shown 100.0%
+  bitstream 25390 B: header+table 222 B, quantiser map 4080 B, directory 6124 B, streams 14964 B
+  stream bytes by plane (Y, Co, Cg, A): [7846, 4068, 3050]
+  tiles opaque      <=16 colours     219  bytes     9649 ( 64.5%)  per tile    44.1  by plane [5668, 2470, 1511]
+  tiles opaque      flat             227  bytes     3647 ( 24.4%)  per tile    16.1  by plane [1347, 1150, 1150]
+  tiles opaque      other             64  bytes     1668 ( 11.1%)  per tile    26.1  by plane [831, 448, 389]

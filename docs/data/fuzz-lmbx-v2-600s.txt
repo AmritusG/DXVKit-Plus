@@ -1,0 +1,2 @@
+fuzz: 600 s, 6 threads, corpus 18 (hap frames 0, dxv packets 0, files 0, lmbd 18), execs 14492112 (24153/s), crashes 0, hangs 0, slowest input 67.7 ms
+exit 0

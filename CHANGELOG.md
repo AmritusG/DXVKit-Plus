@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.6.0 — 2026-10-12
+
+LMBX bitstream v2 (`docs/LMBD.md` §11, decision LMBX-D3): fixes the two weak spots 0.5.0 left — real
+alpha footage and flat hard-edged graphics. v1 is frozen and still decodes bit-exact (its five
+vectors unchanged); the encoder writes v2 by default.
+
+- Bitstream v2: a palette-index rANS table and a **tile mode map** after the coefficient table —
+  per 32x32 tile `0` DCT (v1's coding), `1` flat (one RGBA8 colour), `2` palette (up to 16 RGBA8
+  colours and a rANS-coded, left-predicted index per pixel); and a stream directory of lengths
+  instead of offsets (12% of a graphics frame once compressed). Direct tiles write the sample
+  planes, so the 4:2:2 halo of a neighbouring DCT tile stays defined.
+- `dxvkit-plus-core::lmbx`: decodes v1 and v2 (`TileMode`, `Frame::mode`, `direct_tile`,
+  `FrameHeader::version`, `Sections::{palette_table, modes}`).
+- `dxvkit-plus-wgpu`: v2 on the GPU, bit-exact with the CPU on every vector (every tile mode, both
+  chroma modes) and on hostile frames with random tile modes; a third table workgroup turns the
+  stream lengths into offsets; tiles stay independent.
+- `dxvkit-plus-lmbd-enc::lmbx`: per-tile rate-distortion choice between DCT, flat, exact palette and
+  lossy palettes (2/4/8/16 most frequent colours, Lloyd-refined); `LmbxParams::{flat, palette,
+  palette_lossy}` (on by default; all off writes v1); `stored_size`, `frame_payload` (Zstandard
+  frames when smaller; rate control counts the stored size).
+- CLI: `encode-lmbd --profile lmbx` writes v2 and Zstandard frames by default; `--modes
+  dct|flat,palette,lossy`, `--compressor zstd|none`; `decode --float` (LMBX); `gen-pattern
+  --graphics [--alpha]` (a CC0 flat-graphics card: UI bars, buttons, text, logo, gradient);
+  `compare` reports PSNR of RGB as shown (premultiplied).
+- Four new CC0 v2 conformance vectors (`lmbx_v2_*`), with the normative output hashes; the encoder
+  re-creates all nine byte for byte at 1, 3 and 8 threads.
+- `--example lmbx_diag`: error by alpha class, bytes by section, plane, tile class and tile mode.
+- Measured (Mac Studio, `docs/data/w6-lmbx-v2-ab.txt`; at LMB7's bytes per frame): real alpha
+  48.21 dB RGB / 55.20 shown / 50.2 alpha against LMB7's 46.85 / 52.51 / 45.0 (v1: 45.49 / 52.37 /
+  48.1); glow 43.00 (v1 41.97, LMB7 41.40); a flat graphics card 38.41 dB at 5.7 KB against LMB7's
+  45.50 at 5.8 KB, equal quality at +14% bytes (v1: a 25 KB floor at 27.8 dB); with alpha +23%;
+  noise-like detail +3.0 dB over v1.
+- Built, measured and removed (ADD then prune; numbers in the data file): premultiplied-colour
+  coding, an alpha quantiser ratio, alpha-aware colour fill and visibility-weighted RDO,
+  alpha-weighted direct-mode distortion, lossless (MED) tiles, copy tiles, palettes of 4 or 8.
+  The chroma default stays 4:4:4 (better on both real clips).
+- Decode speed (Mac Studio, v2 files, Arena running; `docs/data/w6-lmbx-v2-speed-macstudio.jsonl`):
+  16 x 1080p 67-70 steps/s (4:4:4) / 79-82 (4:2:2) on Amrit's glow and alpha clips, 154-157 on the
+  graphics card; 4 x 4K 8.3-8.5 ms (4:4:4) / 7.4 ms (4:2:2) per step. Found and fixed before
+  release: palette tiles were expanded by one GPU invocation each, which put a whole 32x32 tile on
+  the critical path (+42% GPU time on the glow clip from four palette tiles a frame); the
+  expansion now runs per 8x8 block in the IDCT pass (v2 within 4% of v1 on the same frames). The
+  encoder's tile-mode search runs tile-parallel (5x faster encodes).
+- Eye-test arms (`docs/data/w6-lmbx-eye-arms.txt`, 60 frames 1080p at LMB7's size): glow v2 42.0-43.6
+  dB vs LMB7 41.4-41.6; real alpha v2 RGB 42.8-44.1 / shown 48.8-50.4 / alpha 44.1-45.4 vs LMB7
+  43.2-43.8 / 49.1-50.1 / 42.4-43.1 (v1: 39.4-40.2 / 45.9-47.0); a 1080p graphics card v2 47.3-50.9
+  dB vs LMB7 49.4-49.7 (v1: 30.3 at 8x the bytes).
+
 ## 0.5.0 — 2026-10-11
 
 LMBX: LMBD profile `0x10`, frozen as bitstream v1 (`docs/LMBD.md` §11). Additions; one

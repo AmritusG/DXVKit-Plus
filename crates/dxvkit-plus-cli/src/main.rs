@@ -5,7 +5,7 @@
 //! dxvkit-plus decode <file> <frame> <out.png> [--cpu]
 //! dxvkit-plus bench <file>... [--frames N] [--layers N [--layers-only] [--variants V,..]] [--import]
 //! dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
-//! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
+//! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma|--graphics [--alpha]]
 //! dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D] ...
 //! dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo] [--quality Q | --frame-bytes N]
 //! dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
@@ -34,15 +34,16 @@ pub const ZSTD_BACKEND: &str = if cfg!(feature = "zstd-c") { "libzstd" } else { 
 
 const USAGE: &str = "usage:
   dxvkit-plus probe <file|folder>
-  dxvkit-plus decode <file> <frame> <out.png> [--cpu]
+  dxvkit-plus decode <file> <frame> <out.png> [--cpu | --float]
   dxvkit-plus bench <file>... [--frames N] [--layers N [--layers-only] [--variants V,..]] [--import]
   dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
-  dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
+  dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma|--graphics [--alpha]]
   dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
                           [--level Z] [--compressor zstd|none] [--rdo-partitions P] [--threads T]
                           [--start F] [--frames N] [--quiet]
   dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo]
-                          [--quality Q | --frame-bytes N] [--start F] [--frames N] [--quiet]
+                          [--quality Q | --frame-bytes N] [--modes dct|flat,palette,lossy]
+                          [--compressor zstd|none] [--start F] [--frames N] [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:
   --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)";
@@ -157,7 +158,13 @@ fn decode(args: &Args) -> Result<(), String> {
     let mut src = source::open(&info, &opts, true).map_err(|e| e.to_string())?;
     let d = src.decode(frame).map_err(|e| e.to_string())?;
     let (w, h) = d.size();
-    let (rgba, route) = if args.has("cpu") {
+    let (rgba, route) = if args.has("float") {
+        // LMBX only: the floating-point inverse transform (not conforming), for comparisons.
+        if info.codec != "LMBX" {
+            return Err("--float: only for LMBX files".into());
+        }
+        (lmbd::float_rgba(path, frame, w, h)?, "float")
+    } else if args.has("cpu") {
         (src.cpu_rgba(&d).map_err(|e| e.to_string())?, "cpu")
     } else {
         let mut g = gpu::Session::new().map_err(|e| e.to_string())?;
@@ -176,7 +183,9 @@ fn gen_pattern(args: &Args) -> Result<(), String> {
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     for f in 0..frames {
-        let px = if args.has("plasma") {
+        let px = if args.has("graphics") {
+            testpattern::graphics(f, w, h, args.has("alpha"))
+        } else if args.has("plasma") {
             let mut p = testpattern::plasma(f, w, h, args.has("alpha"));
             testpattern::stamp_frame_id(&mut p, w, h, f);
             p
@@ -185,10 +194,14 @@ fn gen_pattern(args: &Args) -> Result<(), String> {
         };
         write_png(&Path::new(dir).join(format!("f{f:05}.png")), w, h, &px)?;
     }
-    let pattern = match (args.has("plasma"), args.has("alpha")) {
-        (true, true) => "plasma_alpha",
-        (true, false) => "plasma",
-        _ => "tiles",
+    let pattern = if args.has("graphics") {
+        if args.has("alpha") { "graphics_alpha" } else { "graphics" }
+    } else {
+        match (args.has("plasma"), args.has("alpha")) {
+            (true, true) => "plasma_alpha",
+            (true, false) => "plasma",
+            _ => "tiles",
+        }
     };
     json_line(&serde_json::json!({"pattern": pattern, "dir": dir, "frames": frames, "width": w, "height": h}));
     Ok(())
@@ -232,6 +245,7 @@ fn main() -> ExitCode {
             "chroma",
             "quality",
             "frame-bytes",
+            "modes",
         ],
     );
     if let Some(a) = args.value("alpha-mode") {

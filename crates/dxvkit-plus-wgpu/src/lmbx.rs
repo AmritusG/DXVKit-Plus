@@ -1,14 +1,18 @@
 //! LMBX on the GPU: the frame bitstream is uploaded as it is (nothing is decoded on the CPU) and
 //! decoded by compute passes, bit-exact with `dxvkit_plus_core::lmbx`:
 //!
-//! 1. `tables` (one workgroup): expand the sparse rANS table in the bitstream into frequency,
-//!    cumulative-frequency and slot-to-symbol arrays;
+//! 1. `tables` (one workgroup per table: coefficients, and in v2 the palette): expand the sparse
+//!    rANS table in the bitstream into frequency, cumulative-frequency and slot-to-symbol arrays;
+//!    in v2 a third workgroup turns the directory's stream lengths into offsets;
 //! 2. `entropy` (one invocation per stream — each plane of each 32x32 tile): rANS-decode it and
-//!    write each block's dequantised coefficients into the block's own 8x8 area of its plane;
+//!    write each block's dequantised coefficients into the block's own 8x8 area of its plane; a
+//!    v2 palette tile's stream-0 invocation decodes its palette indices (the serial part) into Y;
 //! 3. `idct` (one invocation per 8x8 block): the integer inverse DCT, in place (straight-line
-//!    code generated from the basis);
+//!    code generated from the basis); in a v2 direct tile (flat, palette) each Y-plane block's
+//!    invocation instead expands its 64 pixels as the CPU decoder stores them (packed RGBA8 in Y,
+//!    forward chroma, `4 A`), so no single invocation carries a whole tile;
 //! 4. a fragment pass ([`LMBX_OUT_WGSL`]): chroma (4:2:2 halo or 4:4:4), inverse YCoCg-R, clamp,
-//!    8-bit output.
+//!    direct tiles' RGBA8, 8-bit output.
 //!
 //! The planes are `i32` storage at the coded size (whole tiles): `4 * (2 + chroma planes) *
 //! coded pixels` bytes per renderer (1080p 4:2:2 with alpha: 26 MB).
@@ -28,32 +32,51 @@ struct P {
     chw: u32, tiles_x: u32, nt: u32, chroma: u32,
     alpha: u32, cratio: u32, plen: u32, coef_off: u32,
     qmap_off: u32, dir_off: u32, data_off: u32, nblocks: u32,
+    v2: u32, modes_off: u32, pal_off: u32, pad4: u32,
+    pad0: u32, pad1: u32, pad2: u32, pad3: u32,
     qt: array<vec4<u32>, 4>,
 };
 "#;
 
+/// Bitstream access both shaders share (after the bindings).
+const PARAMS_FNS_WGSL: &str = r#"
+fn byte_at(i: u32) -> u32 {
+    if (i >= p.plen) { return 0u; }
+    return (bits[i >> 2u] >> ((i & 3u) * 8u)) & 255u;
+}
+// Tile `t`'s mode (v1: 0, DCT).
+fn tile_mode(t: u32) -> u32 {
+    if (p.v2 == 0u) { return 0u; }
+    return byte_at(p.modes_off + t);
+}
+"#;
+
 /// WGSL of the compute passes. The arithmetic is `dxvkit_plus_core::lmbx`'s, operation for
 /// operation (i32 / u32, arithmetic shifts, wrapping rANS state).
-pub const LMBX_WGSL: &str = r#"
+pub const LMBX_BINDINGS_WGSL: &str = r#"
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read> bits: array<u32>;
+"#;
+
+/// WGSL of the compute passes (after [`LMBX_BINDINGS_WGSL`]).
+pub const LMBX_WGSL: &str = r#"
 @group(0) @binding(2) var<storage, read_write> tab: array<u32>;
 @group(0) @binding(3) var<storage, read_write> planes: array<i32>;
 
-// tab layout: dense frequencies (2048), cumulative frequencies (2049), then per slot (16384)
-// two words: the owning symbol | frequency << 11, and slot - cum[symbol] — one read per symbol.
+// tab layout, per table (coefficients at 0, palette at T_STRIDE): dense
+// frequencies (2048), cumulative frequencies (2049), then per slot (16384) two words: the owning
+// symbol | frequency << 11, and slot - cum[symbol] — one read per symbol.
 const C_FREQ: u32 = 0u;
 const C_CUM: u32 = 2048u;
 const C_SLOT: u32 = 4097u;
+const T_STRIDE: u32 = 36865u;
+// v2 stream offsets (data-relative), after the two tables.
+const OFFS: u32 = 2u * T_STRIDE;
 
 var<private> ZZ: array<u32, 64> = array<u32, 64>(
     0u, 1u, 8u, 16u, 9u, 2u, 3u, 10u, 17u, 24u, 32u, 25u, 18u, 11u, 4u, 5u, 12u, 19u, 26u, 33u, 40u, 48u, 41u, 34u, 27u, 20u, 13u, 6u, 7u, 14u, 21u, 28u,
     35u, 42u, 49u, 56u, 57u, 50u, 43u, 36u, 29u, 22u, 15u, 23u, 30u, 37u, 44u, 51u, 58u, 59u, 52u, 45u, 38u, 31u, 39u, 46u, 53u, 60u, 61u, 54u, 47u, 55u, 62u, 63u);
 
-fn byte_at(i: u32) -> u32 {
-    if (i >= p.plen) { return 0u; }
-    return (bits[i >> 2u] >> ((i & 3u) * 8u)) & 255u;
-}
 fn le16(i: u32) -> u32 { return byte_at(i) | (byte_at(i + 1u) << 8u); }
 fn le32(i: u32) -> u32 { return le16(i) | (le16(i + 2u) << 16u); }
 fn qt(i: u32) -> u32 { return p.qt[i >> 2u][i & 3u]; }
@@ -65,19 +88,42 @@ var<workgroup> wpart: array<u32, 256>;
 // frequencies, prefix-sum them (8 symbols per thread, then the 256 partial sums), and give every
 // slot the largest symbol s with cum[s] <= slot (binary search in workgroup memory).
 @compute @workgroup_size(256)
-fn tables(@builtin(local_invocation_index) li: u32) {
-    for (var s = li; s < 2048u; s += 256u) { tab[C_FREQ + s] = 0u; }
+fn tables(@builtin(local_invocation_index) li: u32, @builtin(workgroup_id) wg: vec3<u32>) {
+    if (wg.x > 0u && p.v2 == 0u) { return; }
+    if (wg.x == 2u) {
+        // v2: stream offsets, the running sum of the directory's lengths (a chunk per thread).
+        let ns = p.nt * (3u + p.alpha);
+        let per = (ns + 255u) / 256u;
+        let s0 = min(li * per, ns);
+        let s1 = min(s0 + per, ns);
+        var acc = 0u;
+        for (var i = s0; i < s1; i++) { acc += le32(p.dir_off + 4u + i * 4u); }
+        wpart[li] = acc;
+        workgroupBarrier();
+        if (li == 0u) {
+            var run = 0u;
+            for (var i = 0u; i < 256u; i++) { let v = wpart[i]; wpart[i] = run; run += v; }
+        }
+        workgroupBarrier();
+        var o = wpart[li];
+        for (var i = s0; i < s1; i++) { tab[OFFS + i] = o; o += le32(p.dir_off + 4u + i * 4u); }
+        return;
+    }
+    var off = p.coef_off;
+    if (wg.x == 1u) { off = p.pal_off; }
+    let T = wg.x * T_STRIDE;
+    for (var s = li; s < 2048u; s += 256u) { tab[T + C_FREQ + s] = 0u; }
     storageBarrier();
     workgroupBarrier();
-    let n = le16(p.coef_off);
+    let n = le16(off);
     for (var i = li; i < n; i += 256u) {
-        let at = p.coef_off + 2u + i * 4u;
-        tab[C_FREQ + le16(at)] = le16(at + 2u);
+        let at = off + 2u + i * 4u;
+        tab[T + C_FREQ + le16(at)] = le16(at + 2u);
     }
     storageBarrier();
     workgroupBarrier();
     var part = 0u;
-    for (var j = 0u; j < 8u; j++) { part += tab[C_FREQ + li * 8u + j]; }
+    for (var j = 0u; j < 8u; j++) { part += tab[T + C_FREQ + li * 8u + j]; }
     wpart[li] = part;
     workgroupBarrier();
     if (li == 0u) {
@@ -90,10 +136,10 @@ fn tables(@builtin(local_invocation_index) li: u32) {
     for (var j = 0u; j < 8u; j++) {
         let s = li * 8u + j;
         wcum[s] = acc;
-        tab[C_CUM + s] = acc;
-        acc += tab[C_FREQ + s];
+        tab[T + C_CUM + s] = acc;
+        acc += tab[T + C_FREQ + s];
     }
-    if (li == 0u) { tab[C_CUM + 2048u] = wcum[2048]; }
+    if (li == 0u) { tab[T + C_CUM + 2048u] = wcum[2048]; }
     workgroupBarrier();
     for (var slot = li; slot < 16384u; slot += 256u) {
         var lo = 0u;
@@ -102,8 +148,8 @@ fn tables(@builtin(local_invocation_index) li: u32) {
             let mid = (lo + hi + 1u) >> 1u;
             if (wcum[mid] <= slot) { lo = mid; } else { hi = mid - 1u; }
         }
-        tab[C_SLOT + 2u * slot] = lo | (tab[C_FREQ + lo] << 11u);
-        tab[C_SLOT + 2u * slot + 1u] = slot - wcum[lo];
+        tab[T + C_SLOT + 2u * slot] = lo | (tab[T + C_FREQ + lo] << 11u);
+        tab[T + C_SLOT + 2u * slot + 1u] = slot - wcum[lo];
     }
 }
 
@@ -116,16 +162,114 @@ fn tile_byte(r: ptr<function, Rans>) -> u32 {
     return byte_at(i);
 }
 
-fn sym(r: ptr<function, Rans>) -> u32 {
+fn sym_in(r: ptr<function, Rans>, T: u32) -> u32 {
     let slot = (*r).x & 16383u;
-    let e = tab[C_SLOT + 2u * slot];
+    let e = tab[T + C_SLOT + 2u * slot];
     let s = e & 2047u;
-    (*r).x = (e >> 11u) * ((*r).x >> 14u) + tab[C_SLOT + 2u * slot + 1u];
+    (*r).x = (e >> 11u) * ((*r).x >> 14u) + tab[T + C_SLOT + 2u * slot + 1u];
     for (var k = 0u; k < 4u; k++) {
         if ((*r).x >= 8388608u) { break; }
         (*r).x = ((*r).x << 8u) | tile_byte(r);
     }
     return s;
+}
+fn sym(r: ptr<function, Rans>) -> u32 { return sym_in(r, 0u); }
+
+fn rans_at(start: u32, end: u32) -> Rans {
+    var r: Rans;
+    r.pos = start + 4u;
+    r.end = end;
+    var x = 0u;
+    for (var i = 0u; i < 4u; i++) {
+        var b = 0u;
+        if (start + i < end) { b = byte_at(start + i); }
+        x = x | (b << (8u * i));
+    }
+    r.x = x;
+    return r;
+}
+
+
+
+// A v2 palette tile's serial part (`dxvkit_plus_core::lmbx::direct_tile`), from its stream 0
+// (`start..end`): the palette index of every pixel into the tile's Y samples. The per-pixel
+// expansion (colour, alpha, chroma) runs in parallel in the `idct` pass (`expand_block`).
+fn palette_indices(t: u32, start: u32, end: u32) {
+    let y0 = (t / p.tiles_x) * TILE * p.cw + (t % p.tiles_x) * TILE;
+    let n = clamp(function_byte(start, end).x, 1u, 16u);
+    var r = rans_at(start + 1u + 4u * n, end);
+    var left = 0u;
+    var col0 = 0u;
+    for (var i = 0u; i < TILE * TILE; i++) {
+        let x = i % TILE;
+        var pred = left;
+        if (x == 0u) { pred = col0; }
+        let idx = (pred + sym_in(&r, T_STRIDE)) % n;
+        left = idx;
+        if (x == 0u) { col0 = idx; }
+        planes[y0 + (i / TILE) * p.cw + x] = i32(idx);
+    }
+}
+
+// Stream `si`'s byte range in the bitstream.
+fn stream_range(si: u32) -> vec2<u32> {
+    let ns = p.nt * (3u + p.alpha);
+    let dir = p.dir_off + 4u + si * 4u;
+    var start = p.data_off + le32(dir);
+    var end = p.plen;
+    if (si + 1u < ns) { end = p.data_off + le32(dir + 4u); }
+    if (p.v2 == 1u) {
+        start = p.data_off + tab[OFFS + si];
+        if (si + 1u < ns) { end = p.data_off + tab[OFFS + si + 1u]; } else { end = p.plen; }
+    }
+    return vec2<u32>(start, end);
+}
+
+// One 8x8 luma block (Y-plane index `o`, picture position `gx, gy`) of a direct tile: its
+// pixels' RGBA8 packed into Y, `4 A` into A, and the forward YCoCg-R chroma (4:2:2: the rounded
+// mean of each column pair, both columns in this block).
+fn expand_block(t: u32, mode: u32, o: u32, gx: u32, gy: u32) {
+    let sr = stream_range(t * (3u + p.alpha));
+    let start = sr.x;
+    let end = sr.y;
+    let ysz = p.cw * p.ch;
+    let csz = p.chw * p.ch;
+    for (var i = 0u; i < 8u; i++) {
+        var pc = vec2<i32>(0, 0);
+        for (var j = 0u; j < 8u; j++) {
+            let at = o + i * p.cw + j;
+            var c = start;
+            if (mode == 2u) { c = start + 1u + 4u * u32(planes[at]); }
+            var v = 0u;
+            for (var k = 0u; k < 4u; k++) { if (c + k < end) { v = v | (byte_at(c + k) << (8u * k)); } }
+            if (p.alpha == 0u) { v = v | 0xff000000u; }
+            planes[at] = i32(v);
+            if (p.alpha == 1u) { planes[ysz + 2u * csz + at] = i32(v >> 24u) * 4; }
+            let r = i32(v & 255u) * 4;
+            let g = i32((v >> 8u) & 255u) * 4;
+            let bl = i32((v >> 16u) & 255u) * 4;
+            let co = r - bl;
+            let cg = g - (bl + (co >> 1u));
+            if (p.chroma == 0u) {
+                let ci = (gy + i) * p.chw + gx + j;
+                planes[ysz + ci] = co;
+                planes[ysz + csz + ci] = cg;
+            } else if ((j & 1u) == 0u) {
+                pc = vec2<i32>(co, cg);
+            } else {
+                let ci = (gy + i) * p.chw + (gx + j) / 2u;
+                planes[ysz + ci] = (pc.x + co + 1) >> 1u;
+                planes[ysz + csz + ci] = (pc.y + cg + 1) >> 1u;
+            }
+        }
+    }
+}
+
+// The first four bytes of a stream (0 past its end).
+fn function_byte(start: u32, end: u32) -> vec4<u32> {
+    var v = vec4<u32>(0u);
+    for (var k = 0u; k < 4u; k++) { if (start + k < end) { v[k] = byte_at(start + k); } }
+    return v;
 }
 
 // Decode one block's coefficients into raster positions of its 8x8 area (base index, stride).
@@ -164,20 +308,15 @@ fn entropy(@builtin(global_invocation_id) gid: vec3<u32>) {
     let k = si % planes_n;
     let tx = t % p.tiles_x;
     let ty = t / p.tiles_x;
-    let dir = p.dir_off + 4u + si * 4u;
-    let start = p.data_off + le32(dir);
-    var end = p.plen;
-    if (si + 1u < p.nt * planes_n) { end = p.data_off + le32(dir + 4u); }
-    var r: Rans;
-    r.pos = start + 4u;
-    r.end = end;
-    var x = 0u;
-    for (var i = 0u; i < 4u; i++) {
-        var b = 0u;
-        if (start + i < end) { b = byte_at(start + i); }
-        x = x | (b << (8u * i));
+    let sr = stream_range(si);
+    let start = sr.x;
+    let end = sr.y;
+    let mode = tile_mode(t);
+    if (mode != 0u) {
+        if (k == 0u && mode == 2u) { palette_indices(t, start, end); }
+        return;
     }
-    r.x = x;
+    var r = rans_at(start, end);
     var dc = 0;
     let ysz = p.cw * p.ch;
     let csz = p.chw * p.ch;
@@ -226,7 +365,16 @@ fn idct(@builtin(global_invocation_id) gid: vec3<u32>) {
         base = p.cw * p.ch + 2u * p.chw * p.ch;
     }
     let bw = stride / 8u;
+    // The block's tile (a chroma tile is TILE * chw / cw samples wide).
+    let ctw = TILE * stride / p.cw;
+    let t = ((b / bw) * 8u / TILE) * p.tiles_x + (b % bw) * 8u / ctw;
     let o = base + (b / bw) * 8u * stride + (b % bw) * 8u;
+    let mode = tile_mode(t);
+    if (mode != 0u) {
+        // A direct tile: its Y-plane blocks expand the pixels (every plane); the rest do nothing.
+        if (base == 0u) { expand_block(t, mode, o, (b % bw) * 8u, (b / bw) * 8u); }
+        return;
+    }
     idct_block(o, stride, offset);
 }
 "#;
@@ -234,8 +382,7 @@ fn idct(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// WGSL of the output pass: 4:2:2 halo / 4:4:4 chroma, inverse YCoCg-R, clamp to `0..=1020`,
 /// 8-bit `(v + 2) >> 2`.
 pub const LMBX_OUT_WGSL: &str = r#"
-@group(0) @binding(0) var<uniform> p: P;
-@group(0) @binding(1) var<storage, read> samples: array<i32>;
+@group(0) @binding(2) var<storage, read> samples: array<i32>;
 
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let q = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
@@ -248,6 +395,10 @@ pub const LMBX_OUT_WGSL: &str = r#"
     let ysz = p.cw * p.ch;
     let csz = p.chw * p.ch;
     let yv = samples[y * p.cw + x];
+    if (tile_mode((y / TILE) * p.tiles_x + x / TILE) != 0u) {
+        let u = u32(yv);
+        return vec4<f32>(f32(u & 255u), f32((u >> 8u) & 255u), f32((u >> 16u) & 255u), f32(u >> 24u)) / 255.0;
+    }
     var co = 0;
     var cg = 0;
     if (p.chroma == 0u) {
@@ -305,7 +456,7 @@ fn idct_wgsl() -> String {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
-    v: [u32; 16],
+    v: [u32; 24],
     qt: [u32; 16],
 }
 
@@ -315,7 +466,9 @@ impl std::fmt::Debug for Params {
     }
 }
 
-const TABLE_WORDS: u64 = 4097 + 2 * 16384;
+/// Two tables (coefficients, palette) of `T_STRIDE` words; the v2 stream offsets follow (one
+/// word per stream).
+const TABLE_WORDS: u64 = 2 * (4097 + 2 * 16384);
 
 fn storage(binding: u32, read_only: bool, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -375,6 +528,14 @@ pub(crate) fn shape(blob: &[u8], width: u32, height: u32) -> Result<LmbxShape, G
         as32(s.directory),
         as32(s.data),
         nblocks,
+        u32::from(h.version >= dxvkit_plus_core::lmbx::VERSION_2),
+        as32(s.modes),
+        as32(s.palette_table),
+        0,
+        0,
+        0,
+        0,
+        0,
     ];
     Ok(LmbxShape {
         params: Params { v, qt: h.qt.map(u32::from) },
@@ -394,7 +555,7 @@ pub(crate) struct LmbxDecoder {
     render_layout: wgpu::BindGroupLayout,
     render: wgpu::RenderPipeline,
     params: wgpu::Buffer,
-    table: wgpu::Buffer,
+    table: Option<wgpu::Buffer>,
     pub(crate) bits: Option<wgpu::Buffer>,
     planes: Option<wgpu::Buffer>,
     /// The frame staged by the last upload.
@@ -411,7 +572,7 @@ impl LmbxDecoder {
         let fs = wgpu::ShaderStages::FRAGMENT;
         let render_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dxvkit-plus-lmbx-out"),
-            entries: &[uniform(0, fs), storage(1, true, fs)],
+            entries: &[uniform(0, fs), storage(1, true, fs), storage(2, true, fs)],
         });
         let module = |label: &str, src: &str| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -425,7 +586,10 @@ impl LmbxDecoder {
             dxvkit_plus_core::lmbx::TILE / 8,
             dxvkit_plus_core::lmbx::QMAP_BYTES
         );
-        let (cm, om) = (module("dxvkit-plus-lmbx", &format!("{geometry}{LMBX_WGSL}{}", idct_wgsl())), module("dxvkit-plus-lmbx-out", LMBX_OUT_WGSL));
+        let (cm, om) = (
+            module("dxvkit-plus-lmbx", &format!("{geometry}{LMBX_BINDINGS_WGSL}{PARAMS_FNS_WGSL}{LMBX_WGSL}{}", idct_wgsl())),
+            module("dxvkit-plus-lmbx-out", &format!("{geometry}{LMBX_BINDINGS_WGSL}{PARAMS_FNS_WGSL}{LMBX_OUT_WGSL}")),
+        );
         let cpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("dxvkit-plus-lmbx"),
             bind_group_layouts: &[Some(&compute_layout)],
@@ -469,19 +633,22 @@ impl LmbxDecoder {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let table = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("dxvkit-plus-lmbx-tables"),
-            size: TABLE_WORDS * 4,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        LmbxDecoder { compute_layout, tables, entropy, idct, render_layout, render, params, table, bits: None, planes: None, pending: None }
+        LmbxDecoder { compute_layout, tables, entropy, idct, render_layout, render, params, table: None, bits: None, planes: None, pending: None }
     }
 
     /// Make sure the bitstream and plane buffers fit `s` (grown, never shrunk), and make `s` the
     /// pending frame.
     pub(crate) fn prepare(&mut self, device: &wgpu::Device, s: LmbxShape) {
         let small = |b: &Option<wgpu::Buffer>, need: u64| b.as_ref().is_none_or(|b| b.size() < need);
+        let table_bytes = (TABLE_WORDS + u64::from(s.streams)) * 4;
+        if small(&self.table, table_bytes) {
+            self.table = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("dxvkit-plus-lmbx-tables"),
+                size: table_bytes.next_power_of_two(),
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }));
+        }
         if small(&self.bits, s.bits_bytes) {
             self.bits = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("dxvkit-plus-lmbx-bits"),
@@ -530,7 +697,7 @@ impl LmbxDecoder {
         timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> Result<(), GpuError> {
         let s = self.pending.ok_or_else(|| GpuError::Invalid("LMBX decode before upload".into()))?;
-        let (Some(bits), Some(planes)) = (&self.bits, &self.planes) else {
+        let (Some(bits), Some(planes), Some(table)) = (&self.bits, &self.planes, &self.table) else {
             return Err(GpuError::Invalid("LMBX buffers not prepared".into()));
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&s.params));
@@ -540,7 +707,7 @@ impl LmbxDecoder {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.params.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: bits.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: table.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: planes.as_entire_binding() },
             ],
         });
@@ -548,7 +715,7 @@ impl LmbxDecoder {
             let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("dxvkit-plus-lmbx"), timestamp_writes: None });
             cp.set_bind_group(0, &bind, &[]);
             cp.set_pipeline(&self.tables);
-            cp.dispatch_workgroups(1, 1, 1);
+            cp.dispatch_workgroups(3, 1, 1);
             cp.set_pipeline(&self.entropy);
             cp.dispatch_workgroups(s.streams.div_ceil(64), 1, 1);
             cp.set_pipeline(&self.idct);
@@ -559,7 +726,8 @@ impl LmbxDecoder {
             layout: &self.render_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.params.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: planes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: bits.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: planes.as_entire_binding() },
             ],
         });
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

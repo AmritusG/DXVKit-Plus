@@ -46,8 +46,9 @@ fn blob(f: &LmbdFile, n: u32) -> Vec<u8> {
 #[test]
 fn conformance_vectors_decode_to_their_hashes() {
     let vs = vectors();
-    assert_eq!(vs.len(), 5);
+    assert_eq!(vs.len(), 9);
     let (mut frames, mut modes, mut alpha) = (0, std::collections::BTreeSet::new(), 0);
+    let (mut versions, mut tile_modes) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     for (path, params, hashes) in &vs {
         let f = LmbdFile::open(path).unwrap();
         let h = f.header().clone();
@@ -57,6 +58,8 @@ fn conformance_vectors_decode_to_their_hashes() {
             let b = blob(&f, n as u32);
             let fr = Frame::parse(&b, h.width, h.height).unwrap();
             modes.insert(fr.header.chroma as u32);
+            versions.insert(fr.header.version);
+            tile_modes.extend((0..fr.header.tile_count()).map(|t| fr.mode(t) as u32));
             alpha += usize::from(fr.header.alpha);
             for parallel in [false, true] {
                 let q = lmbx::decode_rgba_q(&b, h.width, h.height, parallel).unwrap();
@@ -66,7 +69,8 @@ fn conformance_vectors_decode_to_their_hashes() {
             frames += 1;
         }
     }
-    assert!(frames == 12 && modes.len() == 2 && alpha == 10, "{frames} frames, modes {modes:?}, {alpha} alpha frames");
+    assert!(frames == 20 && modes.len() == 2 && alpha == 14, "{frames} frames, modes {modes:?}, {alpha} alpha frames");
+    assert_eq!((versions.len(), tile_modes.len()), (2, 3), "bitstream versions {versions:?}, tile modes {tile_modes:?}");
 }
 
 /// Through `source`: probe names the profile, frames come out as one bitstream plane with
@@ -86,7 +90,7 @@ fn vectors_through_source() {
             let rgba = d.to_rgba().unwrap();
             let q = lmbx::decode_rgba_q(&planes[0].data, info.width, info.height, false).unwrap();
             assert_eq!(rgba, q.iter().map(|&v| lmbx::to_8bit(v)).collect::<Vec<u8>>());
-            if params.contains("tiles") || params.contains("plasma") {
+            if (params.contains("tiles") || params.contains("plasma")) && !params.contains("modes=") {
                 assert_eq!(dxvkit_plus_core::testpattern::read_frame_id(&rgba, info.width, info.height), Some(n), "{params} frame {n}");
             }
         }
@@ -97,7 +101,12 @@ fn vectors_through_source() {
 /// tile's samples (every plane).
 #[test]
 fn tiles_are_independent() {
-    let (path, _, _) = &vectors()[0];
+    for (path, _, _) in vectors().iter().filter(|v| v.0.to_str().unwrap().contains("plasma_alpha_422") || v.0.to_str().unwrap().contains("mixed")) {
+        tile_independence(path);
+    }
+}
+
+fn tile_independence(path: &std::path::Path) {
     let f = LmbdFile::open(path).unwrap();
     let h = f.header().clone();
     let good = blob(&f, 0);
@@ -156,6 +165,28 @@ fn hostile_tile_data_is_deterministic() {
         *x = (state >> 56) as u8;
     }
     assert_eq!(lmbx::decode_rgba_q(&r, h.width, h.height, true).unwrap(), lmbx::decode_rgba_q(&r, h.width, h.height, false).unwrap());
+    // v2: every tile given a random (valid) mode over random data, and every stream empty.
+    let (path, _, _) = vectors().into_iter().find(|v| v.0.to_str().unwrap().contains("mixed")).unwrap();
+    let f = LmbdFile::open(&path).unwrap();
+    let h = f.header().clone();
+    let good = blob(&f, 0);
+    let fr = Frame::parse(&good, h.width, h.height).unwrap();
+    let mut r = good.clone();
+    for t in 0..fr.header.tile_count() as usize {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        r[fr.sections.modes + t] = ((state >> 60) % 3) as u8;
+    }
+    for x in r[fr.sections.data..].iter_mut() {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *x = (state >> 56) as u8;
+    }
+    assert_eq!(lmbx::decode_rgba_q(&r, h.width, h.height, true).unwrap(), lmbx::decode_rgba_q(&r, h.width, h.height, false).unwrap());
+    let mut e = r[..fr.sections.data].to_vec();
+    for t in 0..fr.offsets.len() {
+        let at = fr.sections.directory + 4 + t * 4;
+        e[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+    }
+    assert_eq!(lmbx::decode_rgba_q(&e, h.width, h.height, true).unwrap(), lmbx::decode_rgba_q(&e, h.width, h.height, false).unwrap());
 }
 
 /// What must be refused: the never-frozen prototype (container texture format 0x10, bitstream
@@ -181,7 +212,7 @@ fn refusals() {
     p[..4].copy_from_slice(b"LMXS");
     assert!(matches!(parse(&p), Some(MediaError::Unsupported(_))), "prototype bitstream");
     let mut v = good.clone();
-    v[4] = 2;
+    v[4] = 3;
     assert!(matches!(parse(&v), Some(MediaError::Unsupported(_))), "future version");
     for (at, val, what) in [(6usize, 2u8, "chroma"), (7, 2, "flags"), (8, 0, "width"), (18, 1, "reserved"), (20, 0, "q step 0")] {
         let mut c = good.clone();
@@ -208,4 +239,19 @@ fn refusals() {
     }
     assert!(parse(&good[..40]).is_some(), "truncated");
     let _ = Chroma::Halo422;
+    // v2: an unknown tile mode; stream lengths running past the data.
+    let (path, _, _) = vectors().into_iter().find(|v| v.0.to_str().unwrap().contains("mixed")).unwrap();
+    let f = LmbdFile::open(&path).unwrap();
+    let h = f.header().clone();
+    let good = blob(&f, 0);
+    let parse = |b: &[u8]| Frame::parse(b, h.width, h.height).err();
+    assert!(parse(&good).is_none());
+    let fr = Frame::parse(&good, h.width, h.height).unwrap();
+    let mut m = good.clone();
+    m[fr.sections.modes] = 3;
+    assert!(matches!(parse(&m), Some(MediaError::Lmbd(_))), "tile mode 3");
+    let mut l = good.clone();
+    let at = fr.sections.directory + 4;
+    l[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(parse(&l), Some(MediaError::Lmbd(_))), "stream length past the data");
 }

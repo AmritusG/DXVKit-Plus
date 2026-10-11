@@ -194,7 +194,9 @@ coding. Every plane of every 32x32 tile is an independent stream, so a GPU decod
 streams at once. Every step below is integer arithmetic with one defined result for every input
 that passes validation, so every conforming decoder — CPU, GPU, anyone's — produces identical
 samples. Decisions: LMBX-D1 (integer inverse transform, so outputs are bit-identical, not "within 1
-code value") and LMBX-D2 (two signalled chroma modes, 4:2:2 with halo and 4:4:4).
+code value"), LMBX-D2 (two signalled chroma modes, 4:2:2 with halo and 4:4:4) and LMBX-D3 (bitstream
+version 2, 0.6.0: per-tile **modes** — DCT, flat, palette — signalled in a tile mode map, and a
+directory of stream lengths; version 1, 0.5.0, is frozen and still decoded).
 
 ### 11.1 In the container
 
@@ -202,9 +204,10 @@ Header: profile `0x10`, texture format `0x11`; width, height, frame rate, frame 
 §2; colorspace `0` (the samples are sRGB-encoded code values). A frame payload is as in §4 except
 that chunk raw sizes are **not** block-aligned: the chunks' raw data, concatenated in table order,
 is the frame's **LMBX bitstream** (§11.2), whose total size must be 1 ..= `16 * cw * ch + 2^20`
-bytes (`cw`, `ch` the coded size, §11.2). Writers store one uncompressed chunk per frame (the
-bitstream is entropy-coded already); readers accept any chunking and compressor. Every LMBX frame
-is intra (keyframe 1).
+bytes (`cw`, `ch` the coded size, §11.2). Writers store one chunk per frame — since 0.6.0
+Zstandard-compressed when that is smaller (it is on most real frames: 7-28% on real footage, 75-80%
+on graphics, mostly the quantiser map, the directory and repeated tiles), uncompressed otherwise;
+readers accept any chunking and compressor. Every LMBX frame is intra (keyframe 1).
 
 ### 11.2 Frame bitstream
 
@@ -213,7 +216,7 @@ All integers little-endian.
 | Offset | Size | Field | Value |
 |---|---|---|---|
 | 0 | 4 | magic | `L` `M` `B` `X` |
-| 4 | 2 | version | `1` (a bitstream starting `LMXS` is the prototype: refuse) |
+| 4 | 2 | version | `1` or `2` (a bitstream starting `LMXS` is the prototype: refuse) |
 | 6 | 1 | chroma | `0` = 4:4:4, `1` = 4:2:2 halo |
 | 7 | 1 | flags | bit 0: an alpha plane is coded; other bits 0 |
 | 8 | 4 | width | equals the container's width |
@@ -221,10 +224,12 @@ All integers little-endian.
 | 16 | 2 | chroma ratio | `cr`, 1 ..= 65535, in 1/256 |
 | 18 | 2 | reserved | 0 |
 | 20 | 32 | quantiser steps | `QT[0..16]`, u16 each, 1 ..= 4095 |
-| 52 | … | frequency table | §11.3 |
+| 52 | … | frequency table | §11.3 (coefficients: 2048 symbols) |
+| … | … | palette table | **v2 only**: §11.3 with 16 symbols (palette indices, §11.6) |
+| … | `T` | tile mode map | **v2 only**: one byte per tile, raster: `0` DCT, `1` flat, `2` palette (§11.6) |
 | … | `8 * T` | quantiser map | §11.4 |
 | … | 4 | stream count | `S = T * P` |
-| … | `4 * S` | stream offsets | `off[0..S]`, relative to the data start; `off[0] = 0`, non-decreasing, each <= the data length |
+| … | `4 * S` | stream directory | **v1**: offsets `off[0..S]`, relative to the data start; `off[0] = 0`, non-decreasing, each <= the data length. **v2**: lengths `len[0..S]`; `off[i]` = the sum of `len[0..i]`, and the sum of all lengths must not exceed the data length |
 | … | … | data | the streams; stream `i` is bytes `off[i] .. off[i+1]` (the last ends at the bitstream's end) |
 
 Geometry: tiles are 32x32. `tx = ceil(width / 32)`, `ty = ceil(height / 32)`, `T = tx * ty`
@@ -235,10 +240,11 @@ tile `t`.
 
 ### 11.3 Frequency table (rANS)
 
-`u16 n` (1 ..= 2048), then `n` entries of (`u16 symbol`, `u16 freq`): symbols strictly increasing,
-each < 2048, every freq >= 1, the freqs adding up to exactly 16384. Absent symbols have frequency 0.
-`cum[s]` = the sum of the frequencies of all symbols below `s`. Symbol meaning: `s < 2047` is a
-coefficient level `s - 1023`; `2047` ends a block (EOB). One table serves every stream of the frame.
+`u16 n` (1 ..= the alphabet size), then `n` entries of (`u16 symbol`, `u16 freq`): symbols strictly
+increasing, each < the alphabet size (2048 for coefficients, 16 for palette indices), every freq >= 1,
+the freqs adding up to exactly 16384. Absent symbols have frequency 0. `cum[s]` = the sum of the
+frequencies of all symbols below `s`. Coefficient symbols: `s < 2047` is a coefficient level
+`s - 1023`; `2047` ends a block (EOB). One table of each kind serves every stream of the frame.
 
 ### 11.4 Quantiser map
 
@@ -283,7 +289,26 @@ ends before its first
 coefficient (an immediate EOB), `D[0] = dc`. Either way `dc` becomes `D[0]`. (Measured: 6-28%
 fewer bytes at equal quality — flat runs cost only their end-of-block.)
 
-### 11.6 Integer inverse DCT
+### 11.6 Tile modes (v2)
+
+A v1 frame's tiles are all DCT tiles. In v2 the mode map gives each tile's mode. A **DCT** tile is
+decoded as in §11.5 and §11.7. A **direct** tile (flat or palette) is 32x32 RGBA8 pixels read from
+its stream 0 alone (its other streams and its quantiser map are ignored; writers leave them empty
+and zero). Bytes past the stream's end read as 0:
+
+- **Flat** (`1`): bytes 0..4 are R, G, B, A; every pixel is that colour.
+- **Palette** (`2`): byte 0 is `n` (read 0 as 1, above 16 as 16), then `n` colours of 4 bytes (R, G,
+  B, A), then a rANS stream (§11.5, with the palette table) of 1024 symbols for the pixels in raster
+  order: index = `(pred + s) mod n`, `pred` = the left pixel's index (at column 0 the index of the
+  pixel above, at the tile's first pixel 0); the pixel is colour `index`.
+
+Without an alpha plane every direct pixel's alpha is 255. A direct tile writes into the sample
+planes (so the 4:2:2 halo of a DCT neighbour reads defined values): Y = the pixel's RGBA8 packed as
+`R | G << 8 | B << 16 | A << 24` (as a signed 32-bit integer), A = `4 * A`, and Co and Cg the
+forward YCoCg-R of `4R, 4G, 4B` (`Co = 4R - 4B`, `t = 4B + (Co >> 1)`, `Cg = 4G - t`), for 4:2:2
+the rounded mean `(c[2x] + c[2x+1] + 1) >> 1` of each column pair.
+
+### 11.7 Integer inverse DCT
 
 With the integer basis `M[k][n]` (frequency `k`, sample `n`) — `1448` for `k = 0`, otherwise
 `round(2048 cos((2n + 1) k pi / 16))` — that is:
@@ -309,12 +334,13 @@ out[i][j] = ((sum over l of t[i][l] * M[l][j] + 2048) >> 12) + offset
 `>>` is an arithmetic shift (rounds towards minus infinity); `offset` is 512 for Y and A, 0 for Co
 and Cg. Every value fits a signed 32-bit integer: `|D| <= 4095` and `|M| <= 2009` give
 `|first sum| <= 8 * 2009 * 4095 < 2^26`, `|t| <= 65520`, `|second sum| <= 8 * 65520 * 2009 < 2^31`.
-The block's samples go to its 8x8 area of the plane (the tile's position plus the block's).
+The block's samples go to its 8x8 area of the plane (the tile's position plus the block's). Only
+DCT tiles' blocks are transformed.
 
-### 11.7 Output
+### 11.8 Output
 
 For each picture pixel `(x, y)` (the top-left `width x height` of the coded planes), in quarter
-code values:
+code values: in a direct tile (v2), `R, G, B, A = 4 *` the pixel's RGBA8 (§11.6); otherwise
 
 ```
 Y  = Y plane at (x, y)
@@ -330,21 +356,24 @@ R, G, B, A each clamped to 0 ..= 1020
 This RGBA (straight alpha, sRGB-encoded) in quarter code values is the **normative output**.
 8-bit: `(v + 2) >> 2`. 10-bit: `(v * 1023 + 510) / 1020`.
 
-### 11.8 Validation
+### 11.9 Validation
 
 Reject a frame whose magic, version, chroma, flags, size, reserved bytes, quantiser steps, frequency
-table, stream count or offsets break the rules above. Nothing else is an error: stream contents are
+tables, tile modes (v2: 0 ..= 2), stream count or directory break the rules above. Nothing else is an error: stream contents are
 defined for every byte pattern (§11.5), so a decoder needs no per-stream checks.
 
-### 11.9 Conformance vectors
+### 11.10 Conformance vectors
 
-`tests/fixtures/lmbx_*.lmbd` (CC0, `scripts/mint-lmbx-vectors.sh`): both chroma modes, with and
-without alpha, quality 4 to 48, sizes 200x130, 333x141 and 97x61 (none a multiple of 32). Each
+`tests/fixtures/lmbx_*.lmbd` (CC0, `scripts/mint-lmbx-vectors.sh`). Version 1: both chroma modes,
+with and without alpha, quality 4 to 48, sizes 200x130, 333x141 and 97x61 (none a multiple of 32).
+Version 2 (`lmbx_v2_*`): graphics cards (with and without alpha, 333x185) whose frames mix DCT, flat
+and palette tiles (exact and lossy palettes; 4:2:2 at quality 400, so DCT tiles border direct ones
+through the halo), and a plasma with alpha (DCT tiles, the length directory). Each
 sidecar holds every frame's SHA-256 of the normative output (`width * height * 4` u16 little-endian,
 rows top first). Any conforming decoder must reproduce them; DXVKit Plus's CPU decoder
 (`dxvkit_plus_core::lmbx`) and its GPU compute decoder (`dxvkit-plus-wgpu`) both do.
 
-### 11.10 The reference encoder (informative)
+### 11.11 The reference encoder (informative)
 
 `dxvkit_plus_lmbd_enc::lmbx` (from Amrit's B1d prototype): RGBA to YCoCg-R in integers
 (`Co = R - B`, `t = B + (Co >> 1)`, `Cg = G - t`, `Y = t + (Cg >> 1)`), edge-replicated to the coded
@@ -356,9 +385,32 @@ end-of-block trellis; DC and the two lowest AC terms are never deadzoned or drop
 Chroma ratio 1.0 (4:2:2) or 1.6 (4:4:4); the default mode is 4:4:4, chosen by measurement on real
 footage (W5). The DC residual is quantised against the decoder's
 reconstructed DC. Rate control: the best quality whose frame fits a byte budget (bisection on
-`base`).
+`base`; the budget counts the stored, possibly Zstandard-compressed size).
 
-### 11.11 Why 32x32 tiles with a stream per plane (informative)
+Version 2 (the default since 0.6.0; `--modes dct` writes v1): per tile, a rate-distortion choice
+between the DCT coding and the direct modes, `J = D + lambda * bits` with `lambda = 0.25 * mean(q^2)`
+over the tile's blocks, `D` the squared error approximately in RGB terms (DCT: `3 eY^2 + eCo^2 / 2 +
+3 eCg^2 / 4`, from the quantised coefficients), `bits` from the frame's own tables (a 32-bit state
+per stream). Candidates: flat (the tile's mean colour), the exact palette when the tile has at most
+16 colours, and lossy palettes — the 2, 4, 8 and 16 most frequent colours refined by two Lloyd
+iterations, each pixel mapped to the nearest (RGBA squared distance). The coefficient and palette
+tables are built from the tiles that use them.
+
+### 11.12 What version 2 measured (informative)
+
+W6 (`docs/data/w6-lmbx-v2-ab.txt`; every arm at LMB7's bytes per frame, Zstandard where the arm uses
+it). Kept: Zstandard frames (every content, e.g. +1.8 dB on real alpha, graphics floor 25 KB to 8 KB);
+flat and palette tiles (graphics 27.8 dB to 38.4 dB at 5.8 KB; real alpha +0.8 dB shown); lossy
+palettes (graphics +2 dB, noise-like detail +2.8 dB); 16 palette colours (better than 8 or 4); the
+length directory (12% of a graphics frame). Built, measured and removed: premultiplied-colour coding
+(−2.4 dB shown on real alpha: the 8-bit straight output undoes its gain), an alpha quantiser ratio
+(0.5, 0.75, 1.25, 2 — none beat 1 on real alpha), alpha-aware colour fill and visibility-weighted RDO
+(−0.4 to −0.8 dB shown on real alpha), alpha-weighted direct-mode distortion (+4 dB on an alpha
+graphics card, −3.7 dB shown on real alpha), lossless (MED-predicted) tiles (at most ±0.1 dB once
+palettes exist), copy tiles (7 bytes: Zstandard already removes repeated tiles), 4:2:2 as the
+default (4:4:4 better on both real clips; 4:2:2 wins only on synthetic grain, +0.2 dB).
+
+### 11.13 Why 32x32 tiles with a stream per plane (informative)
 
 Measured on the Mac Studio (`docs/data/w5-lmbx-tile-ab.txt`): at the same picture, 32x32 tiles
 cost 3.5% more bytes than 64x64 tiles but decode 2.2-2.4x faster on the GPU (16 layers of 1080p:

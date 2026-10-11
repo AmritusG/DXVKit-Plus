@@ -74,17 +74,21 @@ size), on worker threads when asked. The block stream uploads unchanged into a B
 (`LmbdTexture` adds an sRGB view). The format is in `docs/LMBD.md`.
 
 **LMBX** (LMBD profile `0x10`, `core::lmbx`, spec in `docs/LMBD.md` §11). The container is LMBD's;
-a frame's chunks hold its LMBX bitstream. The source validates the bitstream's header, table and
-stream directory on the CPU and hands the bytes over unchanged as one `PixelFormat::LmbxBitstream`
-plane (`Shading::Lmbx`); nothing else happens on the CPU. `FrameRenderer` uploads the bytes into a
-storage buffer (`write_buffer`, or through the staging belt) and decodes them with compute passes:
-`tables` (expand the rANS table, one workgroup), `entropy` (one invocation per stream = per plane of
-each 32x32 tile: rANS, dequantise, write coefficients in place), `idct` (one invocation per 8x8
-block: the integer inverse DCT as generated straight-line WGSL), then a fragment pass (4:2:2 halo or
-4:4:4 chroma, inverse YCoCg-R, 8-bit output). The arithmetic is the reference decoder's, so GPU and
+a frame's chunks hold its LMBX bitstream (Zstandard-compressed when smaller, 0.6.0). The source
+validates the bitstream's header, tables, tile mode map (v2) and stream directory on the CPU and
+hands the bytes over unchanged as one `PixelFormat::LmbxBitstream` plane (`Shading::Lmbx`); nothing
+else happens on the CPU. `FrameRenderer` uploads the bytes into a storage buffer (`write_buffer`,
+or through the staging belt) and decodes them with compute passes: `tables` (a workgroup per rANS
+table — coefficients, and in v2 palette indices — plus, in v2, one that turns the directory's
+stream lengths into offsets), `entropy` (one invocation per stream = per plane of each 32x32 tile:
+rANS, dequantise, write coefficients in place; a v2 flat or palette tile is decoded whole by its
+stream-0 invocation into the same sample planes), `idct` (one invocation per 8x8 block of a DCT
+tile: the integer inverse DCT as generated straight-line WGSL), then a fragment pass (4:2:2 halo or
+4:4:4 chroma, inverse YCoCg-R, direct tiles' RGBA8, 8-bit output). The arithmetic is the reference decoder's, so GPU and
 CPU agree bit for bit on every frame, hostile ones included. LMBX frames vary in size, so they have
 no fixed `FrameSource::layout` (no decode-into-staging, no direct view). The encoder is
-`lmbd_enc::lmbx` (B1d's RDOQ, with rate control).
+`lmbd_enc::lmbx` (B1d's RDOQ, with rate control; v2 adds a rate-distortion choice per tile between
+the DCT and flat or palette coding, lossy palettes included).
 
 *Zstd backend.* One private function, `lmbd::zstd_decompress(data, out) -> bytes written`, sits
 behind two core features. `zstd-c` (default) calls libzstd's `ZSTD_decompressDCtx` through the
@@ -157,8 +161,8 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | LMBD encoder vs the original encoder | byte-identical files (five vectors; 1080p frames checked by hand) | `lmbd-enc/tests/encoder_identity.rs` |
-| LMBX reference decoder vs the conformance vectors | every frame's normative output hashes to its sidecar (both chroma modes, alpha, odd sizes) | `core/tests/lmbx.rs` |
-| LMBX GPU vs CPU | bit-exact: every vector frame (`write_buffer` and staged uploads) and hostile frames (random, empty, swapped streams) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| LMBX reference decoder vs the conformance vectors | every frame's normative output hashes to its sidecar (bitstreams v1 and v2, every tile mode, both chroma modes, alpha, odd sizes) | `core/tests/lmbx.rs` |
+| LMBX GPU vs CPU | bit-exact: every vector frame (`write_buffer` and staged uploads) and hostile frames (random, empty, swapped streams; v2: random tile modes) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | LMBX encoder | deterministic: the vectors re-encode byte for byte at 1, 3 and 8 threads | `lmbd-enc/tests/lmbx_identity.rs` |
 | Native BGRA (ProRes 4444) zero-copy vs Apple's own CPU read-back | bit-exact | `apple/tests/native.rs` |
 | Native 4:2:0 WGSL conversion vs Apple's conversion | tile interiors mean ≤ 1/255; whole frame no further from the source than Apple's | same |
