@@ -1,0 +1,1 @@
+fuzz: 600 s, 8 threads, corpus 5 (hap frames 0, files 0, lmbd 5), execs 110657369 (184426/s), crashes 0, hangs 0, slowest input 166.8 ms (LMBD target: decode_frame + decode_frame_into through a contract-checking sink, compared; zstd backend: libzstd, default features)

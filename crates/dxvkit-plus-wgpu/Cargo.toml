@@ -1,6 +1,6 @@
 [package]
 name = "dxvkit-plus-wgpu"
-description = "DXVKit Plus on wgpu 30: BC block uploads straight into BC textures, and WGSL conversion (HAP Q scaled YCoCg, alpha-only, HDR, 4:2:0 YCbCr) into RGBA."
+description = "DXVKit Plus on wgpu 30: BC block uploads straight into BC textures through persistent staging (pipelined, or decoded straight into GPU-visible memory), direct sampling of plain-BC frames, and WGSL conversion (HAP Q scaled YCoCg, alpha-only, HDR, 4:2:0 YCbCr) into RGBA."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -9,6 +9,11 @@
 //!   2020, video or full range) for native frames imported by a platform crate.
 //! - [`FrameRenderer`] keeps the upload textures and the output across frames (a steady clip
 //!   reallocates nothing).
+//! - **Many layers** ([`Uploader`]): frames go up through persistent staging memory
+//!   ([`FrameRenderer::upload_staged`]) or are decoded straight into it ([`Uploader::stage`] →
+//!   [`StagedFrame`] → [`FrameRenderer::upload_from_stage`]); every layer shares one submission and
+//!   at most `depth` submissions are in flight. Plain-BC frames can be sampled as they are
+//!   ([`FrameRenderer::direct_view`]), skipping the conversion pass.
 //! - **LMBD** ([`LmbdTexture`]): an LMB7 frame's BC7 blocks upload as they are and the GPU decodes
 //!   them in hardware when it samples — bit-exact with the CPU decoder; an sRGB view gives linear
 //!   light for files whose colorspace is sRGB.
@@ -56,6 +61,19 @@ impl fmt::Display for GpuError {
 }
 
 impl std::error::Error for GpuError {}
+
+impl GpuError {
+    /// A stable numeric code for the C ABI (pinned by `tests/abi.rs`; new variants append).
+    pub fn code(&self) -> u32 {
+        match self {
+            GpuError::NoAdapter(_) => 1,
+            GpuError::Device(_) => 2,
+            GpuError::Invalid(_) => 3,
+            GpuError::Unsupported(_) => 4,
+            GpuError::Readback(_) => 5,
+        }
+    }
+}
 
 /// One device + queue.
 #[derive(Clone, Debug)]

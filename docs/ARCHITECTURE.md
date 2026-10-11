@@ -29,7 +29,7 @@
 |---|---|---|---|
 | `dxvkit-plus-core` | forbidden | none | demux, HAP, the LMBD container, CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
 | `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoder (4-mode BC7 + RDO, Zstd); links libzstd through the `zstd` crate |
-| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, the WGSL conversion, read-back, `LmbdTexture` |
+| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, staged uploads (`Uploader`, `StagedFrame`), the WGSL conversion and direct sampling (`DirectView`), read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
 | `dxvkit-plus-cli` | forbidden | wgpu | the `dxvkit-plus` command |
 
@@ -126,6 +126,48 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | Native 4:2:0 WGSL conversion vs Apple's conversion | tile interiors mean ≤ 1/255; whole frame no further from the source than Apple's | same |
 | Frame identity + seek | every frame carries its index; shuffled seeks equal sequential decodes | `apple/tests/native.rs`, `dxvkit-plus verify` |
 
+## Upload paths (0.3.0)
+
+Measured first (W3, `docs/data/w3-*`): on wgpu 30's Metal backend, `Queue::write_texture` creates a
+new `MAP_WRITE | COPY_SRC` staging `MTLBuffer` (shared storage, write-combined) for every call
+(wgpu-core `StagingBuffer::new`), copies the bytes in, and records a blit into the texture (BC
+textures are always `Private`) on an internal command buffer submitted before the next submission.
+For 16 1080p BC7 frames that is 3.45 ms of CPU, of which a plain copy into an already-mapped buffer
+is 0.62; the allocation is the rest. The GPU side was never the limit (1.2-1.7 ms of GPU work per
+16-layer step, the GPU otherwise idle while the CPU staged). So:
+
+- **Persistent staging.** `FrameRenderer::upload_staged` copies a frame's planes into a
+  `wgpu::util::StagingBelt` (mapped chunks reused across frames, remapped once the GPU is done) and
+  records `copy_buffer_to_texture` into the caller's encoder; rows are padded to wgpu's 256-byte
+  copy pitch only when needed (1080p and 4K BC rows never are). `FrameRenderer::upload` +
+  `encode_convert` split `render` so many layers share one submission. Batching alone measured worse
+  (the GPU work all moves to the end of the step) and only ships with the belt.
+- **Pipelining.** `Uploader` owns the belt and the submissions in flight: `submit` finishes the
+  belt, submits, recalls it and blocks only while more than `depth` (2) submissions are running —
+  a wait on one submission index, never `wait_idle`. Decoding the next step overlaps the GPU's work
+  on this one; textures need no double-buffering because wgpu orders a later copy into a texture
+  after the earlier passes that sample it on the same queue. Depth 3 measured no better than 2 and
+  adds latency.
+- **Decode into staging.** `FrameSource::layout` gives a block source's fixed frame shape (LMBD;
+  HAP by FourCC — HAP HDR excluded, its signedness is per frame) and `FrameSource::decode_into`
+  writes a frame into any `PlaneSink`. `Uploader::stage` reserves a `StagedFrame` (mapped staging
+  per plane, `Send`) that is a `PlaneSink`; LMBD streams it chunk by chunk through a reused,
+  cache-sized buffer, other sources decode and write whole planes. wgpu exposes mapped memory only
+  as `WriteOnly` (it may be write-combining; an LZ decoder must not read back from it), which is why
+  the chunks decompress into a small buffer first. `upload_from_stage` records the copies; `submit`
+  refuses while a staged frame is still open (unmapping under a live view would panic inside wgpu).
+  The main thread no longer copies anything; latency drops by half or more, throughput is lower than
+  decode-ahead because staging cannot run ahead of the belt.
+- **Direct sampling.** `FrameRenderer::direct_view` returns the uploaded block texture for frames
+  that sample as stored (LMB7, HAP R BC7, HAP RGBA BC3, HAP RGB BC1 with `opaque`): sampling it gives
+  the conversion pass's output exactly (alpha taken as 1 when `opaque`, since BC1's punch-through
+  texels read as alpha 0), so a compositor can skip the pass; it doubled 16-layer throughput.
+- **Ruled out, with evidence.** Zero-copy into the texture: Metal's buffer-backed (linear) textures
+  do not accept compressed pixel formats. Shared-storage BC7 textures filled with `replaceRegion`
+  (accepted on Apple silicon): 1.78 ms of CPU for 16 frames against 0.54 ms for the staging copy —
+  the driver lays the blocks out for the GPU on the CPU — to save a 0.3 ms GPU blit, and it cannot
+  take `decode_into`. No unsafe was added; the native path is unchanged (0 copies, 0 blits).
+
 ## Transport and cache
 
 `transport::Transport` holds the playhead as an exact integer `Tick` (254 016 000 000 per second,
@@ -145,6 +187,9 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
 | `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
 | `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
+| `Uploader`, `StagedFrame` | opaque handles; `decode_into` takes a source handle + a `StagedFrame` handle (the `PlaneSink` is implemented on the Rust side — no C callback) |
+| `source::FrameLayout`, `PlaneLayout`, `DirectView` | plain-data `#[repr(C)]` mirrors (`DirectView`'s view as a borrowed handle, valid until the next upload) |
+| `GpuError` | `GpuError::code()` (stable `u32`, pinned by `wgpu/tests/abi.rs`) + the message through a separate call |
 | `lmbd::Header`, `IndexEntry`, `ChunkEntry` | plain-data `#[repr(C)]` mirrors |
 | `lmbd_enc::EncodeParams` (`Bc7Params`, `RdoParams`) | a plain-data `#[repr(C)]` mirror (numbers and bools); encoding maps to `encode_frame` (RGBA8 buffer in, payload out) + `Writer::push_payload` / `finish` — no callbacks (`encode_frames` is a Rust convenience over those) |
 | `PixelLayout`, `Shading` (enums with a field) | a `u32` tag + the field |

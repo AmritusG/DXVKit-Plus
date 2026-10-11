@@ -1,0 +1,18 @@
+W3 upload microbenchmarks, Mac Studio (M4 Max), release, 16 x 1920x1080 BC7 frames (2,073,600 B each) per step, median of 40.
+Scratch programs (not committed): wgpu 30.0.1 and objc2-metal 0.3.2, same machine, Resolume Arena running.
+
+wgpu, per step:
+(a) Queue::write_texture x16                             CPU 3.45 ms   (+ submit + wait 4.36 ms)
+(b) fresh MAP_WRITE|COPY_SRC buffer + memcpy + unmap x16  CPU 3.42 ms   (what write_texture does inside: wgpu-core StagingBuffer::new per call)
+(c) persistent mapped buffers, memcpy x16                CPU 0.62 ms   (+ copy_buffer_to_texture + one submit + wait + remap 1.09 ms)
+(d) memcpy into warm Vecs                                CPU 0.57 ms
+(e) clone into fresh Vecs                                CPU 0.60 ms
+
+Metal directly (objc2-metal), per step:
+BC7_RGBAUnorm texture, MTLStorageModeShared: created (accepted on Apple silicon); MTLStorageModePrivate: created
+replaceRegion into 16 shared BC7 textures                CPU 1.78 ms   (the driver lays the blocks out for the GPU on the CPU)
+memcpy into 16 shared write-combined MTLBuffers          CPU 0.54 ms
+=> shared-storage BC7 + replaceRegion costs 3.3x the CPU of the staging memcpy and only saves the GPU blit
+   (0.3 ms of GPU per step after W3); it cannot take decode-into. Ruled out; no unsafe added.
+=> MTLBuffer.makeTexture(descriptor:offset:bytesPerRow:) (zero-copy linear textures) does not accept
+   compressed pixel formats (Apple docs), so BC7 cannot alias decoder memory.
