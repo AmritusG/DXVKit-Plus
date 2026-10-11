@@ -1,0 +1,200 @@
+# DXVKit Plus
+
+**Rust video for VJs: DXV, HAP, native OS codecs and the LMBD GPU codec, zero-copy into wgpu.**
+
+DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (HAP) decompressed to
+blocks and uploaded straight into BC textures, platform codecs (H.264, HEVC, ProRes, MJPEG)
+decoded by the operating system's hardware decoder and imported into the GPU without a copy, a
+QuickTime demuxer that reads the timecode track, and a frame-exact transport (loop, bounce,
+reverse, any speed, seek, step, beat and timecode sync). Pure Rust where it can be, MIT-licensed,
+no FFmpeg, GStreamer or libmpv.
+
+> DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
+> Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
+
+This is release **0.1.0**. DXV decoding and the LMBD codec are on the [roadmap](#roadmap), not in
+this release: the tagline describes where the project is going.
+
+## Codec support
+
+| Format | Decode | Output | Notes |
+|---|---|---|---|
+| HAP (`Hap1`) | ✅ pure Rust | BC1 blocks | Snappy and chunked frames (chunks decompress in parallel) |
+| HAP Alpha (`Hap5`) | ✅ pure Rust | BC3 blocks | |
+| HAP Q (`HapY`) | ✅ pure Rust | BC3 scaled YCoCg → RGB in WGSL | |
+| HAP Q Alpha (`HapM`) | ✅ pure Rust | BC3 YCoCg + BC4 alpha | |
+| HAP Alpha-Only (`HapA`) | ✅ pure Rust | BC4 | |
+| HAP R (`Hap7`) | ✅ pure Rust | BC7 blocks | CPU BC7 decoder bit-exact with the GPU |
+| HAP HDR (`HapH`) | ✅ pure Rust | BC6H blocks (unsigned and signed) | GPU only (no CPU BC6H decoder) |
+| H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020 |
+| ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
+| MJPEG | ✅ macOS | BGRA, zero-copy | |
+| DXV (`DXD3` / `DXDI`) | 🔜 probed, not decoded | — | roadmap |
+| LMBD (own BC7 + RDO + Zstd codec) | 🔜 | — | roadmap |
+| Native codecs on Windows | 🔜 `Backend` stub | — | Media Foundation + DX12 import, designed |
+| PNG stills / sequences | ✅ | RGBA8 | |
+
+Every decode path is frame-accurate: frame `n` is exactly frame `n`, also after seeks (tested on
+every frame of every fixture), and every error is a value — hostile files never panic (fuzzed).
+
+## Crates
+
+| Crate | What |
+|---|---|
+| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. |
+| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30. |
+| [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
+| [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
+
+## Quick start
+
+Not on crates.io yet; depend on the git repository:
+
+```toml
+[dependencies]
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" } # macOS
+```
+
+```rust
+use dxvkit_plus_core::source::{self, Decoded, ImportOptions};
+use dxvkit_plus_wgpu::{FrameRenderer, Gpu};
+use std::sync::Arc;
+
+let opts = ImportOptions { backend: Some(Arc::new(dxvkit_plus_apple::AppleBackend)), ..Default::default() };
+let info = source::probe("clip.mov", &opts)?;           // codec, size, frames, exact rate, timecode
+let mut clip = source::open(&info, &opts, true)?;
+let gpu = Gpu::headless()?;
+let mut renderer = FrameRenderer::new(&gpu.device);
+let importer = dxvkit_plus_apple::surface::TextureCacheImporter::new(&gpu.device)?; // macOS, once per device
+match clip.decode(42)? {
+    d @ Decoded::Planes { .. } => { renderer.render(&gpu.device, &gpu.queue, &d)?; }  // HAP: blocks → BC texture
+    Decoded::Native(frame) => {                                                       // zero-copy import
+        let planes = importer.import(&gpu.device, &frame)?;
+        let textures: Vec<_> = planes.into_iter().map(|p| p.texture).collect();
+        renderer.render_native(&gpu.device, &gpu.queue, &dxvkit_plus_wgpu::NativePlanes {
+            textures: &textures, layout: frame.layout, matrix: frame.matrix, width: frame.width, height: frame.height,
+        })?;
+    }
+}
+let rgba_texture = renderer.output();                    // Rgba8Unorm, the clip's size
+```
+
+For playback, `cache::Player` decodes ahead on worker threads and `transport::Transport` says which
+frame to show at each clock tick (exact integer time).
+
+## CLI
+
+```sh
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.1.0 dxvkit-plus-cli
+
+dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
+dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
+dxvkit-plus verify --tiles tests/fixtures/*.mov tests/fixtures/*.mp4
+dxvkit-plus bench clip.mov --frames 60 --layers 16 --import
+dxvkit-plus gen-pattern frames/ --plasma --width 1920 --height 1080 --frames 60
+```
+
+`verify` checks every frame: GPU vs CPU, frame identity (fixtures), shuffled seeks vs sequential
+decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
+
+## Benchmarks (Mac Studio)
+
+Measured on the project's Mac Studio (Mac16,9, Apple M4 Max, 14 cores, 36 GB, macOS 26.6.2), release build, with `dxvkit-plus bench` on
+our own plasma footage minted by `scripts/mint-bench.sh` (glenc-cli encodes). Times are per frame,
+milliseconds, p50 / p99. *These are numbers from one machine, not a guarantee.*
+
+| Codec | Size | Decode (CPU, or platform) | Decode, 1 thread (HAP) | Upload or import + convert (GPU) | End to end |
+|---|---|---|---|---|---|
+| HAP (Hap1) | 1920×1080 | 0.58 / 0.98 | 0.59 / 0.73 | 1.59 / 10.20 | 2.52 / 9.37 |
+| HAP (Hap1) | 3840×2160 | 2.36 / 3.42 | 2.38 / 2.85 | 2.15 / 6.05 | 4.43 / 6.63 |
+| HAP (Hap1), 8 chunks | 1920×1080 | 0.25 / 0.72 | 0.58 / 0.73 | 1.37 / 11.34 | 1.71 / 8.51 |
+| HAP (Hap1), 8 chunks | 3840×2160 | 0.69 / 1.52 | 2.37 / 2.82 | 1.07 / 2.44 | 1.99 / 2.92 |
+| HAP Alpha (Hap5), 8 chunks | 1920×1080 | 0.37 / 0.86 | 1.07 / 1.22 | 1.70 / 9.25 | 2.52 / 11.24 |
+| HAP Alpha (Hap5), 8 chunks | 3840×2160 | 0.96 / 1.87 | 4.26 / 4.67 | 1.68 / 3.12 | 2.80 / 3.80 |
+| HAP Q (HapY) | 1920×1080 | 0.90 / 1.52 | 0.91 / 1.10 | 1.65 / 12.82 | 2.85 / 12.48 |
+| HAP Q (HapY) | 3840×2160 | 3.38 / 4.60 | 3.42 / 3.93 | 1.71 / 2.87 | 5.25 / 7.09 |
+| HAP Alpha-Only (HapA) | 1920×1080 | 0.13 / 0.28 | 0.13 / 0.18 | 1.32 / 13.13 | 1.43 / 6.27 |
+| HAP Alpha-Only (HapA) | 3840×2160 | 0.48 / 0.74 | 0.48 / 0.59 | 1.01 / 2.95 | 1.62 / 2.94 |
+| HAP Q Alpha (HapM) | 1920×1080 | 1.04 / 1.71 | 1.04 / 1.28 | 1.73 / 11.51 | 3.63 / 7.80 |
+| HAP Q Alpha (HapM) | 3840×2160 | 3.95 / 5.06 | 3.91 / 4.51 | 2.37 / 3.77 | 6.51 / 7.28 |
+| H.264 | 1920×1080 | 0.27 / 12.40 | — | 1.58 / 10.05 | 1.18 / 9.86 |
+| H.264 | 3840×2160 | 1.28 / 29.07 | — | 1.34 / 12.46 | 1.68 / 31.01 |
+| HEVC | 1920×1080 | 0.24 / 8.73 | — | 1.46 / 10.00 | 2.42 / 10.01 |
+| HEVC | 3840×2160 | 1.20 / 23.41 | — | 0.78 / 2.33 | 0.84 / 23.22 |
+| ProRes 422 | 1920×1080 | 0.95 / 43.50 | — | 1.23 / 10.75 | 1.92 / 37.21 |
+| ProRes 422 | 3840×2160 | 3.14 / 42.33 | — | 0.94 / 2.03 | 3.22 / 43.70 |
+| ProRes 4444 | 1920×1080 | 0.98 / 47.55 | — | 1.51 / 12.32 | 1.37 / 35.81 |
+| ProRes 4444 | 3840×2160 | 3.24 / 50.88 | — | 0.96 / 2.77 | 3.21 / 49.93 |
+| MJPEG | 1920×1080 | 2.23 / 13.63 | — | 1.39 / 9.88 | 1.20 / 14.67 |
+| MJPEG | 3840×2160 | 8.29 / 25.09 | — | 0.97 / 2.63 | 8.14 / 20.26 |
+
+| 16 layers of | Size | Decode all 16 (parallel) | Decode + upload + convert all 16 |
+|---|---|---|---|
+| HAP (Hap1) | 1920×1080 | 1.66 / 1.96 | 6.12 / 22.54 |
+| HAP (Hap1) | 3840×2160 | 5.25 / 6.03 | 20.86 / 28.60 |
+| HAP (Hap1), 8 chunks | 1920×1080 | 1.63 / 3.33 | 12.22 / 21.36 |
+| HAP (Hap1), 8 chunks | 3840×2160 | 5.32 / 6.22 | 13.87 / 15.19 |
+| HAP Alpha (Hap5), 8 chunks | 1920×1080 | 2.63 / 3.48 | 15.56 / 22.82 |
+| HAP Alpha (Hap5), 8 chunks | 3840×2160 | 9.10 / 10.56 | 24.61 / 27.01 |
+| HAP Q (HapY) | 1920×1080 | 2.45 / 2.97 | 13.52 / 23.00 |
+| HAP Q (HapY) | 3840×2160 | 7.57 / 8.68 | 22.86 / 25.23 |
+| HAP Alpha-Only (HapA) | 1920×1080 | 0.48 / 0.75 | 10.63 / 17.85 |
+| HAP Alpha-Only (HapA) | 3840×2160 | 1.41 / 1.71 | 9.03 / 10.72 |
+| HAP Q Alpha (HapM) | 1920×1080 | 2.63 / 3.74 | 14.08 / 24.28 |
+| HAP Q Alpha (HapM) | 3840×2160 | 8.74 / 9.78 | 30.90 / 34.61 |
+
+| Codec | Size | Route | Import + convert + GPU wait |
+|---|---|---|---|
+| H.264 | 1920×1080 | `cv_texture_cache` | 1.47 / 6.69 |
+| H.264 | 1920×1080 | `iosurface` | 1.17 / 6.93 |
+| H.264 | 3840×2160 | `cv_texture_cache` | 1.23 / 10.85 |
+| H.264 | 3840×2160 | `iosurface` | 1.80 / 8.43 |
+| HEVC | 1920×1080 | `cv_texture_cache` | 1.26 / 8.19 |
+| HEVC | 1920×1080 | `iosurface` | 1.51 / 10.47 |
+| HEVC | 3840×2160 | `cv_texture_cache` | 0.68 / 1.99 |
+| HEVC | 3840×2160 | `iosurface` | 0.73 / 1.89 |
+
+How to read these: *Decode* is reading + decompressing one frame on the CPU (HAP; chunked frames
+decompress on worker threads) or the platform decoder delivering one frame (native). *Upload or
+import + convert* is the GPU side for a frame already decoded — HAP blocks written into BC
+textures, native frames imported zero-copy — plus the conversion pass and a full GPU wait. *End to
+end* is both, per frame, sequentially. The p99 columns include one-off costs (a native reader
+restarting at frame 0 at the start of each pass, which is a seek; GPU clock ramp-up); a real
+player overlaps decode and GPU work and keeps frames in the read-ahead cache. The layer table runs
+16 independent decoders of the same clip (one thread each) plus 16 uploads + conversions on one
+device per step. Raw JSON lines: `docs/data/bench-macstudio.jsonl`.
+
+
+## Testing
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo deny check licenses bans sources
+cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8
+```
+
+All test media are our own procedural CC0 fixtures (`tests/fixtures`, each with an `.attribution`
+sidecar). Builds and tests run on the Mac Studio; there is no remote CI yet.
+
+## Roadmap
+
+- **DXV decoding** — the safe-Rust port of DXVKit's decoder (bit-exact against its 334 test vectors),
+  once the semi-transparent edge-pixel question is settled.
+- **LMBD** — our own GPU codec: BC7 with rate-distortion optimisation, then Zstd, in a documented
+  container; encoder and decoder, with a GPU decode bit-exact with the CPU.
+- **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
+  `Backend` trait.
+- **Encoders** — HAP and DXV encode. (HAP Q encoding will be written from the YCoCg-DXT paper the
+  HAP spec cites, never from `hap-qt-codec`'s LGPL-2.1 YCoCg encoder.)
+- **C ABI** — a C wrapper over the public API (already kept C-wrappable; see `docs/ARCHITECTURE.md`).
+- **crates.io** — publishing the crates.
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE). Adapted code and assets are listed in [`ATTRIBUTION.md`](ATTRIBUTION.md).

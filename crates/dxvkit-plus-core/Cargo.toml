@@ -1,0 +1,29 @@
+[package]
+name = "dxvkit-plus-core"
+description = "Pure-Rust video for VJs: QuickTime/MP4 demux (with tmcd timecode), HAP decode (every variant), a frame cache and an exact-time transport. No unsafe, no GPU dependency."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Snappy, HAP's second-stage compressor. BSD-3-Clause.
+snap = { workspace = true }
+# PNG stills and image sequences. MIT OR Apache-2.0.
+png = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+proptest = "1"
+# SHA-256 of the fixtures against their sidecars. Tests only. MIT OR Apache-2.0.
+sha2 = "0.10.9"

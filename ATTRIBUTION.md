@@ -1,0 +1,33 @@
+# Attribution
+
+DXVKit Plus is MIT-licensed (`LICENSE`, Copyright (c) 2026 Amrit Rosell). This file lists every
+piece of code and every asset that came from somewhere else, with its licence. `docs/PROVENANCE.md`
+explains how each part was written.
+
+## Code
+
+| Code in this repo | From | Licence |
+| --- | --- | --- |
+| `crates/dxvkit-plus-core/src/time.rs` | storytold/effectcraft @ 813c7c4 `crates/time/src/lib.rs` (Copyright (c) 2026 ArtCraft Team and the EffectCraft contributors), via Loombda-rs `crates/loombda-time` | MIT (`LICENSES/effectcraft-MIT.txt`) |
+| `crates/dxvkit-plus-core/src/container.rs` (atom walk, sample tables), `src/bc.rs` (BC1/BC4 integer conventions) | DXVKit 1.0.0 (Amrit Rosell; AmritusG/DXVKit @ 36209e0) `src/mov.c`, `src/pixels.c`, via Loombda-rs `crates/loombda-media` | MIT (`LICENSES/DXVKit-MIT.txt`) |
+| `crates/dxvkit-plus-core/src/{hap,cache,transport,source,testpattern,bytes,error}.rs`, `crates/dxvkit-plus-apple/src/{decode,objc,surface}.rs` (IOSurface route), `crates/dxvkit-plus-wgpu` (BC texture helpers, WGSL conversion), `crates/dxvkit-plus-core/examples/fuzz.rs`, `tests/support/qt_movie.rs` | Loombda-rs (Amrit Rosell; AmritusG/Loombda-rs @ d2c0c43), ported and adapted | Amrit's own; released here under MIT |
+| `clippy.toml`, `rustfmt.toml` | storytold/effectcraft, via Loombda-rs | MIT (`LICENSES/effectcraft-MIT.txt`) |
+| `crates/dxvkit-plus-core/src/hap.rs` | written from the public HAP specification `documentation/HapVideoDRAFT.md` (Vidvox/hap @ d847f6b); no code read or copied | spec only (repository BSD-2-Clause) |
+| `crates/dxvkit-plus-core/src/bc7.rs` | written for DXVKit Plus from the public BPTC definition (Khronos Data Format Specification 1.3; Microsoft "BC7 Format") | own code, MIT |
+| `crates/dxvkit-plus-apple/src/surface.rs` (`TextureCacheImporter`) | written from Apple's CoreVideo documentation; the technique (a `CVMetalTextureCache` adopted through `wgpu_hal`) was learned from 1mrnewton/cutlass @ 22437e2 `crates/cutlass-compositor/src/metal_import.rs` — read, not copied | own code, MIT (Cutlass: MIT OR Apache-2.0) |
+
+## Assets
+
+| Asset | What | Licence |
+| --- | --- | --- |
+| `tests/fixtures/tiles_*.{mov,mp4}` (12 files, sidecars `*.attribution`) | our own procedural tile pattern (`testpattern::tiles`), 128x72, 24 frames, 30 fps; encoded with glenc-cli (Amrit's encoder) | CC0-1.0 |
+| `tests/fixtures/synthetic_hap7.mov`, `tests/fixtures/synthetic_haph.mov` (sidecars `*.attribution`) | HAP R (random BC7 blocks, all 8 modes) and HAP HDR (solid BC6H blocks), written byte by byte by `crates/dxvkit-plus-core/examples/mint_synthetic.rs` (no encoder writes these variants) | CC0-1.0 |
+
+No third-party media, and none of Amrit's footage, is in this repository.
+
+## Dependencies
+
+Every dependency is permissive (MIT, Apache-2.0, BSD-2/3, Zlib, ISC, MIT-0), enforced by
+`cargo deny check licenses bans sources` (`deny.toml`). The one crate-scoped exception is
+`unicode-ident` (Unicode-3.0, permissive; Unicode's data tables), a build-time dependency of
+serde's derive macros. FFmpeg, libmpv and GStreamer bindings are banned.

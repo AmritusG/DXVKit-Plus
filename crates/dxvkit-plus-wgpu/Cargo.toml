@@ -1,0 +1,25 @@
+[package]
+name = "dxvkit-plus-wgpu"
+description = "DXVKit Plus on wgpu 30: BC block uploads straight into BC textures, and WGSL conversion (HAP Q scaled YCoCg, alpha-only, HDR, 4:2:0 YCbCr) into RGBA."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dxvkit-plus-core = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+pollster = { workspace = true }
+
+[dev-dependencies]
+dxvkit-plus-core = { workspace = true }

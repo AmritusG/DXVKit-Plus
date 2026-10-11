@@ -1,0 +1,53 @@
+[package]
+name = "dxvkit-plus-apple"
+description = "DXVKit Plus native island for macOS: AVFoundation / VideoToolbox decode (H.264, HEVC, ProRes, MJPEG) into IOSurface-backed pixel buffers, imported zero-copy into wgpu Metal textures. The only crate allowed unsafe."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+# NOT `workspace = true`: this is the one crate allowed `unsafe` (the workspace forbids it, and
+# `forbid` cannot be relaxed by an inner `#![allow]`). This table is the workspace set with
+# `unsafe_code` allowed and every unsafe block required to carry a `// SAFETY:` comment.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+dbg_macro = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+dxvkit-plus-core = { workspace = true }
+wgpu = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2-metal = { workspace = true, features = ["objc2-io-surface"] }
+objc2-io-surface = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-video = { workspace = true, features = ["objc2-io-surface"] }
+objc2-core-media = { workspace = true }
+objc2-av-foundation = { workspace = true, features = ["objc2-core-media"] }
+
+[dev-dependencies]
+dxvkit-plus-wgpu = { workspace = true }
+wgpu = { workspace = true }

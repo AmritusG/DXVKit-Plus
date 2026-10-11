@@ -1,0 +1,8 @@
+asset: tests/fixtures/tiles_hapm_chunks4.mov
+title: HAP Q Alpha (HapM), 4 chunks 128x72
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern::tiles (carried over from Loombda-rs loombda_media::testpattern)
+source: Minted in Loombda-rs (crates/loombda-media/examples/mint_fixtures.rs; reproducible here with scripts/mint-fixtures.sh) (128x72, 24 frames, 30 fps); encoded with glenc-cli 1.0.0 -c hapm (GlEnc, Amrit's encoder; AVFoundation / VideoToolbox for the native codecs)
+license: CC0-1.0
+added: 2026-10-10
+sha256: afe582ea8dc09a3e5624d7c2696c48fbe2ef35e54116680f2eac7561eb13d263
+notes: Our own footage, no third-party content. Tiles are RGB565-exact and alpha is flat per 8x8 tile so BC encoders can reproduce the source; the top tile row encodes the frame index. Copied unchanged (cp -p) from Loombda-rs tests/fixtures/media @ d2c0c43.

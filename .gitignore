@@ -1,0 +1,5 @@
+/target
+/_src
+.DS_Store
+*.profraw
+/fuzz-crashes

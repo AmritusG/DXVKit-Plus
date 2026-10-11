@@ -1,0 +1,56 @@
+# cargo-deny policy: permissive dependencies only.
+#   cargo deny check licenses bans sources
+# Run on the Mac Studio before every release (no remote CI until Amrit says so).
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+# The project allowlist: MIT, Apache-2.0, BSD-2/3, Zlib, ISC, MIT-0.
+# No GPL, LGPL, AGPL, EPL or MPL: any crate under them fails this gate.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# The allowlist is the project policy; not every entry has to be in use.
+unused-allowed-license = "allow"
+# One crate-scoped exception, not a global allowance: `unicode-ident` (via proc-macro2, a build-time
+# dependency of serde's derive) ships Unicode's data tables under Unicode-3.0, a permissive
+# OSI-approved licence. Nothing else may use Unicode-3.0.
+exceptions = [
+    { name = "unicode-ident", allow = ["Unicode-3.0"] },
+]
+# Our own crates are unpublished (publish = false) and MIT.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Copyleft media stacks are never linked into DXVKit Plus (docs/PROVENANCE.md).
+deny = [
+    { name = "ffmpeg-next", reason = "links FFmpeg (LGPL/GPL)" },
+    { name = "ffmpeg-sys-next", reason = "links FFmpeg (LGPL/GPL)" },
+    { name = "ffmpeg-sys", reason = "links FFmpeg (LGPL/GPL)" },
+    { name = "ac-ffmpeg", reason = "links FFmpeg (LGPL/GPL)" },
+    { name = "rsmpeg", reason = "links FFmpeg (LGPL/GPL)" },
+    { name = "libmpv", reason = "LGPL/GPL media stack" },
+    { name = "libmpv2", reason = "LGPL/GPL media stack" },
+    { name = "libmpv-sys", reason = "LGPL/GPL media stack" },
+    { name = "gstreamer", reason = "LGPL media stack" },
+    { name = "gstreamer-sys", reason = "LGPL media stack" },
+    { name = "gstreamer-video", reason = "LGPL media stack" },
+    { name = "gstreamer-app", reason = "LGPL media stack" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
