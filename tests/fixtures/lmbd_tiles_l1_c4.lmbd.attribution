@@ -1,0 +1,13 @@
+asset: tests/fixtures/lmbd_tiles_l1_c4.lmbd
+title: LMBD (LMB7) 128x72, 4 frames, lambda 1, 4 chunks
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern (tiles 128x72 frames 0-3 (alpha tiles: modes 5/6/7))
+source: Written by the ORIGINAL LMBD encoder (Amrit's loomda-codec @ c6d80e6: lmbd-encode -w 128 -h 72 -fps 30/1 -q 1 -zc 16384 -chunks 4; bc7enc_rdo bc7enc 4-mode, cmake Release, no OpenMP; libzstd 1.5.7), reproducible with scripts/mint-lmbd-vectors.sh
+license: CC0-1.0
+added: 2026-10-11
+sha256: bd88e1e94e45c6e5aec16ac90978e73542541241120f04325c40ab36ff9213ec
+params: pattern=tiles width=128 height=72 frames=4 lambda=1 lookback=16384 chunks=4 compressor=zstd level=9
+decoded_rgba_sha256 frame 0: ce41e44215ef0eb937eb20760daea58b296dc2aa144f93c377e3e9218d02f8e7
+decoded_rgba_sha256 frame 1: f50578cbee8bc35a8a35200be7b7a56565e47a3a5002d4287f79a7dd99c8c8ab
+decoded_rgba_sha256 frame 2: c88a45bc99ba84404fa8dbdff5fb6c19f1ab3b074f4ade479007eed2543ff053
+decoded_rgba_sha256 frame 3: cf46342890ad40f4fc4874b77b4beb167d5dcdaf10265566913e80067552ea0f
+notes: A compatibility vector. decoded_rgba_sha256 is each frame as the original decoder (lmbd-probe decode: bc7enc_rdo's scalar BC7 reference) returns it, straight RGBA8 at the frame size; DXVKit Plus must reproduce it, and re-encoding the pattern with params must reproduce this file byte for byte. Our own footage, no third-party content.

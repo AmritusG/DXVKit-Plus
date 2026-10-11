@@ -90,3 +90,47 @@ fn errors_exit_nonzero_with_a_message() {
     let out = bin().arg("decode").arg(f).arg("999").arg(std::env::temp_dir().join("x.png")).output().unwrap();
     assert!(!out.status.success());
 }
+
+/// LMBD end to end: the original encoder's vectors probe, decode and verify (GPU == CPU exactly,
+/// frame identity on the tile vectors); `encode-lmbd` writes a file that verifies and `compare`
+/// scores against its source.
+#[test]
+fn lmbd_end_to_end() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut vectors: Vec<PathBuf> =
+        std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().and_then(|e| e.to_str()) == Some("lmbd")).collect();
+    vectors.sort();
+    assert_eq!(vectors.len(), 5);
+    let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-lmbd-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    for f in &vectors {
+        let p = &run(bin().arg("probe").arg(f))[0];
+        assert_eq!((p["kind"].as_str(), p["codec"].as_str()), (Some("lmbd"), Some("LMB7")));
+        for route in [None, Some("--cpu")] {
+            let mut c = bin();
+            c.arg("decode").arg(f).arg("1").arg(tmp.join("f.png"));
+            if let Some(r) = route {
+                c.arg(r);
+            }
+            run(&mut c);
+        }
+    }
+    let (tiles, others): (Vec<&PathBuf>, Vec<&PathBuf>) = vectors.iter().partition(|f| f.file_name().unwrap().to_str().unwrap().contains("tiles"));
+    let v = run(bin().arg("verify").arg("--tiles").args(&tiles));
+    let v2 = run(bin().arg("verify").args(&others));
+    for x in v.iter().chain(&v2) {
+        assert_eq!(x["pass"], true, "{x:#}");
+        assert_eq!((x["cpu_vs_gpu"]["max_rgb"].as_u64(), x["cpu_vs_gpu"]["max_alpha"].as_u64()), (Some(0), Some(0)), "{x:#}");
+    }
+    run(bin().arg("gen-pattern").arg(tmp.join("src")).args(["--frames", "3", "--width", "64", "--height", "36"]));
+    let e = &run(bin().arg("encode-lmbd").arg(tmp.join("src")).arg(tmp.join("out.lmbd")).args(["--chunks", "3", "--lambda", "0.5", "--quiet"]))[0];
+    assert_eq!((e["frames"].as_u64(), e["chunks"].as_u64()), (Some(3), Some(3)));
+    let v = &run(bin().arg("verify").arg("--tiles").arg(tmp.join("out.lmbd")))[0];
+    assert_eq!(v["pass"], true, "{v:#}");
+    let c = &run(bin().arg("compare").arg(tmp.join("src")).arg(tmp.join("out.lmbd")).args(["--frame", "2"]))[0];
+    assert!(c["psnr_rgb"].as_f64().unwrap() > 30.0 && c["frame_bytes"].as_u64().unwrap() > 0, "{c:#}");
+    // Negative control: frame 2 against source frame 1 scores far worse.
+    let wrong = &run(bin().arg("compare").arg(tmp.join("src")).arg(tmp.join("out.lmbd")).args(["--frame", "2", "--ref-frame", "1"]))[0];
+    assert!(wrong["psnr_rgb"].as_f64().unwrap() < c["psnr_rgb"].as_f64().unwrap() - 5.0, "{wrong:#}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

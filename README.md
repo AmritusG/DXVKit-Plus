@@ -1,9 +1,9 @@
 # DXVKit Plus
 
-**Rust video for VJs: HAP and native OS codecs, frame-exact, zero-copy into wgpu.**
+**Rust video for VJs: HAP, native OS codecs and the LMBD GPU codec, frame-exact, zero-copy into wgpu.**
 
-DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (HAP) decompressed to
-blocks and uploaded straight into BC textures, platform codecs (H.264, HEVC, ProRes, MJPEG)
+DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (HAP, and our own LMBD)
+decompressed to blocks and uploaded straight into BC textures, platform codecs (H.264, HEVC, ProRes, MJPEG)
 decoded by the operating system's hardware decoder and imported into the GPU without a copy, a
 QuickTime demuxer that reads the timecode track, and a frame-exact transport (loop, bounce,
 reverse, any speed, seek, step, beat and timecode sync). Pure Rust where it can be, MIT-licensed,
@@ -12,8 +12,9 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.1.0**. DXV decoding and the LMBD codec are on the [roadmap](#roadmap), not in
-this release.
+This is release **0.2.0**: it adds **LMBD**, our own GPU codec — BC7 with rate-distortion
+optimisation, then Zstd, in a documented container ([`docs/LMBD.md`](docs/LMBD.md)) — with both
+encoder and decoder. DXV decoding is on the [roadmap](#roadmap), not in this release.
 
 ## Codec support
 
@@ -29,8 +30,8 @@ this release.
 | H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020 |
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
+| LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ pure Rust, **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU |
 | DXV (`DXD3` / `DXDI`) | 🔜 probed, not decoded | — | roadmap |
-| LMBD (own BC7 + RDO + Zstd codec) | 🔜 | — | roadmap |
 | Native codecs on Windows | 🔜 `Backend` stub | — | Media Foundation + DX12 import, designed |
 | PNG stills / sequences | ✅ | RGBA8 | |
 
@@ -41,8 +42,9 @@ every frame of every fixture), and every error is a value — hostile files neve
 
 | Crate | What |
 |---|---|
-| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. |
-| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30. |
+| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. |
+| [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
+| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
 | [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
 | [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
 
@@ -54,9 +56,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.1.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" } # macOS
 ```
 
 ```rust
@@ -71,7 +73,7 @@ let gpu = Gpu::headless()?;
 let mut renderer = FrameRenderer::new(&gpu.device);
 let importer = dxvkit_plus_apple::surface::TextureCacheImporter::new(&gpu.device)?; // macOS, once per device
 match clip.decode(42)? {
-    d @ Decoded::Planes { .. } => { renderer.render(&gpu.device, &gpu.queue, &d)?; }  // HAP: blocks → BC texture
+    d @ Decoded::Planes { .. } => { renderer.render(&gpu.device, &gpu.queue, &d)?; }  // HAP, LMBD: blocks → BC texture
     Decoded::Native(frame) => {                                                       // zero-copy import
         let planes = importer.import(&gpu.device, &frame)?;
         let textures: Vec<_> = planes.into_iter().map(|p| p.texture).collect();
@@ -89,17 +91,56 @@ frame to show at each clock tick (exact integer time).
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.1.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.2.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
 dxvkit-plus verify --tiles tests/fixtures/*.mov tests/fixtures/*.mp4
 dxvkit-plus bench clip.mov --frames 60 --layers 16 --import
 dxvkit-plus gen-pattern frames/ --plasma --width 1920 --height 1080 --frames 60
+dxvkit-plus encode-lmbd frames/ clip.lmbd --chunks 8   # any decodable source → LMBD (lambda 1, look-back 16384)
+dxvkit-plus compare frames/ clip.lmbd --frame 3       # PSNR / SSIM of frame 3 against the source
 ```
 
-`verify` checks every frame: GPU vs CPU, frame identity (fixtures), shuffled seeks vs sequential
-decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
+`verify` checks every frame: GPU vs CPU (exact for LMBD), frame identity (fixtures), shuffled seeks
+vs sequential decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
+
+## LMBD
+
+LMBD is the codec of Amrit's original LMBD project (its C encoder and Metal player), carried over
+with its frozen v1 format. Files the original wrote decode here bit-exact, and
+`dxvkit-plus-lmbd-enc` writes **byte-identical files** for the same frames and settings — a
+faithful port of bc7enc_rdo's 4-mode BC7 encoder and RDO pass, down to the fused multiply-adds the
+original's compiler forms (see [`docs/LMBD.md`](docs/LMBD.md), §9). Checked on five compatibility
+vectors written by the original encoder (`tests/fixtures/lmbd_*.lmbd`) and on 1080p frames.
+
+```rust
+use dxvkit_plus_core::lmbd::Header;
+use dxvkit_plus_lmbd_enc::{EncodeParams, encode_frames};
+
+let frames: Vec<Vec<u8>> = load_frames();  // straight RGBA8, 1920x1080 each
+let mut p = EncodeParams::default();      // lambda 1.0, look-back 16384, Zstd 9, 1 chunk
+p.chunks = 8;                             // chunks decompress in parallel on playback
+let out = std::fs::File::create("clip.lmbd")?;
+encode_frames(std::io::BufWriter::new(out), Header::new(1920, 1080, 30, 1), &p, 8,
+    |i| (i < frames.len() as u32).then(|| Ok(frames[i as usize].clone())), |_, _| {})?;
+```
+
+**Quality against HAP Q at matched size**, measured on our own CC0 clips (512×288, 4 frames each,
+PSNR over RGB and SSIM on luma, each codec decoded on the CPU and compared with the source; raw
+lines in `docs/data/lmbd-vs-hapq.jsonl`):
+
+| Clip | HAP Q (glenc-cli `hapy`) | LMBD at about the same size | Difference |
+|---|---|---|---|
+| smooth gradient | 47 580 B/frame, 52.01 dB, SSIM 0.99887 | λ 0: 36 894 B (78 %), 65.00 dB, SSIM 0.99985 | **+13.0 dB** at 78 % of the size; λ 0.25 matches HAP Q's PSNR −1.1 dB at **8 %** of the size |
+| flat tiles | 16 046 B, 51.67 dB, SSIM 0.9999 | λ 0: 9 327 B (58 %), 58.04 dB, SSIM 1.0000 | **+6.4 dB** at 58 % of the size |
+| plasma with film grain | 134 688 B, 40.88 dB, SSIM 0.9946 | λ 0.5: 128 983 B (96 %), 41.24 dB, SSIM 0.9844 | +0.35 dB PSNR, **−0.010 SSIM** |
+
+LMBD wins clearly on smooth and flat content and ties on noise-like grain, where neither codec can
+compress much. Encoding is slow by design at the default settings (RDO with a 16 KB look-back:
+about 8.6 CPU-minutes per 1080p frame of detailed footage — 14 frames took 15 minutes on the 14-core
+Mac Studio, frames encoding in parallel); `--lambda 0` encodes 30 such frames in 8 seconds, and a
+shorter `--lookback` sits in between.
 
 ## Benchmarks (Mac Studio)
 
@@ -121,6 +162,9 @@ milliseconds, p50 / p99. *These are numbers from one machine, not a guarantee.*
 | HAP Alpha-Only (HapA) | 3840×2160 | 0.48 / 0.74 | 0.48 / 0.59 | 1.01 / 2.95 | 1.62 / 2.94 |
 | HAP Q Alpha (HapM) | 1920×1080 | 1.04 / 1.71 | 1.04 / 1.28 | 1.73 / 11.51 | 3.63 / 7.80 |
 | HAP Q Alpha (HapM) | 3840×2160 | 3.95 / 5.06 | 3.91 / 4.51 | 2.37 / 3.77 | 6.51 / 7.28 |
+| LMBD (λ 1), 8 chunks | 1920×1080 | 0.95 / 1.43 | — | 1.94 / 16.04 | 2.64 / 10.81 |
+| LMBD (λ 0), 8 chunks | 1920×1080 | 0.64 / 1.75 | — | 1.80 / 11.53 | 2.41 / 7.34 |
+| LMBD (λ 0), 1 chunk | 1920×1080 | 3.67 / 4.31 | — | 1.48 / 11.34 | 5.87 / 12.92 |
 | H.264 | 1920×1080 | 0.27 / 12.40 | — | 1.58 / 10.05 | 1.18 / 9.86 |
 | H.264 | 3840×2160 | 1.28 / 29.07 | — | 1.34 / 12.46 | 1.68 / 31.01 |
 | HEVC | 1920×1080 | 0.24 / 8.73 | — | 1.46 / 10.00 | 2.42 / 10.01 |
@@ -146,6 +190,8 @@ milliseconds, p50 / p99. *These are numbers from one machine, not a guarantee.*
 | HAP Alpha-Only (HapA) | 3840×2160 | 1.41 / 1.71 | 9.03 / 10.72 |
 | HAP Q Alpha (HapM) | 1920×1080 | 2.63 / 3.74 | 14.08 / 24.28 |
 | HAP Q Alpha (HapM) | 3840×2160 | 8.74 / 9.78 | 30.90 / 34.61 |
+| LMBD (λ 1), 8 chunks | 1920×1080 | 11.76 / 13.28 | 28.46 / 34.14 |
+| LMBD (λ 0), 8 chunks | 1920×1080 | 7.49 / 8.92 | 18.63 / 27.32 |
 
 | Codec | Size | Route | Import + convert + GPU wait |
 |---|---|---|---|
@@ -166,7 +212,15 @@ end* is both, per frame, sequentially. The p99 columns include one-off costs (a 
 restarting at frame 0 at the start of each pass, which is a seek; GPU clock ramp-up); a real
 player overlaps decode and GPU work and keeps frames in the read-ahead cache. The layer table runs
 16 independent decoders of the same clip (one thread each) plus 16 uploads + conversions on one
-device per step. Raw JSON lines: `docs/data/bench-macstudio.jsonl`.
+device per step. Raw JSON lines: `docs/data/bench-macstudio.jsonl` (LMBD:
+`docs/data/bench-lmbd-macstudio.jsonl`; the LMBD clips are our CC0 plasma, 1920×1080, encoded by
+`dxvkit-plus encode-lmbd`).
+
+LMBD's CPU side is Zstd decompression, done here by the pure-Rust `ruzstd`. On the λ 1 clip it runs
+at 122 MB/s per thread where libzstd runs at 968 MB/s (λ 0: 446 vs 2119 MB/s; same chunks, measured
+on this machine), so 16 LMBD layers are decode-bound in this build; a libzstd decode path would
+take the 16-layer decode from about 12 ms to an estimated 2-3 ms (from those per-thread rates; not
+measured).
 
 
 ## Testing
@@ -177,6 +231,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 cargo deny check licenses bans sources
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8
+cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 lmbd   # the LMBD reader alone
 ```
 
 All test media are our own procedural CC0 fixtures (`tests/fixtures`, each with an `.attribution`
@@ -186,11 +241,10 @@ sidecar). Builds and tests run on the Mac Studio; there is no remote CI yet.
 
 - **DXV decoding** — the safe-Rust port of DXVKit's decoder (bit-exact against its 334 test vectors),
   once the semi-transparent edge-pixel question is settled.
-- **LMBD** — our own GPU codec: BC7 with rate-distortion optimisation, then Zstd, in a documented
-  container; encoder and decoder, with a GPU decode bit-exact with the CPU.
+- **LMBD** — a faster GPU (compute) BC7 encoder, and later profiles (reserved in the format).
 - **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
   `Backend` trait.
-- **Encoders** — HAP and DXV encode. (HAP Q encoding will be written from the YCoCg-DXT paper the
+- **Encoders** — HAP and DXV encode (LMBD encode ships in 0.2.0). (HAP Q encoding will be written from the YCoCg-DXT paper the
   HAP spec cites, never from `hap-qt-codec`'s LGPL-2.1 YCoCg encoder.)
 - **C ABI** — a C wrapper over the public API (already kept C-wrappable; see `docs/ARCHITECTURE.md`).
 - **crates.io** — publishing the crates.

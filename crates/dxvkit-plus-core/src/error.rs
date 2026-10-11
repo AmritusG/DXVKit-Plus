@@ -25,6 +25,8 @@ pub enum MediaError {
     Platform(String),
     /// Exists in the design but not on this platform / in this build (never a silent no-op).
     Unsupported(String),
+    /// An LMBD file was rejected (the message says why).
+    Lmbd(String),
 }
 
 impl fmt::Display for MediaError {
@@ -40,6 +42,7 @@ impl fmt::Display for MediaError {
             MediaError::Invalid(m) => write!(f, "invalid: {m}"),
             MediaError::Platform(m) => write!(f, "platform decoder: {m}"),
             MediaError::Unsupported(m) => write!(f, "unsupported: {m}"),
+            MediaError::Lmbd(m) => write!(f, "lmbd: {m}"),
         }
     }
 }
@@ -59,6 +62,7 @@ impl MediaError {
             MediaError::Invalid(_) => 8,
             MediaError::Platform(_) => 9,
             MediaError::Unsupported(_) => 10,
+            MediaError::Lmbd(_) => 11,
         }
     }
 }

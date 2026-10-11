@@ -5,7 +5,9 @@
 //! dxvkit-plus decode <file> <frame> <out.png> [--cpu]
 //! dxvkit-plus bench <file>... [--frames N] [--layers N] [--import]
 //! dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
-//! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma]
+//! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
+//! dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D] ...
+//! dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 //! ```
 //!
 //! Every command prints JSON (one object per line) to stdout; errors go to stderr with exit status 1.
@@ -13,6 +15,7 @@
 
 mod bench;
 mod gpu;
+mod lmbd;
 mod verify;
 
 use dxvkit_plus_core::source::{self, ImportOptions, MediaInfo};
@@ -25,7 +28,11 @@ const USAGE: &str = "usage:
   dxvkit-plus decode <file> <frame> <out.png> [--cpu]
   dxvkit-plus bench <file>... [--frames N] [--layers N] [--import]
   dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
-  dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma]";
+  dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
+  dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
+                          [--level Z] [--compressor zstd|none] [--rdo-partitions P] [--threads T]
+                          [--start F] [--frames N] [--quiet]
+  dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]";
 
 /// The import options with this platform's backend.
 pub fn options() -> ImportOptions {
@@ -61,6 +68,10 @@ impl Args {
     }
     pub fn has(&self, name: &str) -> bool {
         self.flags.iter().any(|(n, _)| n == name)
+    }
+    /// The value of `--name value`, if given.
+    pub fn value(&self, name: &str) -> Option<&str> {
+        self.flags.iter().find(|(n, _)| n == name).and_then(|(_, v)| v.as_deref())
     }
     pub fn num(&self, name: &str, default: u32) -> Result<u32, String> {
         match self.flags.iter().find(|(n, _)| n == name) {
@@ -129,7 +140,7 @@ fn gen_pattern(args: &Args) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     for f in 0..frames {
         let px = if args.has("plasma") {
-            let mut p = testpattern::plasma(f, w, h, false);
+            let mut p = testpattern::plasma(f, w, h, args.has("alpha"));
             testpattern::stamp_frame_id(&mut p, w, h, f);
             p
         } else {
@@ -137,7 +148,12 @@ fn gen_pattern(args: &Args) -> Result<(), String> {
         };
         write_png(&Path::new(dir).join(format!("f{f:05}.png")), w, h, &px)?;
     }
-    json_line(&serde_json::json!({"pattern": if args.has("plasma") { "plasma" } else { "tiles" }, "dir": dir, "frames": frames, "width": w, "height": h}));
+    let pattern = match (args.has("plasma"), args.has("alpha")) {
+        (true, true) => "plasma_alpha",
+        (true, false) => "plasma",
+        _ => "tiles",
+    };
+    json_line(&serde_json::json!({"pattern": pattern, "dir": dir, "frames": frames, "width": w, "height": h}));
     Ok(())
 }
 
@@ -154,13 +170,35 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
-    let args = Args::parse(rest, &["frames", "layers", "width", "height", "source-tolerance"]);
+    let args = Args::parse(
+        rest,
+        &[
+            "frames",
+            "layers",
+            "width",
+            "height",
+            "source-tolerance",
+            "lambda",
+            "lookback",
+            "chunks",
+            "fps",
+            "level",
+            "compressor",
+            "rdo-partitions",
+            "threads",
+            "start",
+            "frame",
+            "ref-frame",
+        ],
+    );
     let r = match cmd.as_str() {
         "probe" => probe(&args),
         "decode" => decode(&args),
         "bench" => bench::run(&args),
         "verify" => verify::run(&args),
         "gen-pattern" => gen_pattern(&args),
+        "encode-lmbd" => lmbd::encode(&args),
+        "compare" => lmbd::compare(&args),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");
             Ok(())

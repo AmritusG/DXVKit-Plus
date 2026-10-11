@@ -333,6 +333,26 @@ impl FrameRenderer {
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }
 
+    /// Convert a frame that is already on the GPU — such as an [`crate::LmbdTexture`]'s BC7 view,
+    /// which the GPU decodes as it samples — as stored RGBA, texel for texel from the top-left, at
+    /// `width` x `height`. Returns the output texture. Submits.
+    pub fn render_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Result<&wgpu::Texture, GpuError> {
+        self.last_upload_bytes = 0;
+        self.set_uniform(queue, Uniform { mode: 0, flags: 0, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
+        let target = self.ensure_output(device, width, height)?;
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-view") });
+        self.converter.pass(device, &mut enc, view, None, &self.uniform, &target);
+        queue.submit([enc.finish()]);
+        self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
+    }
+
     /// Convert a native frame whose planes a platform crate imported (zero-copy); returns the
     /// output texture. Submits.
     pub fn render_native(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, native: &NativePlanes<'_>) -> Result<&wgpu::Texture, GpuError> {

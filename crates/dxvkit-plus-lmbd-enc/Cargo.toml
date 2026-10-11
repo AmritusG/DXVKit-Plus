@@ -1,0 +1,26 @@
+[package]
+name = "dxvkit-plus-lmbd-enc"
+description = "The LMBD (LMB7) encoder: RGBA frames to 4-mode BC7 with rate-distortion optimisation, Zstd and the LMBD container. A faithful Rust port of bc7enc_rdo's bc7enc + RDO path."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dxvkit-plus-core = { workspace = true }
+# Zstandard compression (libzstd 1.5.7, bundled and built by zstd-sys; the same library version the
+# original LMBD encoder links, so chunk bytes match). zstd: MIT; zstd-sys: MIT OR Apache-2.0;
+# libzstd itself is BSD-3-Clause (dual BSD / GPLv2; used under BSD).
+zstd = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+sha2 = "0.10.9"

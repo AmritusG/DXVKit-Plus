@@ -21,6 +21,8 @@ snap = { workspace = true }
 # PNG stills and image sequences. MIT OR Apache-2.0.
 png = { workspace = true }
 serde = { workspace = true }
+# Zstandard decode for LMBD chunks, pure Rust. MIT.
+ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

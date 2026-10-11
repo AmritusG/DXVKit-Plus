@@ -1,14 +1,16 @@
 # Architecture
 
 ```
-            file.mov / file.mp4 / PNG folder
+      file.mov / file.mp4 / file.lmbd / PNG folder
                          │
               dxvkit-plus-core::source::probe ──► MediaInfo (codec, size, frames, exact rate, tmcd start)
                          │
      ┌───────────────────┼────────────────────────────┐
-     │ HAP (pure Rust)   │ native codecs              │ PNG stills / sequences
-     │ container demux   │ Backend trait              │ png crate
-     │ → hap::decode     │  macOS: dxvkit-plus-apple  │
+     │ HAP, LMBD         │ native codecs              │ PNG stills / sequences
+     │ container demux / │ Backend trait              │ png crate
+     │ lmbd::LmbdFile    │  macOS: dxvkit-plus-apple  │
+     │ → hap::decode,    │                            │
+     │   lmbd chunks     │                            │
      │ → BC block planes │  Windows: planned stub     │ → RGBA8 plane
      │   (Decoded::Planes)│ → Decoded::Native         │   (Decoded::Planes)
      └─────────┬─────────┴──────────────┬─────────────┘
@@ -26,7 +28,8 @@
 | Crate | `unsafe` | GPU | What |
 |---|---|---|---|
 | `dxvkit-plus-core` | forbidden | none | demux, HAP, CPU block decoders, sources, cache, transport, time, the `Backend` trait |
-| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, the WGSL conversion, read-back |
+| `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoder (4-mode BC7 + RDO, Zstd); links libzstd through the `zstd` crate |
+| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, the WGSL conversion, read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
 | `dxvkit-plus-cli` | forbidden | wgpu | the `dxvkit-plus` command |
 
@@ -42,6 +45,14 @@ caps: 64 MB `moov`, 2^24 samples, 300 MB per sample). `hap::decode` walks the se
 8-byte headers), decompresses Snappy or the chunk table (chunks decompress in parallel when asked),
 and returns each image's raw block stream, exactly `ceil(w/4) * ceil(h/4) * block_bytes` long. The
 blocks upload unchanged (`write_bc`); the GPU decodes them. No CPU pixel work on the playback path.
+
+**LMBD.** `lmbd::LmbdFile` reads and validates the 40-byte header and the tail index (every entry
+inside the file), then reads a frame's payload with one positioned read. The chunk table is checked
+(profile echo, chunks inside the payload, whole 16-byte blocks adding up to exactly
+`ceil(w/4) * ceil(h/4) * 16`) before the frame buffer is allocated; each chunk decompresses into its
+own slice (Zstd through `ruzstd`, which must produce exactly the declared size), on worker threads
+when asked. The block stream uploads unchanged into a BC7 texture; the GPU decodes it on sampling
+(`LmbdTexture` adds an sRGB view). The format is in `docs/LMBD.md`.
 
 **Native.** `NativeReader` (macOS) opens the first video track with `AVURLAsset`
 (`AVURLAssetPreferPreciseDurationAndTimingKey`) and an `AVAssetReaderTrackOutput` asking for
@@ -93,6 +104,9 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | HAP Q HapY / HapM (CPU) | ≤ 2/255 to the source (chroma is lossy by design) | same |
 | GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | BC7 CPU decoder vs the GPU | bit-exact, 4096 random blocks per mode, all 8 modes | `wgpu/tests/gpu.rs` |
+| LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
+| LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| LMBD encoder vs the original encoder | byte-identical files (five vectors; 1080p frames checked by hand) | `lmbd-enc/tests/encoder_identity.rs` |
 | Native BGRA (ProRes 4444) zero-copy vs Apple's own CPU read-back | bit-exact | `apple/tests/native.rs` |
 | Native 4:2:0 WGSL conversion vs Apple's conversion | tile interiors mean ≤ 1/255; whole frame no further from the source than Apple's | same |
 | Frame identity + seek | every frame carries its index; shuffled seeks equal sequential decodes | `apple/tests/native.rs`, `dxvkit-plus verify` |
@@ -106,7 +120,7 @@ a 59.94 clock is still exact after 10 minutes). `cache::Player` keeps an LRU of 
 decodes ahead on worker threads in playback order; a miss decodes the exact frame on the caller's
 thread, never "the nearest one ready".
 
-## C ABI readiness (the C wrapper is planned for W2)
+## C ABI readiness (the C wrapper is planned)
 
 The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 
@@ -114,11 +128,14 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 |---|---|
 | `Box<dyn FrameSource>`, `cache::Player`, `transport::Transport`, `FrameRenderer` | opaque handles (`*mut T` created and freed by the wrapper) |
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
-| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `PlayMode`, `Direction`, `SyncMode` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`) |
+| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
+| `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
+| `lmbd::Header`, `IndexEntry`, `ChunkEntry` | plain-data `#[repr(C)]` mirrors |
+| `lmbd_enc::EncodeParams` (`Bc7Params`, `RdoParams`) | a plain-data `#[repr(C)]` mirror (numbers and bools); encoding maps to `encode_frame` (RGBA8 buffer in, payload out) + `Writer::push_payload` / `finish` — no callbacks (`encode_frames` is a Rust convenience over those) |
 | `PixelLayout`, `Shading` (enums with a field) | a `u32` tag + the field |
 | `Decoded::Planes` | count + per-plane (format, width, height, pointer, length) borrowed from the handle |
 | `Decoded::Native` | the platform handle (`CVPixelBufferRef` on macOS), retained for the caller |
-| `MediaError` | `MediaError::code()` (stable `u32`, pinned) + the message through a separate call |
+| `MediaError` | `MediaError::code()` (stable `u32`, pinned; `Lmbd` = 11) + the message through a separate call |
 | `Arc<dyn Backend>` | chosen by the wrapper per platform (no callbacks across the boundary) |
 
 Rules that keep it that way: no generics or lifetimes in the public decode / transport API, no
