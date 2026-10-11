@@ -1,6 +1,7 @@
 //! `dxvkit-plus verify`: per file, every frame through the CPU and the GPU paths —
 //!
-//! - CPU vs GPU: block codecs within 1/255 (the BC conventions allow a GPU to differ by 1), LMBD
+//! - CPU vs GPU: block codecs within 1/255 (the BC conventions allow a GPU to differ by 1), HAP Q
+//!   within 2/255 (the YCoCg conversion after a BC3 decode may round differently twice), LMBD
 //!   (BC7) and BGRA native frames exactly (BC7 decode is exact integer arithmetic; Apple's own
 //!   conversion vs our zero-copy import);
 //! - `--tiles`: frame identity (the frame index the fixture pattern carries) on every frame, and,
@@ -35,6 +36,16 @@ fn max_diff(a: &[u8], b: &[u8]) -> (u8, u8) {
     (c, al)
 }
 
+/// Allowed CPU-vs-GPU channel difference, per source kind and frame shading: native (BGRA) and LMBD
+/// (BC7) exact, HAP Q (HapY, HapM) 2/255, the other block codecs 1/255.
+fn cpu_tolerance(kind: SourceKind, shading: Option<Shading>) -> u8 {
+    match (kind, shading) {
+        (SourceKind::Native | SourceKind::Lmbd, _) => 0,
+        (_, Some(Shading::HapYcocg { .. })) => 2,
+        _ => 1,
+    }
+}
+
 pub fn run(args: &Args) -> Result<(), String> {
     if args.positional.is_empty() {
         return Err(crate::USAGE.into());
@@ -64,7 +75,7 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
     let (info, mut src) = probe_open(path)?;
     let mut gpu = Session::new().map_err(|e| e.to_string())?;
     let n = info.frames;
-    let (mut worst_c, mut worst_a, mut cpu_checked) = (0u8, 0u8, 0u32);
+    let (mut worst_c, mut worst_a, mut cpu_checked, mut cpu_tol) = (0u8, 0u8, 0u32, 0u8);
     let (mut id_fail, mut src_worst) = (Vec::new(), 0u8);
     let mut hashes = Vec::with_capacity(n as usize);
     let (mut zero_copy_frames, mut uploaded) = (0u32, 0usize);
@@ -100,7 +111,9 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
                 alt_frames = alt_frames.saturating_add(1);
             }
         }
-        let hdr = matches!(&d, Decoded::Planes { shading: Shading::Hdr, .. });
+        let shading = if let Decoded::Planes { shading, .. } = &d { Some(*shading) } else { None };
+        cpu_tol = cpu_tol.max(cpu_tolerance(info.kind, shading));
+        let hdr = shading == Some(Shading::Hdr);
         if !hdr && let Ok(c) = src.cpu_rgba(&d) {
             let (dc, da) = max_diff(&g, &c);
             worst_c = worst_c.max(dc);
@@ -149,9 +162,7 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
             seek_mismatch.push(f);
         }
     }
-    // Native (BGRA) frames and LMBD (BC7 sampled texel for texel) must match the CPU exactly; the
-    // other block codecs allow the BC conventions' 1/255.
-    let cpu_tol = if matches!(info.kind, SourceKind::Native | SourceKind::Lmbd) { 0 } else { 1 };
+    // `cpu_tol`: the loosest `cpu_tolerance` over the frames (one shading per file in practice).
     if worst_c > cpu_tol || worst_a > cpu_tol {
         problems.push(format!("CPU vs GPU differ by {worst_c} (rgb) / {worst_a} (alpha), allowed {cpu_tol}"));
     }
@@ -178,4 +189,22 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
         "copies_per_native_frame": if info.kind == SourceKind::Native { json!(0) } else { json!(null) },
         "uploaded_bytes": uploaded,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the CPU-vs-GPU tolerances: HAP Q 2/255, other HAP 1/255, LMBD and native exact.
+    #[test]
+    fn cpu_tolerance_per_shading() {
+        let planes = |s| cpu_tolerance(SourceKind::Hap, Some(s));
+        assert_eq!(planes(Shading::HapYcocg { alpha: false }), 2);
+        assert_eq!(planes(Shading::HapYcocg { alpha: true }), 2);
+        assert_eq!(planes(Shading::Rgba { opaque: false }), 1);
+        assert_eq!(planes(Shading::Rgba { opaque: true }), 1);
+        assert_eq!(planes(Shading::AlphaOnly), 1);
+        assert_eq!(cpu_tolerance(SourceKind::Lmbd, Some(Shading::Rgba { opaque: false })), 0);
+        assert_eq!(cpu_tolerance(SourceKind::Native, None), 0);
+    }
 }

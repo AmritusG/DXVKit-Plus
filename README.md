@@ -12,7 +12,7 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.3.0**: getting decoded frames onto the GPU is now fast. Block frames go up
+This is release **0.3.1** (0.3.0 plus a `verify` tolerance fix): getting decoded frames onto the GPU is now fast. Block frames go up
 through persistent staging memory instead of a new buffer per upload, a pipelined player keeps the
 GPU busy while the next frames decode (or decodes straight into GPU-visible memory), and frames
 that are plain BC (LMBD, HAP R / RGBA / RGB) can be sampled as they are, skipping the conversion
@@ -62,9 +62,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -122,7 +122,7 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.3.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.3.1 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
@@ -134,7 +134,8 @@ dxvkit-plus encode-lmbd frames/ clip.lmbd --chunks 8   # any decodable source â†
 dxvkit-plus compare frames/ clip.lmbd --frame 3       # PSNR / SSIM of frame 3 against the source
 ```
 
-`verify` checks every frame: GPU vs CPU (exact for LMBD), frame identity (fixtures), shuffled seeks
+`verify` checks every frame: GPU vs CPU (exact for LMBD and native frames, HAP Q within 2/255,
+other HAP within 1/255), frame identity (fixtures), shuffled seeks
 vs sequential decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
 
 ## LMBD
