@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 # MSRV: the oldest toolchain this workspace is built and tested with (let-chains, edition 2024).
 rust-version = "1.95"
@@ -17,10 +17,12 @@ categories = ["multimedia::video", "graphics"]
 publish = false
 
 [workspace.dependencies]
-dxvkit-plus-core = { path = "crates/dxvkit-plus-core", version = "0.2.0" }
-dxvkit-plus-wgpu = { path = "crates/dxvkit-plus-wgpu", version = "0.2.0" }
-dxvkit-plus-apple = { path = "crates/dxvkit-plus-apple", version = "0.2.0" }
-dxvkit-plus-lmbd-enc = { path = "crates/dxvkit-plus-lmbd-enc", version = "0.2.0" }
+# Default features off: the Zstd decode backend (core's zstd-c / zstd-rust) is chosen once, by the
+# crate being built; every crate that uses core forwards both features, zstd-c by default.
+dxvkit-plus-core = { path = "crates/dxvkit-plus-core", version = "0.2.1", default-features = false }
+dxvkit-plus-wgpu = { path = "crates/dxvkit-plus-wgpu", version = "0.2.1", default-features = false }
+dxvkit-plus-apple = { path = "crates/dxvkit-plus-apple", version = "0.2.1", default-features = false }
+dxvkit-plus-lmbd-enc = { path = "crates/dxvkit-plus-lmbd-enc", version = "0.2.1", default-features = false }
 # Same wgpu major as Loombda-rs (D7: wgpu 30.x).
 wgpu = "30.0.1"
 wgpu-hal = { version = "30.0.1", features = ["metal"] }

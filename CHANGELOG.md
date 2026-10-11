@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.1 — 2026-10-11
+
+LMBD decodes with libzstd by default; the pure-Rust decoder stays as a feature.
+
+- `dxvkit-plus-core`: features `zstd-c` (default: libzstd 1.5.7, the standard C library, bundled)
+  and `zstd-rust` (`ruzstd`, pure Rust) pick the Zstd decode backend for LMBD chunks; `zstd-c` wins
+  when both are on, and neither is a compile error. Chunks decompress straight into the frame
+  buffer either way. No public API change; errors are still `MediaError::Lmbd`.
+- Every crate that uses the core forwards both features; the workspace now depends on its own
+  crates with default features off, so `--no-default-features --features zstd-rust` switches the
+  whole build.
+- Both backends decode every LMBD vector frame (13/13, equal to the original decoder) and 44 1080p
+  frames to identical RGBA. 16 layers of 1080p LMB7 (λ 1, 8 chunks), Mac Studio: decode-all p50
+  3.30 ms with libzstd vs 11.30 ms with `ruzstd`; λ 0: 2.76 vs 8.79 ms.
+- `dxvkit-plus` CLI: `probe` and `bench` print `zstd_backend` (`libzstd` or `ruzstd`) for LMBD.
+- Notices: `LICENSES/libzstd-BSD-3-Clause.txt`, `LICENSES/zstd-rs-BSD-3-Clause.txt` (the encoder
+  has linked libzstd since 0.2.0; its notice was missing). The `zstd` crates are BSD-3-Clause, not
+  MIT as a 0.2.0 comment said.
+
 ## 0.2.0 — 2026-10-11
 
 LMBD, our own GPU codec (BC7 + rate-distortion optimisation + Zstd), encoder and decoder.

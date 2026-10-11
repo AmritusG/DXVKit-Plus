@@ -12,9 +12,11 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.2.0**: it adds **LMBD**, our own GPU codec — BC7 with rate-distortion
+This is release **0.2.1**. 0.2.0 added **LMBD**, our own GPU codec — BC7 with rate-distortion
 optimisation, then Zstd, in a documented container ([`docs/LMBD.md`](docs/LMBD.md)) — with both
-encoder and decoder. DXV decoding is on the [roadmap](#roadmap), not in this release.
+encoder and decoder; 0.2.1 decodes its Zstd chunks with libzstd, the standard C Zstandard library,
+by default (16 layers of 1080p LMBD decode in about 3.3 ms instead of 11), keeping the pure-Rust
+decoder as a feature. DXV decoding is on the [roadmap](#roadmap), not in this release.
 
 ## Codec support
 
@@ -30,7 +32,7 @@ encoder and decoder. DXV decoding is on the [roadmap](#roadmap), not in this rel
 | H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020 |
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
-| LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ pure Rust, **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU |
+| LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
 | DXV (`DXD3` / `DXDI`) | 🔜 probed, not decoded | — | roadmap |
 | Native codecs on Windows | 🔜 `Backend` stub | — | Media Foundation + DX12 import, designed |
 | PNG stills / sequences | ✅ | RGBA8 | |
@@ -42,7 +44,7 @@ every frame of every fixture), and every error is a value — hostile files neve
 
 | Crate | What |
 |---|---|
-| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. |
+| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
 | [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
 | [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
@@ -56,9 +58,11 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" } # macOS
+# No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
+# DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
 
 ```rust
@@ -91,7 +95,7 @@ frame to show at each clock tick (exact integer time).
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.2.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.2.1 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
@@ -142,6 +146,24 @@ about 8.6 CPU-minutes per 1080p frame of detailed footage — 14 frames took 15 
 Mac Studio, frames encoding in parallel); `--lambda 0` encodes 30 such frames in 8 seconds, and a
 shorter `--lookback` sits in between.
 
+### Zstd decode backend
+
+LMBD's CPU work on playback is Zstd decompression, and it has two interchangeable backends in
+`dxvkit-plus-core`, chosen at build time:
+
+| Feature | Library | When |
+|---|---|---|
+| `zstd-c` (default) | libzstd 1.5.7, the standard C library (bundled, built by `zstd-sys`; BSD-3-Clause) | always, unless you opt out |
+| `zstd-rust` | `ruzstd`, pure Rust (MIT) | `--no-default-features --features zstd-rust`, for a C-free core |
+
+Every crate that uses the core forwards both features (`zstd-c` on by default). Both on: libzstd is
+used. Neither: the core does not compile, with an error naming the two. Both backends decode every
+LMBD frame identically — every compatibility-vector frame and 44 1080p frames hash to the same RGBA
+under each, equal to the original decoder's — and `dxvkit-plus probe` / `bench` print which one
+the binary was built with (`"zstd_backend": "libzstd"` or `"ruzstd"`). The encoder always uses
+libzstd. libzstd is used under its BSD-3-Clause licence (it is dual BSD / GPLv2); the notice is in
+[`LICENSES/libzstd-BSD-3-Clause.txt`](LICENSES/libzstd-BSD-3-Clause.txt).
+
 ## Benchmarks (Mac Studio)
 
 Measured on the project's Mac Studio (Mac16,9, Apple M4 Max, 14 cores, 36 GB, macOS 26.6.2), release build, with `dxvkit-plus bench` on
@@ -162,9 +184,12 @@ milliseconds, p50 / p99. *These are numbers from one machine, not a guarantee.*
 | HAP Alpha-Only (HapA) | 3840×2160 | 0.48 / 0.74 | 0.48 / 0.59 | 1.01 / 2.95 | 1.62 / 2.94 |
 | HAP Q Alpha (HapM) | 1920×1080 | 1.04 / 1.71 | 1.04 / 1.28 | 1.73 / 11.51 | 3.63 / 7.80 |
 | HAP Q Alpha (HapM) | 3840×2160 | 3.95 / 5.06 | 3.91 / 4.51 | 2.37 / 3.77 | 6.51 / 7.28 |
-| LMBD (λ 1), 8 chunks | 1920×1080 | 0.95 / 1.43 | — | 1.94 / 16.04 | 2.64 / 10.81 |
-| LMBD (λ 0), 8 chunks | 1920×1080 | 0.64 / 1.75 | — | 1.80 / 11.53 | 2.41 / 7.34 |
-| LMBD (λ 0), 1 chunk | 1920×1080 | 3.67 / 4.31 | — | 1.48 / 11.34 | 5.87 / 12.92 |
+| LMBD (λ 1), 8 chunks, libzstd | 1920×1080 | 0.40 / 0.71 | — | 1.61 / 14.42 | 2.80 / 5.49 |
+| LMBD (λ 0), 8 chunks, libzstd | 1920×1080 | 0.37 / 0.61 | — | 1.80 / 9.44 | 2.55 / 9.43 |
+| LMBD (λ 0), 1 chunk, libzstd | 1920×1080 | 0.97 / 1.60 | — | 1.61 / 11.02 | 2.95 / 5.94 |
+| LMBD (λ 1), 8 chunks, `ruzstd` | 1920×1080 | 1.05 / 1.36 | — | 1.95 / 11.85 | 2.98 / 6.93 |
+| LMBD (λ 0), 8 chunks, `ruzstd` | 1920×1080 | 0.77 / 1.21 | — | 1.43 / 9.70 | 3.00 / 10.21 |
+| LMBD (λ 0), 1 chunk, `ruzstd` | 1920×1080 | 3.81 / 4.36 | — | 1.16 / 6.29 | 5.33 / 11.11 |
 | H.264 | 1920×1080 | 0.27 / 12.40 | — | 1.58 / 10.05 | 1.18 / 9.86 |
 | H.264 | 3840×2160 | 1.28 / 29.07 | — | 1.34 / 12.46 | 1.68 / 31.01 |
 | HEVC | 1920×1080 | 0.24 / 8.73 | — | 1.46 / 10.00 | 2.42 / 10.01 |
@@ -190,8 +215,10 @@ milliseconds, p50 / p99. *These are numbers from one machine, not a guarantee.*
 | HAP Alpha-Only (HapA) | 3840×2160 | 1.41 / 1.71 | 9.03 / 10.72 |
 | HAP Q Alpha (HapM) | 1920×1080 | 2.63 / 3.74 | 14.08 / 24.28 |
 | HAP Q Alpha (HapM) | 3840×2160 | 8.74 / 9.78 | 30.90 / 34.61 |
-| LMBD (λ 1), 8 chunks | 1920×1080 | 11.76 / 13.28 | 28.46 / 34.14 |
-| LMBD (λ 0), 8 chunks | 1920×1080 | 7.49 / 8.92 | 18.63 / 27.32 |
+| LMBD (λ 1), 8 chunks, libzstd | 1920×1080 | **3.30** / 3.68 | 16.28 / 23.10 |
+| LMBD (λ 0), 8 chunks, libzstd | 1920×1080 | **2.76** / 3.83 | 16.18 / 23.43 |
+| LMBD (λ 1), 8 chunks, `ruzstd` | 1920×1080 | 11.30 / 12.78 | 20.94 / 32.30 |
+| LMBD (λ 0), 8 chunks, `ruzstd` | 1920×1080 | 8.79 / 11.23 | 20.85 / 35.85 |
 
 | Codec | Size | Route | Import + convert + GPU wait |
 |---|---|---|---|
@@ -213,14 +240,17 @@ restarting at frame 0 at the start of each pass, which is a seek; GPU clock ramp
 player overlaps decode and GPU work and keeps frames in the read-ahead cache. The layer table runs
 16 independent decoders of the same clip (one thread each) plus 16 uploads + conversions on one
 device per step. Raw JSON lines: `docs/data/bench-macstudio.jsonl` (LMBD:
-`docs/data/bench-lmbd-macstudio.jsonl`; the LMBD clips are our CC0 plasma, 1920×1080, encoded by
-`dxvkit-plus encode-lmbd`).
+`docs/data/bench-lmbd-zstd-backends-macstudio.jsonl`, both backends, two interleaved rounds — the
+tables show round 1; 0.2.0's `ruzstd`-only run is `docs/data/bench-lmbd-macstudio.jsonl`; the LMBD
+clips are our CC0 plasma, 1920×1080, encoded by `dxvkit-plus encode-lmbd`).
 
-LMBD's CPU side is Zstd decompression, done here by the pure-Rust `ruzstd`. On the λ 1 clip it runs
-at 122 MB/s per thread where libzstd runs at 968 MB/s (λ 0: 446 vs 2119 MB/s; same chunks, measured
-on this machine), so 16 LMBD layers are decode-bound in this build; a libzstd decode path would
-take the 16-layer decode from about 12 ms to an estimated 2-3 ms (from those per-thread rates; not
-measured).
+LMBD's CPU side is Zstd decompression. Per thread, on the same chunks, libzstd runs at 968 MB/s on
+the λ 1 clip where `ruzstd` runs at 122 MB/s (λ 0: 2119 vs 446 MB/s). With libzstd, the default
+since 0.2.1, decoding 16 layers of 1080p takes 3.30 ms at λ 1 (3.37 ms in the second round) and
+2.76 ms at λ 0 (2.93 ms), against 11.30 ms and 8.79 ms with `ruzstd`. That is about 10 GB/s of BC7 across the 14
+cores — the libzstd rate on the 10 performance cores, with the 4 efficiency cores adding less — so
+λ 1 lands a little above the 2-3 ms the per-thread rates suggested. At 16 layers the step is now
+dominated by the 16 uploads and conversions, not by decode.
 
 
 ## Testing
@@ -230,6 +260,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 cargo deny check licenses bans sources
+# the same gates on the pure-Rust Zstd backend
+cargo clippy --workspace --all-targets --no-default-features --features zstd-rust -- -D warnings
+cargo nextest run --workspace --no-default-features --features zstd-rust
+cargo deny --no-default-features --features zstd-rust check licenses bans sources
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 lmbd   # the LMBD reader alone
 ```
