@@ -24,6 +24,7 @@
 use crate::bytes::{arr, byte, le16, le32};
 use crate::container::{FileSource, ReadAt};
 use crate::error::MediaError;
+use crate::source::PlaneSink;
 use crate::time::FrameRate;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
@@ -370,6 +371,31 @@ pub fn decode_payload(payload: &[u8], header: &Header, parallel: bool, out: &mut
     }
 }
 
+/// Decode a frame payload chunk by chunk into `sink` (plane 0, in order): each chunk decompresses
+/// into `chunk` (grown once and reused, so it stays cache-sized) and goes straight to the sink;
+/// stored chunks go from the payload directly. The frame is never assembled in memory.
+pub fn decode_payload_into(payload: &[u8], header: &Header, chunk: &mut Vec<u8>, sink: &mut dyn PlaneSink) -> Result<(), MediaError> {
+    let chunks = parse_chunks(payload, header)?;
+    let mut offset = 0usize;
+    for c in &chunks {
+        let raw = c.raw_size as usize;
+        if c.compressor == Compressor::None {
+            let start = c.offset as usize;
+            let data = payload.get(start..start.saturating_add(raw)).ok_or_else(|| MediaError::Lmbd("chunk outside the frame".into()))?;
+            sink.write(0, offset, data)?;
+        } else {
+            if chunk.len() < raw {
+                chunk.resize(raw, 0);
+            }
+            let out = chunk.get_mut(..raw).ok_or_else(|| MediaError::Lmbd("chunk buffer".into()))?;
+            unpack_chunk(payload, c, out)?;
+            sink.write(0, offset, out)?;
+        }
+        offset = offset.saturating_add(raw);
+    }
+    Ok(())
+}
+
 /// An open LMBD file: the validated header and tail index, and positioned reads of its frames.
 #[derive(Clone)]
 pub struct LmbdFile {
@@ -444,6 +470,13 @@ impl LmbdFile {
     }
 
     /// Frame `n`'s chunk table (for `probe`-style inspection).
+    /// [`LmbdFile::decode_frame`] into a sink (see [`decode_payload_into`]); `chunk` is reused
+    /// across frames.
+    pub fn decode_frame_into(&self, n: u32, scratch: &mut Vec<u8>, chunk: &mut Vec<u8>, sink: &mut dyn PlaneSink) -> Result<(), MediaError> {
+        self.read_payload(n, scratch)?;
+        decode_payload_into(scratch, &self.header, chunk, sink)
+    }
+
     pub fn chunks(&self, n: u32) -> Result<Vec<ChunkEntry>, MediaError> {
         let mut buf = Vec::new();
         self.read_payload(n, &mut buf)?;
