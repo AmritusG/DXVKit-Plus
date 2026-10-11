@@ -4,7 +4,7 @@ author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
 source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 444 --quality 4 --threads 1 (scripts/mint-lmbx-vectors.sh)
 license: CC0-1.0
 added: 2026-10-11
-sha256: 0ec17dccf78ed86008ddf34120b331661080f1b9ae8e40e39cf6c9ba937a00f1
+sha256: 9dbf09cef82c105d4cb4dfa14b3b1eea672afe884b4daf16cfe6a9309b90c4ca
 params: pattern=tiles chroma=444 quality=4
 decoded_rgba_q_sha256 frame 0: fcf6b320b6da70fd34b82a2db952dcf576b0ceba76bf7421c83136761fe13a95
 decoded_rgba_q_sha256 frame 1: 2802898da835467f9f87007a2600a25ab107a6dbf283de55630b3b5a3207fb8b

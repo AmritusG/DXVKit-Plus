@@ -1,4 +1,7 @@
-# LMBD — container and bitstream (profile LMB7)
+# LMBD — container and bitstreams (profiles LMB7 and LMBX)
+
+Sections 1-10 specify the container and profile LMB7; section 11 specifies profile LMBX (`0x10`),
+which uses the same container.
 
 LMBD is a video format for GPU playback: every frame is a BC7 (BPTC) texture, stored as a few
 independently compressed chunks. A player decompresses the chunks (in parallel) and uploads the
@@ -115,7 +118,9 @@ Seeking to frame `n` is reading index entry `n`.
 |---|---|---|
 | profile | `0x01` | **LMB7**: BC7 RGBA blocks as above |
 | profile | `0x02` | reserved (a YCoCg variant of LMB7, not defined) |
-| profile | `0x10` | reserved for a future profile |
+| profile | `0x10` | LMBX (§11); its texture format must be `0x11` |
+| texture format | `0x11` | LMBX frame bitstream version 1 (only with profile `0x10`) |
+| texture format | `0x10` | the never-frozen LMBX prototype: refused (`Unsupported`), not decoded |
 | texture format | `0x01` | BC7 RGBA (16 bytes per 4x4 block) |
 | compressor | `0x00` | none |
 | compressor | `0x01` | Zstd |
@@ -180,3 +185,182 @@ patterns (`scripts/mint-lmbd-vectors.sh`). Each `.attribution` sidecar records t
 the SHA-256 of every frame as the original decoder returns it (straight RGBA8 at the picture size).
 They cover: lambda 0, 0.5 and 1; 1, 2, 3 and 4 chunks; Zstd and uncompressed chunks; opaque and
 alpha content (modes 1, 5, 6, 7); and a size that is not a multiple of 4 (130 x 74).
+
+## 11. Profile LMBX (`0x10`)
+
+LMBX trades BC7's fixed 8 bits per pixel for variable-rate coding: YCoCg-R colour, an 8x8 DCT with
+an **exactly specified integer inverse**, a quantiser chosen per 8x8 block, and rANS entropy
+coding. Every plane of every 32x32 tile is an independent stream, so a GPU decodes thousands of
+streams at once. Every step below is integer arithmetic with one defined result for every input
+that passes validation, so every conforming decoder — CPU, GPU, anyone's — produces identical
+samples. Decisions: LMBX-D1 (integer inverse transform, so outputs are bit-identical, not "within 1
+code value") and LMBX-D2 (two signalled chroma modes, 4:2:2 with halo and 4:4:4).
+
+### 11.1 In the container
+
+Header: profile `0x10`, texture format `0x11`; width, height, frame rate, frame count, index as in
+§2; colorspace `0` (the samples are sRGB-encoded code values). A frame payload is as in §4 except
+that chunk raw sizes are **not** block-aligned: the chunks' raw data, concatenated in table order,
+is the frame's **LMBX bitstream** (§11.2), whose total size must be 1 ..= `16 * cw * ch + 2^20`
+bytes (`cw`, `ch` the coded size, §11.2). Writers store one uncompressed chunk per frame (the
+bitstream is entropy-coded already); readers accept any chunking and compressor. Every LMBX frame
+is intra (keyframe 1).
+
+### 11.2 Frame bitstream
+
+All integers little-endian.
+
+| Offset | Size | Field | Value |
+|---|---|---|---|
+| 0 | 4 | magic | `L` `M` `B` `X` |
+| 4 | 2 | version | `1` (a bitstream starting `LMXS` is the prototype: refuse) |
+| 6 | 1 | chroma | `0` = 4:4:4, `1` = 4:2:2 halo |
+| 7 | 1 | flags | bit 0: an alpha plane is coded; other bits 0 |
+| 8 | 4 | width | equals the container's width |
+| 12 | 4 | height | equals the container's height |
+| 16 | 2 | chroma ratio | `cr`, 1 ..= 65535, in 1/256 |
+| 18 | 2 | reserved | 0 |
+| 20 | 32 | quantiser steps | `QT[0..16]`, u16 each, 1 ..= 4095 |
+| 52 | … | frequency table | §11.3 |
+| … | `8 * T` | quantiser map | §11.4 |
+| … | 4 | stream count | `S = T * P` |
+| … | `4 * S` | stream offsets | `off[0..S]`, relative to the data start; `off[0] = 0`, non-decreasing, each <= the data length |
+| … | … | data | the streams; stream `i` is bytes `off[i] .. off[i+1]` (the last ends at the bitstream's end) |
+
+Geometry: tiles are 32x32. `tx = ceil(width / 32)`, `ty = ceil(height / 32)`, `T = tx * ty`
+tiles in raster order. Coded size `cw = 32 * tx`, `ch = 32 * ty`. Planes: Y at `cw x ch`; Co and
+Cg at `cwc x ch` with `cwc = cw` (4:4:4) or `cw / 2` (4:2:2); A at `cw x ch` when flag bit 0 is
+set. `P = 3` (Y, Co, Cg) or 4 (with A). Stream `t * P + k` is plane `k` (0 Y, 1 Co, 2 Cg, 3 A) of
+tile `t`.
+
+### 11.3 Frequency table (rANS)
+
+`u16 n` (1 ..= 2048), then `n` entries of (`u16 symbol`, `u16 freq`): symbols strictly increasing,
+each < 2048, every freq >= 1, the freqs adding up to exactly 16384. Absent symbols have frequency 0.
+`cum[s]` = the sum of the frequencies of all symbols below `s`. Symbol meaning: `s < 2047` is a
+coefficient level `s - 1023`; `2047` ends a block (EOB). One table serves every stream of the frame.
+
+### 11.4 Quantiser map
+
+`8` bytes per tile, tile order: the quantiser index of each of the tile's 4x4 luma blocks (raster),
+two per byte, the even block in the low nibble. Luma and alpha blocks use step `q = QT[index]`;
+chroma block (column `bx`, row `by` within the tile) uses
+`qc = clamp((QT[index of luma block (lbx, by)] * cr + 128) >> 8, 2, 4095)` with `lbx = 2 * bx`
+(4:2:2) or `bx` (4:4:4). (Chroma steps are at least 2: Co and Cg span ±255, so their DC reaches
+±2040 and every level must fit ±1023.)
+
+### 11.5 Decoding a stream
+
+rANS with 32-bit state `x`, 14-bit probabilities, byte-wise renormalisation, lower bound `L = 2^23`.
+Bytes of the stream are read in order; **reading past the stream's end gives 0** (so a short or
+empty stream is still defined).
+
+```
+x = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24          (the stream's first four bytes)
+next symbol:
+    slot = x & 16383
+    s    = the symbol with cum[s] <= slot < cum[s] + freq[s]
+    x    = freq[s] * (x >> 14) + slot - cum[s]               (modulo 2^32)
+    repeat at most 4 times: if x >= 2^23 stop; else x = (x << 8 | next byte) (modulo 2^32)
+```
+
+A stream holds its plane's 8x8 blocks of the tile in raster order (Y and A: 4x4 blocks; 4:4:4
+chroma 4x4; 4:2:2 chroma 2 wide x 4 high). Per block: read symbols into the 64 coefficients in
+**zigzag order** (below) until EOB or until all 64 are read (no EOB follows the 64th); the rest are
+0. Coefficient `k` goes to raster position `ZIGZAG[k]` (row = vertical frequency):
+
+```
+ 0  1  8 16  9  2  3 10 17 24 32 25 18 11  4  5 12 19 26 33 40 48 41 34 27 20 13  6  7 14 21 28
+35 42 49 56 57 50 43 36 29 22 15 23 30 37 44 51 58 59 52 45 38 31 39 46 53 60 61 54 47 55 62 63
+```
+
+Dequantise: `D = clamp(level * step, -4095, 4095)` — except the DC (coefficient 0), which is
+predicted: each stream keeps `dc`, the previous block's dequantised DC (0 before its first block),
+and `D[0] = clamp(dc + level * dcstep, -4095, 4095)` with `dcstep = max(step, 2)` for Y and A and
+`max(step, 4)` for Co and Cg (a DC residual reaches ±2040 or ±4080 and must fit a level of ±1023;
+the DC is 8x the block mean, so this costs at most a quarter / a half code value); when the block
+ends before its first
+coefficient (an immediate EOB), `D[0] = dc`. Either way `dc` becomes `D[0]`. (Measured: 6-28%
+fewer bytes at equal quality — flat runs cost only their end-of-block.)
+
+### 11.6 Integer inverse DCT
+
+With the integer basis `M[k][n]` (frequency `k`, sample `n`) — `1448` for `k = 0`, otherwise
+`round(2048 cos((2n + 1) k pi / 16))` — that is:
+
+```
+k=0  1448  1448  1448  1448  1448  1448  1448  1448
+k=1  2009  1703  1138   400  -400 -1138 -1703 -2009
+k=2  1892   784  -784 -1892 -1892  -784   784  1892
+k=3  1703  -400 -2009 -1138  1138  2009   400 -1703
+k=4  1448 -1448 -1448  1448  1448 -1448 -1448  1448
+k=5  1138 -2009   400  1703 -1703  -400  2009 -1138
+k=6   784 -1892  1892  -784  -784  1892 -1892   784
+k=7   400 -1138  1703 -2009  2009 -1703  1138  -400
+```
+
+each block of dequantised coefficients `D[u][v]` becomes samples, in **quarter code values**:
+
+```
+t[i][j]   = (sum over k of M[k][i] * D[k][j] + 512) >> 10
+out[i][j] = ((sum over l of t[i][l] * M[l][j] + 2048) >> 12) + offset
+```
+
+`>>` is an arithmetic shift (rounds towards minus infinity); `offset` is 512 for Y and A, 0 for Co
+and Cg. Every value fits a signed 32-bit integer: `|D| <= 4095` and `|M| <= 2009` give
+`|first sum| <= 8 * 2009 * 4095 < 2^26`, `|t| <= 65520`, `|second sum| <= 8 * 65520 * 2009 < 2^31`.
+The block's samples go to its 8x8 area of the plane (the tile's position plus the block's).
+
+### 11.7 Output
+
+For each picture pixel `(x, y)` (the top-left `width x height` of the coded planes), in quarter
+code values:
+
+```
+Y  = Y plane at (x, y)
+Co, Cg: 4:4:4: the chroma planes at (x, y)
+        4:2:2: c = x >> 1; even x: plane at (c, y);
+               odd x: (plane(c, y) + plane(min(c + 1, cwc - 1), y) + 1) >> 1     (the halo: c + 1 may
+               be in the next tile)
+t = Y - (Cg >> 1);  G = Cg + t;  B = t - (Co >> 1);  R = B + Co
+A  = A plane at (x, y) with alpha, else 1020
+R, G, B, A each clamped to 0 ..= 1020
+```
+
+This RGBA (straight alpha, sRGB-encoded) in quarter code values is the **normative output**.
+8-bit: `(v + 2) >> 2`. 10-bit: `(v * 1023 + 510) / 1020`.
+
+### 11.8 Validation
+
+Reject a frame whose magic, version, chroma, flags, size, reserved bytes, quantiser steps, frequency
+table, stream count or offsets break the rules above. Nothing else is an error: stream contents are
+defined for every byte pattern (§11.5), so a decoder needs no per-stream checks.
+
+### 11.9 Conformance vectors
+
+`tests/fixtures/lmbx_*.lmbd` (CC0, `scripts/mint-lmbx-vectors.sh`): both chroma modes, with and
+without alpha, quality 4 to 48, sizes 200x130, 333x141 and 97x61 (none a multiple of 32). Each
+sidecar holds every frame's SHA-256 of the normative output (`width * height * 4` u16 little-endian,
+rows top first). Any conforming decoder must reproduce them; DXVKit Plus's CPU decoder
+(`dxvkit_plus_core::lmbx`) and its GPU compute decoder (`dxvkit-plus-wgpu`) both do.
+
+### 11.10 The reference encoder (informative)
+
+`dxvkit_plus_lmbd_enc::lmbx` (from Amrit's B1d prototype): RGBA to YCoCg-R in integers
+(`Co = R - B`, `t = B + (Co >> 1)`, `Cg = G - t`, `Y = t + (Cg >> 1)`), edge-replicated to the coded
+size; 4:2:2 chroma = the rounded mean of each column pair. A float 8x8 DCT. Per block, the
+quantiser index is the step nearest `base * clamp(AC energy / 380, 0.16, 2.6)` (`base` = the quality
+setting, default 16). Levels by deadzone quantisation (bias 0.45) refined by RDOQ against the
+actual rANS cost (lambda = 0.25 q^2, two passes over a bootstrapped rate model) with an
+end-of-block trellis; DC and the two lowest AC terms are never deadzoned or dropped (banding).
+Chroma ratio 1.0 (4:2:2) or 1.6 (4:4:4). The DC residual is quantised against the decoder's
+reconstructed DC. Rate control: the best quality whose frame fits a byte budget (bisection on
+`base`).
+
+### 11.11 Why 32x32 tiles with a stream per plane (informative)
+
+Measured on the Mac Studio (`docs/data/w5-lmbx-tile-ab.txt`): at the same picture, 32x32 tiles
+cost 3.5% more bytes than 64x64 tiles but decode 2.2-2.4x faster on the GPU (16 layers of 1080p:
+11.5-13.1 ms vs 24.9-28.1 ms per step), because the serial part of decoding — one rANS stream — is
+7x shorter and there are 8x more of them to run in parallel.
+

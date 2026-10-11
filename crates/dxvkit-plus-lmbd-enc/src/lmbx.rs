@@ -251,21 +251,29 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
     let h = &s.header;
     let (tx, ty) = (ti % h.tiles_x(), ti / h.tiles_x());
     let qi = &qidx[ti as usize];
-    let block = |plane: &Plane, x0: u32, y0: u32, shift: i32, q: u32, syms: &mut Symbols| {
+    // The DC is coded as a residual from the previous block's reconstructed DC in the stream
+    // (`dc`, the decoder's value), so flat runs cost only their end-of-block.
+    let block = |plane: &Plane, x0: u32, y0: u32, shift: i32, q: u32, chroma: bool, dc: &mut i32, syms: &mut Symbols| {
         let c = fdct(m, &plane.block(x0, y0, shift));
         let lambda = p.lambda * f64::from(q) * f64::from(q);
-        emit_block(syms, &quant_block(&c, q, rate, lambda, p, rdo));
+        let mut lev = quant_block(&c, q, rate, lambda, p, rdo);
+        // The DC: a residual from the decoder's previous DC, at the DC step, round to nearest.
+        let qdc = dxvkit_plus_core::lmbx::dc_step(q, chroma);
+        let l0 = ((c[0] - f64::from(*dc)) / f64::from(qdc)).round().clamp(-f64::from(LEVEL_OFFSET), f64::from(LEVEL_OFFSET)) as i32;
+        lev[0] = l0;
+        *dc = (*dc + l0 * qdc as i32).clamp(-dxvkit_plus_core::lmbx::DEQUANT_MAX, dxvkit_plus_core::lmbx::DEQUANT_MAX);
+        emit_block(syms, &lev);
     };
     let q_of = |by: u32, bx: u32| u32::from(QT[qi[(by * TB + bx) as usize]]);
     let mut out = Vec::with_capacity(4);
     for kind in PLANES.into_iter().take(h.planes() as usize) {
-        let mut syms = Symbols::new();
+        let (mut syms, mut dc) = (Symbols::new(), 0i32);
         match kind {
             PlaneKind::Y | PlaneKind::A => {
                 let plane = if kind == PlaneKind::Y { &s.y } else { s.a.as_ref().unwrap_or(&s.y) };
                 for by in 0..TB {
                     for bx in 0..TB {
-                        block(plane, tx * TILE + bx * 8, ty * TILE + by * 8, 128, q_of(by, bx), &mut syms);
+                        block(plane, tx * TILE + bx * 8, ty * TILE + by * 8, 128, q_of(by, bx), false, &mut dc, &mut syms);
                     }
                 }
             }
@@ -275,7 +283,7 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
                 for by in 0..TB {
                     for bx in 0..cbw {
                         let lbx = if h.chroma == Chroma::Halo422 { 2 * bx } else { bx };
-                        block(plane, tx * cw + bx * 8, ty * TILE + by * 8, 0, h.chroma_q(q_of(by, lbx)), &mut syms);
+                        block(plane, tx * cw + bx * 8, ty * TILE + by * 8, 0, h.chroma_q(q_of(by, lbx)), true, &mut dc, &mut syms);
                     }
                 }
             }

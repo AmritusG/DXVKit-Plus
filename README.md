@@ -40,6 +40,7 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
+| LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec + conformance vectors |
 | DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit |
 | DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied |
 | DXV3 High Quality (`YCG6`) | ✅ pure Rust | Y BC4 + CoCg BC5 → RGB in WGSL, bit-exact with the CPU | FSE-coded opcode streams; the two sections decode in parallel |
@@ -168,6 +169,31 @@ and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and
   un-premultiplies on output, per clip — the counterpart of Arena's per-clip "Alpha Type". That
   reading is what ffmpeg assumes for DXT5; on a straight-alpha test card our premultiplied mode
   is within 1.9/255 (CPU) / 2.6/255 (GPU) of ffmpeg's output as shown.
+
+## LMBX
+
+LMBX is LMBD's second profile (`0x10`): instead of BC7's fixed 8 bits per pixel it spends bits
+where the picture needs them — YCoCg-R, an 8x8 DCT, a quantiser per 8x8 block chosen by rate-
+distortion optimisation, and rANS — and the GPU decodes it with compute shaders (only the
+compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is frozen here as
+bitstream v1 ([`docs/LMBD.md`](docs/LMBD.md) §11):
+
+- **Exact integer decoding** (LMBX-D1). The inverse transform, the colour conversion and every
+  rounding are specified in integers, so every conforming decoder — CPU or GPU, ours or anyone's —
+  produces the same samples bit for bit (10 bits of precision; 8-bit output is `(v + 2) >> 2`).
+  Five CC0 conformance vectors carry the expected hashes.
+- **Two chroma modes** (LMBX-D2): `422halo` (half-width chroma, interpolated across tile edges) and
+  `444`, signalled per clip.
+- **Parallel by construction.** Every plane of every 32x32 tile is its own stream: a 1080p frame is
+  6,000-8,000 independent streams.
+
+```sh
+dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 422halo --quality 16
+dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 444 --frame-bytes 400000   # rate control
+dxvkit-plus compare frames/ clip.lmbd --frame 3 [--float]
+```
+
+LMBX_RESULTS_PLACEHOLDER
 
 ## LMBD
 
@@ -418,7 +444,7 @@ only). Builds and tests run on the Mac Studio; there is no remote CI yet.
 
 ## Roadmap
 
-- **LMBD** — a faster GPU (compute) BC7 encoder, and later profiles (reserved in the format).
+- **LMBD** — a faster GPU (compute) BC7 encoder for LMB7; GPU-side LMBX encoding.
 - **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
   `Backend` trait.
 - **Encoders** — HAP and DXV encode (LMBD encode ships in 0.2.0). (HAP Q encoding will be written from the YCoCg-DXT paper the

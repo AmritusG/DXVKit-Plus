@@ -4,9 +4,9 @@ author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
 source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 422halo --quality 4 --threads 1 (scripts/mint-lmbx-vectors.sh)
 license: CC0-1.0
 added: 2026-10-11
-sha256: b94ba37d891950fbcfba615af53e68d1eb19d3267575213e5111d19c78b36f2f
+sha256: edfb80a7ec5bd4ce2d00df6750c70e380383e1c906903a3fb591980b0ff9ba39
 params: pattern=tiles chroma=422halo quality=4
-decoded_rgba_q_sha256 frame 0: f747b004cba0c30394b31637682363dae192f98b280f5c79cf2dfd7b8b4f1892
-decoded_rgba_q_sha256 frame 1: 585e093dad590046e3addd42437eef432847b96e4e48ffa865411528b8d94e9e
-decoded_rgba_q_sha256 frame 2: 83e779f347c79aa32cafe5b70461e29bafd78c862bef9ebc490aee35e5c59019
+decoded_rgba_q_sha256 frame 0: 6da4157aac67bda504b683a2f6a0f5715ba6bb01d7655b84d9b02e8f44646d88
+decoded_rgba_q_sha256 frame 1: c2394ea5d02c4d6261783da9e9b19f80b25025030959ee6e6c4a996c56a1e66f
+decoded_rgba_q_sha256 frame 2: fab13ff946245ff3678a34a89ad52066b320bcbdc823544336a0a3ff728df3ae
 notes: An LMBX (profile 0x10, bitstream v1) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own footage, no third-party content.

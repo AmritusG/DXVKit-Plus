@@ -50,6 +50,9 @@ pub fn run(args: &Args) -> Result<(), String> {
                 cpu.push(ms(t));
             }
         }
+        if info.codec == "LMBX" {
+            lmbx_cpu(&info, &mut *src, &base, n, layers)?;
+        }
         if args.has("layers-only") && layers > 0 {
             let gpu = Session::new().map_err(|e| e.to_string())?;
             for &v in &variants {
@@ -135,6 +138,66 @@ pub fn run(args: &Args) -> Result<(), String> {
                 crate::layers::run(path, &info, layers, n, &gpu.gpu, v)?;
             }
         }
+    }
+    Ok(())
+}
+
+/// LMBX on the CPU (the reference decoder: rANS, integer IDCT, YCoCg, to 8-bit RGBA): per frame
+/// with the tiles on worker threads and on one thread, and with `layers > 0` that many frames
+/// decoded at once (one thread each) per step.
+fn lmbx_cpu(
+    info: &dxvkit_plus_core::source::MediaInfo,
+    src: &mut dyn dxvkit_plus_core::source::FrameSource,
+    base: &serde_json::Value,
+    n: u32,
+    layers: u32,
+) -> Result<(), String> {
+    use dxvkit_plus_core::lmbx::decode_rgba8;
+    let blobs: Vec<Vec<u8>> = (0..n.min(30))
+        .map(|f| match src.decode(f) {
+            Ok(Decoded::Planes { planes, .. }) => planes.into_iter().next().map(|p| p.data).ok_or_else(|| "LMBX frame without a bitstream".to_string()),
+            Ok(_) => Err("not an LMBX frame".to_string()),
+            Err(e) => Err(e.to_string()),
+        })
+        .collect::<Result<_, _>>()?;
+    let (w, h) = (info.width, info.height);
+    let mut rows = Vec::new();
+    for (measure, parallel) in [("cpu_lmbx_rgba_parallel_tiles", true), ("cpu_lmbx_rgba_single_thread", false)] {
+        let mut v = Vec::new();
+        for b in &blobs {
+            let t = Instant::now();
+            decode_rgba8(b, w, h, parallel).map_err(|e| e.to_string())?;
+            v.push(ms(t));
+        }
+        rows.push((measure, v));
+    }
+    if layers > 0 {
+        let mut v = Vec::new();
+        for step in 0..blobs.len() {
+            let t = Instant::now();
+            std::thread::scope(|s| {
+                let hs: Vec<_> = (0..layers as usize)
+                    .map(|l| {
+                        let b = &blobs[(step + l) % blobs.len()];
+                        s.spawn(move || decode_rgba8(b, w, h, false).map(|_| ()))
+                    })
+                    .collect();
+                hs.into_iter().try_for_each(|h| h.join().map_err(|_| "decoder panicked".to_string())?.map_err(|e| e.to_string()))
+            })?;
+            v.push(ms(t));
+        }
+        rows.push(("cpu_lmbx_layers_concurrent", v));
+    }
+    for (measure, v) in rows {
+        let mut row = base.clone();
+        if let Some(o) = row.as_object_mut() {
+            o.insert("measure".into(), json!(measure));
+            if measure == "cpu_lmbx_layers_concurrent" {
+                o.insert("layers".into(), json!(layers));
+            }
+            o.insert("stats".into(), stats(v));
+        }
+        json_line(&row);
     }
     Ok(())
 }
