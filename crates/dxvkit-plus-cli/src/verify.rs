@@ -11,7 +11,7 @@
 //!
 //! One JSON line per file; exit status 1 if any file fails.
 
-use crate::gpu::Session;
+use crate::gpu::{AltPaths, Session};
 use crate::{Args, json_line, probe_open};
 use dxvkit_plus_core::source::{Decoded, Shading, SourceKind};
 use dxvkit_plus_core::testpattern::{read_frame_id, tiles};
@@ -69,6 +69,10 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
     let mut hashes = Vec::with_capacity(n as usize);
     let (mut zero_copy_frames, mut uploaded) = (0u32, 0usize);
     let mut problems: Vec<String> = Vec::new();
+    // The W3 upload paths, each against the plain render (exact).
+    let mut alt = AltPaths::new(&gpu.gpu);
+    let mut seq = dxvkit_plus_core::source::open(&info, &crate::options(), false).map_err(|e| e.to_string())?;
+    let (mut alt_frames, mut alt_worst, mut into_frames, mut direct_frames) = (0u32, 0u8, 0u32, 0u32);
     for f in 0..n {
         let d = src.decode(f).map_err(|e| format!("frame {f}: {e}"))?;
         if d.index() != f {
@@ -83,7 +87,18 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
                     zero_copy_frames = zero_copy_frames.saturating_add(1);
                 }
             }
-            Decoded::Planes { .. } => uploaded = uploaded.saturating_add(gpu.renderer.last_upload_bytes),
+            Decoded::Planes { .. } => {
+                uploaded = uploaded.saturating_add(gpu.renderer.last_upload_bytes);
+                let (staged, direct) = alt.staged(&gpu.gpu, &d)?;
+                let into = alt.decode_into(&gpu.gpu, seq.as_mut(), f)?;
+                into_frames = into_frames.saturating_add(u32::from(into.is_some()));
+                direct_frames = direct_frames.saturating_add(u32::from(direct.is_some()));
+                for px in [Some(staged), into, direct].into_iter().flatten() {
+                    let (c, a) = max_diff(&px, &g);
+                    alt_worst = alt_worst.max(c).max(a).max(u8::from(px.len() != g.len()));
+                }
+                alt_frames = alt_frames.saturating_add(1);
+            }
         }
         let hdr = matches!(&d, Decoded::Planes { shading: Shading::Hdr, .. });
         if !hdr && let Ok(c) = src.cpu_rgba(&d) {
@@ -140,6 +155,9 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
     if worst_c > cpu_tol || worst_a > cpu_tol {
         problems.push(format!("CPU vs GPU differ by {worst_c} (rgb) / {worst_a} (alpha), allowed {cpu_tol}"));
     }
+    if alt_worst > 0 {
+        problems.push(format!("staged / decode_into / direct paths differ from the render by {alt_worst}"));
+    }
     if !id_fail.is_empty() {
         problems.push(format!("frame identity failed on frames {id_fail:?}"));
     }
@@ -153,6 +171,7 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
         "file": path, "codec": info.codec, "kind": info.kind, "frames": n, "width": info.width, "height": info.height,
         "pass": problems.is_empty(), "problems": problems,
         "cpu_vs_gpu": {"frames": cpu_checked, "max_rgb": worst_c, "max_alpha": worst_a},
+        "upload_paths_vs_render": {"frames": alt_frames, "decode_into_frames": into_frames, "direct_view_frames": direct_frames, "max_diff": alt_worst},
         "seek_frames_checked": order.len(), "frame_identity": tiles_check,
         "source_max_diff": if src_tol.is_some() { json!(src_worst) } else { json!(null) },
         "native_zero_copy_frames": if info.kind == SourceKind::Native { json!(zero_copy_frames) } else { json!(null) },

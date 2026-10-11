@@ -14,14 +14,16 @@
 //! HAP R (BC7, all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
 //! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `Movie::from_source` +
-//! `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
+//! `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
+//! through a contract-checking sink, compared with it) + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::container::{Codec, MemSource, Movie};
 use dxvkit_plus_core::hap;
 use dxvkit_plus_core::lmbd::LmbdFile;
-use dxvkit_plus_core::source::{PixelFormat, Plane, Shading, planes_to_rgba};
+use dxvkit_plus_core::source::{PixelFormat, Plane, PlaneSink, Shading, planes_to_rgba};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -166,6 +168,23 @@ fn mutate(data: &mut Vec<u8>, r: &mut Rng) {
     }
 }
 
+/// A `PlaneSink` that panics (a counted crash) if a decoder breaks the sink contract: one plane,
+/// writes in order without gaps or overlaps, never past the frame.
+struct CheckedSink {
+    out: Vec<u8>,
+    limit: usize,
+}
+
+impl PlaneSink for CheckedSink {
+    fn write(&mut self, plane: usize, offset: usize, bytes: &[u8]) -> Result<(), MediaError> {
+        assert_eq!(plane, 0, "LMBD has one plane");
+        assert_eq!(offset, self.out.len(), "write out of order");
+        assert!(offset + bytes.len() <= self.limit, "write past the frame");
+        self.out.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
 fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
     match seed {
         Seed::Hap { w, h, .. } => {
@@ -184,7 +203,16 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                 }
                 let (mut s, mut blocks) = (Vec::new(), Vec::new());
                 for i in 0..f.frame_count().min(3) {
-                    if f.decode_frame(i, &mut s, &mut blocks, r.below(2) == 0).is_ok() {
+                    // decode_into (streamed chunk by chunk): writes stay in order and inside the
+                    // frame, and whenever both decodes succeed they produce the same bytes.
+                    let mut sink = CheckedSink { out: Vec::new(), limit: usize::try_from(h.frame_bytes()).unwrap_or(0) };
+                    let (mut s2, mut chunk) = (Vec::new(), Vec::new());
+                    let into = f.decode_frame_into(i, &mut s2, &mut chunk, &mut sink);
+                    let plain = f.decode_frame(i, &mut s, &mut blocks, r.below(2) == 0);
+                    if into.is_ok() && plain.is_ok() {
+                        assert_eq!(sink.out, blocks, "decode_frame_into differs from decode_frame");
+                    }
+                    if plain.is_ok() {
                         let (cw, ch) = h.coded_size();
                         let planes = [Plane { format: PixelFormat::Bc7, width: cw, height: ch, data: std::mem::take(&mut blocks) }];
                         let _ = planes_to_rgba(Shading::Rgba { opaque: false }, &planes, h.width, h.height);

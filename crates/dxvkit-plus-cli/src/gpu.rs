@@ -109,3 +109,61 @@ impl Session {
         read_texture_rgba(&self.gpu.device, &self.gpu.queue, out).map_err(|e| e.to_string())
     }
 }
+
+/// The other upload paths for CPU-decoded frames (`verify` checks each against
+/// [`FrameRenderer::render`]): staged through persistent memory, decoded straight into staging,
+/// and sampled directly without the conversion pass.
+pub struct AltPaths {
+    staged: FrameRenderer,
+    into: FrameRenderer,
+    view: FrameRenderer,
+    uploader: dxvkit_plus_wgpu::Uploader,
+}
+
+impl AltPaths {
+    pub fn new(gpu: &Gpu) -> AltPaths {
+        AltPaths {
+            staged: FrameRenderer::new(&gpu.device),
+            into: FrameRenderer::new(&gpu.device),
+            view: FrameRenderer::new(&gpu.device),
+            uploader: dxvkit_plus_wgpu::Uploader::new(&gpu.device, 1 << 20, 2),
+        }
+    }
+
+    fn finish(gpu: &Gpu, uploader: &mut dxvkit_plus_wgpu::Uploader, r: &mut FrameRenderer, mut enc: wgpu::CommandEncoder) -> Result<Vec<u8>, String> {
+        let out = r.encode_convert(&gpu.device, &gpu.queue, &mut enc, None).map_err(|e| e.to_string())?.clone();
+        uploader.submit(&gpu.device, &gpu.queue, enc).map_err(|e| e.to_string())?;
+        read_texture_rgba(&gpu.device, &gpu.queue, &out).map_err(|e| e.to_string())
+    }
+
+    /// `upload_staged` + conversion, and (when the frame samples as stored) its `direct_view`
+    /// read through a plain texel copy, alpha taken as 1 for opaque frames.
+    pub fn staged(&mut self, gpu: &Gpu, d: &Decoded) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        self.staged.upload_staged(&gpu.device, &mut enc, self.uploader.belt(), d).map_err(|e| e.to_string())?;
+        let direct = self.staged.direct_view().map(|v| (v.view.clone(), v.width, v.height, v.opaque));
+        let staged = AltPaths::finish(gpu, &mut self.uploader, &mut self.staged, enc)?;
+        let direct = match direct {
+            Some((view, w, h, opaque)) => {
+                let out = self.view.render_view(&gpu.device, &gpu.queue, &view, w, h).map_err(|e| e.to_string())?.clone();
+                let mut px = read_texture_rgba(&gpu.device, &gpu.queue, &out).map_err(|e| e.to_string())?;
+                if opaque {
+                    px.chunks_exact_mut(4).filter_map(|p| p.get_mut(3)).for_each(|a| *a = 255);
+                }
+                Some(px)
+            }
+            None => None,
+        };
+        Ok((staged, direct))
+    }
+
+    /// `decode_into` a staged frame + conversion (`None` when the source has no fixed layout).
+    pub fn decode_into(&mut self, gpu: &Gpu, src: &mut dyn dxvkit_plus_core::source::FrameSource, frame: u32) -> Result<Option<Vec<u8>>, String> {
+        let Some(layout) = src.layout() else { return Ok(None) };
+        let mut staged = self.uploader.stage(&layout).map_err(|e| e.to_string())?;
+        src.decode_into(frame, &mut staged).map_err(|e| e.to_string())?;
+        let mut enc = gpu.device.create_command_encoder(&Default::default());
+        self.into.upload_from_stage(&gpu.device, &mut enc, staged).map_err(|e| e.to_string())?;
+        AltPaths::finish(gpu, &mut self.uploader, &mut self.into, enc).map(Some)
+    }
+}

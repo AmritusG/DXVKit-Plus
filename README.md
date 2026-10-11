@@ -12,11 +12,15 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.2.1**. 0.2.0 added **LMBD**, our own GPU codec — BC7 with rate-distortion
-optimisation, then Zstd, in a documented container ([`docs/LMBD.md`](docs/LMBD.md)) — with both
-encoder and decoder; 0.2.1 decodes its Zstd chunks with libzstd, the standard C Zstandard library,
-by default (16 layers of 1080p LMBD decode in about 3.3 ms instead of 11), keeping the pure-Rust
-decoder as a feature. DXV decoding is on the [roadmap](#roadmap), not in this release.
+This is release **0.3.0**: getting decoded frames onto the GPU is now fast. Block frames go up
+through persistent staging memory instead of a new buffer per upload, a pipelined player keeps the
+GPU busy while the next frames decode (or decodes straight into GPU-visible memory), and frames
+that are plain BC (LMBD, HAP R / RGBA / RGB) can be sampled as they are, skipping the conversion
+pass. 16 layers of 1080p LMBD went from 132 to 463-516 steps per second on the Mac Studio, HAP from
+163-202 to 692-939 ([numbers](#getting-frames-onto-the-gpu-030)). 0.2.0 added **LMBD**, our own GPU
+codec — BC7 with rate-distortion optimisation, then Zstd, in a documented container
+([`docs/LMBD.md`](docs/LMBD.md)) — and 0.2.1 decodes its Zstd chunks with libzstd by default.
+DXV decoding is on the [roadmap](#roadmap), not in this release.
 
 ## Codec support
 
@@ -46,7 +50,7 @@ every frame of every fixture), and every error is a value — hostile files neve
 |---|---|
 | [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
-| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
+| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
 | [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
 | [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
 
@@ -58,9 +62,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.2.1" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -92,15 +96,39 @@ let rgba_texture = renderer.output();                    // Rgba8Unorm, the clip
 For playback, `cache::Player` decodes ahead on worker threads and `transport::Transport` says which
 frame to show at each clock tick (exact integer time).
 
+**Many layers (0.3.0).** `render` is the simple path; a player with many layers records every
+layer into one submission through an `Uploader` (persistent staging memory, at most 2 steps in
+flight, no device-wide wait) and samples plain-BC frames directly:
+
+```rust
+use dxvkit_plus_wgpu::{FrameRenderer, Uploader};
+
+let mut up = Uploader::new(&gpu.device, step_bytes, 2);       // ~ one step's frames; 2 in flight
+let mut enc = gpu.device.create_command_encoder(&Default::default());
+for (layer, decoded) in layers.iter_mut().zip(&frames) {      // frames from cache::Player
+    layer.upload_staged(&gpu.device, &mut enc, up.belt(), decoded)?;
+    if layer.direct_view().is_none() {                         // HAP Q, alpha-only, HDR: convert
+        layer.encode_convert(&gpu.device, &gpu.queue, &mut enc, None)?;
+    }
+}
+up.submit(&gpu.device, &gpu.queue, enc)?;                      // blocks only if 2 steps are still running
+// sample layer.direct_view() (BC texture; alpha = 1 if `opaque`) or layer.output() (RGBA8)
+```
+
+For the lowest latency, decode straight into staging instead: `up.stage(&layout)`, with the
+clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a decoder thread fills with `clip.decode_into(frame, &mut staged)`, then
+`layer.upload_from_stage(&gpu.device, &mut enc, staged)`.
+
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.2.1 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.3.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
 dxvkit-plus verify --tiles tests/fixtures/*.mov tests/fixtures/*.mp4
 dxvkit-plus bench clip.mov --frames 60 --layers 16 --import
+dxvkit-plus bench clip.lmbd --layers 16 --layers-only --variants per_layer,staged,pipelined2_direct,into2_direct
 dxvkit-plus gen-pattern frames/ --plasma --width 1920 --height 1080 --frames 60
 dxvkit-plus encode-lmbd frames/ clip.lmbd --chunks 8   # any decodable source → LMBD (lambda 1, look-back 16384)
 dxvkit-plus compare frames/ clip.lmbd --frame 3       # PSNR / SSIM of frame 3 against the source
@@ -249,9 +277,60 @@ the λ 1 clip where `ruzstd` runs at 122 MB/s (λ 0: 2119 vs 446 MB/s). With lib
 since 0.2.1, decoding 16 layers of 1080p takes 3.30 ms at λ 1 (3.37 ms in the second round) and
 2.76 ms at λ 0 (2.93 ms), against 11.30 ms and 8.79 ms with `ruzstd`. That is about 10 GB/s of BC7 across the 14
 cores — the libzstd rate on the 10 performance cores, with the 4 efficiency cores adding less — so
-λ 1 lands a little above the 2-3 ms the per-thread rates suggested. At 16 layers the step is now
-dominated by the 16 uploads and conversions, not by decode.
+λ 1 lands a little above the 2-3 ms the per-thread rates suggested. At 16 layers the step was then
+dominated by the 16 uploads and conversions, not by decode — which 0.3.0 addresses (below).
 
+
+### Getting frames onto the GPU (0.3.0)
+
+16 (or, at 4K, 4 and 8) independent decoders of one clip, all on one device — `dxvkit-plus bench
+<clip> --layers N --layers-only --variants ...`, Mac Studio, release, two interleaved rounds (both
+shown, `round 1 · round 2`). *Before* is the v0.2.1 binary; the other columns are 0.3.0 paths:
+
+- **staged** — persistent staging + one submission, waiting for the GPU every step (step mode);
+- **pipelined** — staged, decoding ahead on per-layer threads, 2 steps in flight (sustained);
+- **+ direct** — as pipelined, sampling plain-BC frames directly (no conversion pass; HAP Q and the
+  other YCoCg / alpha-only / HDR variants still convert, so their numbers equal pipelined);
+- **into + direct** — decoding straight into staging memory, 2 steps in flight (lowest latency).
+
+Steps per second (sustained; for the step modes 1000 / mean step):
+
+| Clip | Layers | Before (0.2.1) | staged | pipelined | pipelined + direct | into + direct |
+|---|---|---|---|---|---|---|
+| LMBD λ 1, 8 chunks, 1080p | 16 | 132 · 133 | 154 · 159 | 259 · 276 | **463 · 516** | 336 · 330 |
+| LMBD λ 0, 8 chunks, 1080p | 16 | 141 · 137 | 160 · 160 | 264 · 266 | **533 · 471** | 402 · 362 |
+| HAP (Hap1), 8 chunks, 1080p | 16 | 202 · 163 | 203 · 191 | 293 · 272 | **939 · 692** | 620 · 470 |
+| HAP Q (HapY), 1080p | 16 | 139 · 116 | 173 · 141 | **261 · 273** | 274 · 259 | 254 · 259 |
+| LMBD λ 0, 8 chunks, 4K | 4 | 111 · 107 | 145 · 140 | **224 · 221** | 221 · 223 | 203 · 209 |
+| LMBD λ 0, 8 chunks, 4K | 8 | 77 · 79 | 104 · 101 | 211 · 201 | **212 · 206** | 179 · 180 |
+| HAP (Hap1), 8 chunks, 4K | 4 | 187 · 191 | 211 · 205 | 405 · 396 | **419 · 415** | 360 · 353 |
+| HAP (Hap1), 8 chunks, 4K | 8 | 133 · 134 | 173 · 165 | 326 · 332 | **388 · 396** | 304 · 306 |
+| HAP Q (HapY), 4K | 4 | 127 · 130 | 166 · 165 | **293 · 285** | 289 · 286 | 235 · 229 |
+| HAP Q (HapY), 4K | 8 | 85 · 89 | 119 · 116 | **257 · 255** | 254 · 236 | 191 · 192 |
+
+Latency, p50 ms, from the first layer's decode starting to that step's textures being ready on
+the GPU (for the step modes: the step time):
+
+| Clip | Layers | Before (0.2.1) | staged | pipelined | pipelined + direct | into + direct |
+|---|---|---|---|---|---|---|
+| LMBD λ 1, 1080p | 16 | 7.50 · 7.69 | 6.59 · 6.26 | 22.7 · 22.0 | 10.7 · 9.7 | **3.56 · 3.54** |
+| HAP (Hap1), 1080p | 16 | 5.00 · 6.07 | 4.77 · 4.97 | 19.8 · 21.5 | 5.3 · 8.1 | **2.11 · 2.77** |
+| HAP Q (HapY), 1080p | 16 | 7.20 · 8.58 | **5.80 · 6.82** | 22.4 · 22.1 | 21.9 · 22.9 | 11.4 · 11.0 |
+| LMBD λ 0, 4K | 8 | 13.0 · 12.6 | 9.98 · 9.84 | 13.5 · 18.8 | 9.7 · 14.7 | **6.41 · 6.29** |
+
+Where the 16-layer 1080p LMBD step went (p50 ms; CPU wall clocks per phase, GPU from Metal System
+Trace): before, decode 2.7-2.8 · `write_texture` 3.3-3.5 (2.8 of it wgpu allocating a new staging
+buffer per call) · encode + submit 0.5 · GPU wait 0.6; GPU work 1.68 ms per step (blits 1.16,
+conversions ~0.5). After (pipelined + direct): the main thread copies into persistent staging
+(0.9-2.4) and submits (0.07), decoders run ahead (wait 0.03), and the GPU does 0.32 ms per step
+(copies only). Decoding into staging takes the copy off the main thread altogether (0.008 ms).
+
+*Caveat:* Resolume Arena was running on the Mac Studio throughout and held 66-95% of the GPU
+(Metal System Trace, `docs/data/w3-metal-system-trace-summary.jsonl`), so the paths that still
+convert are contending for a mostly busy GPU; the numbers compare like with like (interleaved), but
+the absolutes are lower than on an idle machine, and the laptops (more GPU cores) will differ. Raw
+data: `docs/data/w3-layers-macstudio.jsonl` (final rounds), `w3-candidates-ab-macstudio.jsonl`
+(every candidate's A/B), `w3-upload-microbench.txt`.
 
 ## Testing
 
@@ -265,7 +344,7 @@ cargo clippy --workspace --all-targets --no-default-features --features zstd-rus
 cargo nextest run --workspace --no-default-features --features zstd-rust
 cargo deny --no-default-features --features zstd-rust check licenses bans sources
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8
-cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 lmbd   # the LMBD reader alone
+cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 lmbd   # the LMBD reader alone (decode_frame and decode_frame_into)
 ```
 
 All test media are our own procedural CC0 fixtures (`tests/fixtures`, each with an `.attribution`

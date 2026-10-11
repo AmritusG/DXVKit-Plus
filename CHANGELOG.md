@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0 — 2026-10-11
+
+Getting decoded frames onto the GPU is fast. API additions only; nothing removed or changed.
+
+- Diagnosis (Metal System Trace, wgpu timestamp queries, microbenchmarks): wgpu's
+  `Queue::write_texture` allocates a new staging buffer per call — 2.8 of the 3.45 ms it took to
+  upload 16 1080p BC7 frames — and the GPU sat mostly idle while the CPU staged, uploaded and waited.
+- `dxvkit-plus-wgpu`: `FrameRenderer::upload` + `encode_convert` (the two halves of `render`, so many
+  layers share one submission; optional timestamp writes on the conversion pass);
+  `FrameRenderer::upload_staged` (persistent `StagingBelt` + `copy_buffer_to_texture`);
+  `Uploader` (staging belt + at most `depth` submissions in flight, no device-wide wait;
+  `stage`, `submit`, `wait_for`); `StagedFrame` (mapped staging for one frame, `Send`, a
+  `PlaneSink`) + `FrameRenderer::upload_from_stage`; `FrameRenderer::direct_view` / `DirectView`
+  (sample LMB7, HAP R / RGBA / RGB as stored, skipping the conversion pass; exact);
+  `GpuError::code()` (pinned). `Gpu::with_adapter` also requests `TIMESTAMP_QUERY` when available.
+- `dxvkit-plus-core`: `FrameSource::layout` (a block source's fixed frame shape: `FrameLayout`,
+  `PlaneLayout`) and `FrameSource::decode_into` into a `PlaneSink` (default: decode, then write each
+  plane; LMBD streams chunk by chunk through a reused buffer: `lmbd::decode_payload_into`,
+  `LmbdFile::decode_frame_into`).
+- Every new path produces exactly the pixels of `render`: GPU tests on every HAP fixture and LMBD
+  vector frame; `dxvkit-plus verify` now checks the staged, decode-into and direct paths against
+  the render on every frame (0 difference on all fixtures and four 1080p clips, 164 frames).
+- 16 layers of 1080p on the Mac Studio, steps per second, 0.2.1 → 0.3.0 (pipelined + direct):
+  LMBD λ 1 132 → 463-516, HAP 163-202 → 692-939, HAP Q 116-139 → 259-273 (pipelined). Decoding into
+  staging: 16-layer LMBD latency 3.5 ms p50 (0.2.1 step: 7.5).
+- `dxvkit-plus bench --layers N`: `--layers-only`, `--variants` (`per_layer`, `batched`, `staged`,
+  `pipelined2`, `pipelined3`, `pipelined2_direct`, `into2`, `into2_direct`), a per-bucket breakdown
+  (decode, upload, encode, submit, GPU wait, GPU conversion time from timestamps), sustained
+  throughput and decode-to-texture latency.
+- Fuzz: the LMBD target also runs `decode_frame_into` through a contract-checking sink and compares
+  it with `decode_frame`.
+
 ## 0.2.1 — 2026-10-11
 
 LMBD decodes with libzstd by default; the pure-Rust decoder stays as a feature.
