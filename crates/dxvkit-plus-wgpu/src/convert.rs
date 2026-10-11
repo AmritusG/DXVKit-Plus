@@ -529,7 +529,7 @@ impl FrameRenderer {
         if let Some((blob, width, height)) = lmbx_frame(decoded) {
             let dec = self.prepare_lmbx(device, blob, width, height)?;
             let bits = dec.bits.as_ref().ok_or_else(|| GpuError::Invalid("LMBX buffers not prepared".into()))?;
-            let size = (blob.len() as u64).div_ceil(4).max(1) * 4;
+            let size = (blob.len() as u64).div_ceil(4).max(1).saturating_mul(4);
             let slice_size = wgpu::BufferSize::new(size).ok_or_else(|| GpuError::Invalid("empty LMBX frame".into()))?;
             let (buffer, offset) = {
                 let slice = belt.allocate(slice_size, STAGING_ALIGNMENT);

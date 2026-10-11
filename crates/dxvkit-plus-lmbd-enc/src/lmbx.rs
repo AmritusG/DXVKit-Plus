@@ -27,7 +27,9 @@ const TB: u32 = TILE / 8;
 /// The quantiser steps every frame carries (B1d's table).
 pub const QT: [u16; 16] = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 64, 96];
 
-/// Encoder settings. The defaults are B1d's.
+/// Encoder settings. The defaults are B1d's, except the chroma mode: 4:4:4, chosen by measurement
+/// (W5: better on both real clips at equal bytes, +1.6 dB and +0.6 dB, for about 26% more GPU
+/// decode time) and subject to Amrit's eye test.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LmbxParams {
     pub chroma: Chroma,
@@ -49,7 +51,7 @@ pub struct LmbxParams {
 
 impl Default for LmbxParams {
     fn default() -> Self {
-        LmbxParams { chroma: Chroma::Halo422, quality: 16.0, chroma_ratio: None, lambda: 0.25, deadzone: 0.45, rdo_passes: 2, protect: 3, threads: 8 }
+        LmbxParams { chroma: Chroma::Full444, quality: 16.0, chroma_ratio: None, lambda: 0.25, deadzone: 0.45, rdo_passes: 2, protect: 3, threads: 8 }
     }
 }
 

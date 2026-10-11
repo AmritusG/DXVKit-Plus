@@ -18,9 +18,11 @@
 //! (`Unsupported`).
 //
 // Lint note: the sample arithmetic is bounded by the clamps below (dequantised coefficients to
-// +-4095; the IDCT sums are proven inside i32 in docs/LMBD.md) and indices by the tile geometry;
-// the arithmetic lint is relaxed for this module only. Every byte read is bounds-checked.
-#![allow(clippy::arithmetic_side_effects)]
+// +-4095; the IDCT sums are proven inside i32 in docs/LMBD.md); array indexing is only into the
+// fixed 64-entry block arrays with loop indices below 64 (and a 4-bit index into the 16 quantiser
+// steps). Both lints are relaxed for this module only. Every read of file bytes and every plane
+// access is bounds-checked (`get`).
+#![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
 use crate::bytes::{arr, byte, le16, le32};
 use crate::error::MediaError;
@@ -358,7 +360,7 @@ impl<'a> Frame<'a> {
     pub fn qidx(&self, t: u32, b: u32) -> usize {
         let at = self.sections.qmap + t as usize * QMAP_BYTES + (b / 2) as usize;
         let v = self.bytes.get(at).copied().unwrap_or(0);
-        usize::from(if b % 2 == 0 { v & 15 } else { v >> 4 })
+        usize::from(if b.is_multiple_of(2) { v & 15 } else { v >> 4 })
     }
 
     /// Stream `i`.

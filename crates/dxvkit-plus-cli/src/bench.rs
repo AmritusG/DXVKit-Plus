@@ -178,7 +178,7 @@ fn lmbx_cpu(
             std::thread::scope(|s| {
                 let hs: Vec<_> = (0..layers as usize)
                     .map(|l| {
-                        let b = &blobs[(step + l) % blobs.len()];
+                        let b = blobs.get(step.saturating_add(l).checked_rem(blobs.len()).unwrap_or(0)).map(Vec::as_slice).unwrap_or_default();
                         s.spawn(move || decode_rgba8(b, w, h, false).map(|_| ()))
                     })
                     .collect();

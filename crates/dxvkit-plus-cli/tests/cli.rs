@@ -110,8 +110,11 @@ fn errors_exit_nonzero_with_a_message() {
 #[test]
 fn lmbd_end_to_end() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    let mut vectors: Vec<PathBuf> =
-        std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().and_then(|e| e.to_str()) == Some("lmbd")).collect();
+    let mut vectors: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbd_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
+        .collect();
     vectors.sort();
     assert_eq!(vectors.len(), 5);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-lmbd-{}", std::process::id()));
@@ -146,5 +149,53 @@ fn lmbd_end_to_end() {
     // Negative control: frame 2 against source frame 1 scores far worse.
     let wrong = &run(bin().arg("compare").arg(tmp.join("src")).arg(tmp.join("out.lmbd")).args(["--frame", "2", "--ref-frame", "1"]))[0];
     assert!(wrong["psnr_rgb"].as_f64().unwrap() < c["psnr_rgb"].as_f64().unwrap() - 5.0, "{wrong:#}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// LMBX end to end: the conformance vectors probe as LMBX and verify (GPU == CPU exactly, frame
+/// identity on the tile vectors); `encode-lmbd --profile lmbx` writes files in both chroma modes
+/// (and with rate control) that verify, and `compare` scores them — the integer decoder and the
+/// float reference both; bad options are refused.
+#[test]
+fn lmbx_end_to_end() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut vectors: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbx_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
+        .collect();
+    vectors.sort();
+    assert_eq!(vectors.len(), 5);
+    for f in &vectors {
+        let p = &run(bin().arg("probe").arg(f))[0];
+        assert_eq!((p["kind"].as_str(), p["codec"].as_str()), (Some("lmbd"), Some("LMBX")));
+    }
+    let (tiles, others): (Vec<&PathBuf>, Vec<&PathBuf>) = vectors.iter().partition(|f| f.to_str().unwrap().contains("tiles"));
+    for x in run(bin().args(["verify", "--tiles"]).args(&tiles)).iter().chain(&run(bin().arg("verify").args(&others))) {
+        assert_eq!(x["pass"], true, "{x:#}");
+        assert_eq!((x["cpu_vs_gpu"]["max_rgb"].as_u64(), x["cpu_vs_gpu"]["max_alpha"].as_u64()), (Some(0), Some(0)), "{x:#}");
+    }
+    let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-lmbx-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    run(bin().arg("gen-pattern").arg(tmp.join("src")).args(["--frames", "3", "--width", "90", "--height", "50", "--plasma", "--alpha"]));
+    for chroma in ["422halo", "444"] {
+        let out = tmp.join(format!("{chroma}.lmbd"));
+        let e = &run(bin().arg("encode-lmbd").arg(tmp.join("src")).arg(&out).args(["--profile", "lmbx", "--chroma", chroma, "--quiet"]))[0];
+        assert_eq!((e["frames"].as_u64(), e["profile"].as_str()), (Some(3), Some("lmbx")));
+        let v = &run(bin().arg("verify").arg("--tiles").arg(&out))[0];
+        assert_eq!(v["pass"], true, "{v:#}");
+        let c = &run(bin().arg("compare").arg(tmp.join("src")).arg(&out).args(["--frame", "2"]))[0];
+        let f = &run(bin().arg("compare").arg(tmp.join("src")).arg(&out).args(["--frame", "2", "--float"]))[0];
+        assert!(c["psnr_rgb"].as_f64().unwrap() > 30.0 && f["psnr_rgb"].as_f64().unwrap() > 30.0, "{c:#} {f:#}");
+        assert_eq!(f["float_reference"], true);
+    }
+    let rc = &run(bin().arg("encode-lmbd").arg(tmp.join("src")).arg(tmp.join("rc.lmbd")).args(["--profile", "lmbx", "--frame-bytes", "3000", "--quiet"]))[0];
+    assert!(rc["bytes_per_frame"].as_u64().unwrap() <= 3000 + 60, "{rc:#}");
+    for bad in [vec!["--profile", "lmbz"], vec!["--profile", "lmbx", "--chroma", "420"]] {
+        let o = bin().arg("encode-lmbd").arg(tmp.join("src")).arg(tmp.join("bad.lmbd")).args(&bad).output().unwrap();
+        assert!(!o.status.success(), "{bad:?}");
+    }
+    let o = bin().arg("compare").arg(tmp.join("src")).arg(dir.join("tiles_hap1.mov")).arg("--float").output().unwrap();
+    assert!(!o.status.success(), "--float only for LMBX");
     let _ = std::fs::remove_dir_all(&tmp);
 }

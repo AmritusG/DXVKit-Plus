@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.0 — 2026-10-11
+
+LMBX: LMBD profile `0x10`, frozen as bitstream v1 (`docs/LMBD.md` §11). Additions; one
+`PixelFormat` variant and one `Shading` variant are new.
+
+- `dxvkit-plus-core::lmbx`: the normative reference decoder. YCoCg-R, 8x8 DCT with an exactly
+  specified integer inverse (LMBX-D1), per-block quantisers (a raw 4-bit map), rANS with one
+  independent stream per plane of every 32x32 tile, DC predicted within each stream, chroma
+  4:2:2-halo or 4:4:4 (LMBX-D2), optional alpha, any frame size. Output: RGBA in quarter code
+  values (10 bits); 8-bit `(v + 2) >> 2`. Every input that passes validation has one defined
+  result (short streams read zeros; renormalisation is bounded), so decoders agree bit for bit.
+- LMBD container: profile `0x10` with texture format `0x11`; the never-frozen prototype (texture
+  format `0x10`, bitstream "LMXS") is refused as `Unsupported`. `Header::new_lmbx`.
+- `source`: LMBX files open as `SourceKind::Lmbd` with codec `LMBX`; a frame is its bitstream
+  (`PixelFormat::LmbxBitstream`, `Shading::Lmbx`), validated on the CPU and decoded on the GPU.
+- `dxvkit-plus-wgpu`: `FrameRenderer` decodes LMBX with compute passes (table expansion, one
+  invocation per stream for rANS, one per 8x8 block for the IDCT as generated straight-line WGSL)
+  and a fragment pass for chroma and colour; only the bitstream is uploaded (`write_buffer` or
+  the staging belt). Bit-exact with the CPU on every conformance frame and on hostile frames.
+- `dxvkit-plus-lmbd-enc::lmbx`: the encoder, from Amrit's B1d prototype (per-block quantiser from AC
+  energy, deadzone, RDOQ with an end-of-block trellis, low-frequency protection), with rate
+  control (`encode_frame_to_size`), deterministic at any thread count; `float_reference_rgba8`
+  (the prototypes' float decoder, for measuring LMBX-D1).
+- CLI: `encode-lmbd --profile lmbx [--chroma 422halo|444] [--quality Q | --frame-bytes N]`;
+  `compare --float`; `bench` adds CPU LMBX decode measures.
+- Five CC0 conformance vectors (`tests/fixtures/lmbx_*.lmbd`, `scripts/mint-lmbx-vectors.sh`) with
+  the normative output hashes; `--example lmbx_hashes`; fuzz target `lmbx`.
+- Fixed: a chroma step below 2 could not represent chroma DC (now at least 2; a DC step of at least
+  2 / 4 bounds DC residuals) — found by measurement before the freeze.
+- Measured (Mac Studio; `docs/data/w5-*`): the integer transform costs nothing measurable (float
+  decode of the same bitstreams: equal or lower PSNR in every row, SSIM within 0.001). At LMB7's
+  size, LMBX gains 4.8 dB on gradients over black, 6.9 dB on film grain, 5.9 dB on synthetic alpha,
+  0.6 dB on Amrit's glow footage, and loses on hard-edged flat graphics and 1.4 dB on his
+  real-alpha footage. GPU decode: 16 x 1080p at 93 (4:2:2) / 74 (4:4:4) steps per second, a 4K
+  frame in 1.9 / 2.5 ms; 4:4:4 is the encoder default by measurement (better on both real clips),
+  pending Amrit's eye. 32x32 tiles: +3.5% bytes for 2.2-2.4x faster decode than 64x64 (measured).
+  DC prediction: 6-28% fewer bytes at equal quality. Fuzz: 600 s, 6.09 M execs, 0 crashes.
+
 ## 0.4.0 — 2026-10-11
 
 DXV decodes. Additions, plus two enum variants and one `ImportOptions` field (below).

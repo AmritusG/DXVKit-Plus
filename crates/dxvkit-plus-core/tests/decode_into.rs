@@ -55,7 +55,9 @@ fn decode_into_equals_decode() {
                 if let Some(l) = &layout {
                     assert!(l.matches(width, height, shading, &planes), "{p:?} frame {f}: layout {l:?}");
                 } else {
-                    assert!(p.to_string_lossy().contains("haph"), "{p:?} has no layout");
+                    // HAP HDR (signedness per frame) and LMBX (variable-size bitstreams) have none.
+                    let n = p.to_string_lossy();
+                    assert!(n.contains("haph") || n.contains("lmbx_"), "{p:?} has no layout");
                 }
                 let mut sink = VecSink::default();
                 b.decode_into(f, &mut sink).unwrap();

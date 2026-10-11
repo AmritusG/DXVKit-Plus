@@ -90,7 +90,7 @@ pub fn encode(args: &Args) -> Result<(), String> {
 }
 
 /// `encode-lmbd --profile lmbx`: every frame through the LMBX encoder, one stored chunk per frame
-/// (the bitstream is entropy-coded already). `--chroma 422halo|444` (default 422halo),
+/// (the bitstream is entropy-coded already). `--chroma 444|422halo` (default 444, by measurement),
 /// `--quality Q` (base quantiser, default 16), or `--frame-bytes N` (rate control: the best
 /// quality that fits N bytes per frame).
 fn encode_lmbx(args: &Args) -> Result<(), String> {
@@ -109,7 +109,7 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
         Some(s) => parse_fps(s)?,
         None => (u32::try_from(info.rate.num).unwrap_or(30), u32::try_from(info.rate.den).unwrap_or(1)),
     };
-    let chroma = match args.value("chroma").unwrap_or("422halo") {
+    let chroma = match args.value("chroma").unwrap_or("444") {
         "422halo" | "422" => Chroma::Halo422,
         "444" => Chroma::Full444,
         other => return Err(format!("--chroma: 422halo or 444, got {other}")),
