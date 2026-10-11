@@ -3,7 +3,7 @@
 //! ```text
 //! dxvkit-plus probe <file|folder>
 //! dxvkit-plus decode <file> <frame> <out.png> [--cpu]
-//! dxvkit-plus bench <file>... [--frames N] [--layers N] [--import]
+//! dxvkit-plus bench <file>... [--frames N] [--layers N [--layers-only] [--variants V,..]] [--import]
 //! dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
 //! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
 //! dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D] ...
@@ -15,6 +15,7 @@
 
 mod bench;
 mod gpu;
+mod layers;
 mod lmbd;
 mod verify;
 
@@ -30,7 +31,7 @@ pub const ZSTD_BACKEND: &str = if cfg!(feature = "zstd-c") { "libzstd" } else { 
 const USAGE: &str = "usage:
   dxvkit-plus probe <file|folder>
   dxvkit-plus decode <file> <frame> <out.png> [--cpu]
-  dxvkit-plus bench <file>... [--frames N] [--layers N] [--import]
+  dxvkit-plus bench <file>... [--frames N] [--layers N [--layers-only] [--variants V,..]] [--import]
   dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
   dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
   dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
@@ -182,6 +183,7 @@ fn main() -> ExitCode {
         &[
             "frames",
             "layers",
+            "variants",
             "width",
             "height",
             "source-tolerance",
