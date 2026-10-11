@@ -94,7 +94,7 @@ pub fn encode(args: &Args) -> Result<(), String> {
 /// `--quality Q` (base quantiser, default 16), or `--frame-bytes N` (rate control: the best
 /// quality that fits N bytes per frame).
 fn encode_lmbx(args: &Args) -> Result<(), String> {
-    use dxvkit_plus_core::lmbd::{ChunkData, Writer, frame_payload};
+    use dxvkit_plus_core::lmbd::Writer;
     use dxvkit_plus_core::lmbx::Chroma;
     use dxvkit_plus_lmbd_enc::lmbx::{LmbxParams, encode_frame, encode_frame_to_size};
     let [input, out] = args.positional.as_slice() else { return Err(crate::USAGE.into()) };
@@ -117,7 +117,26 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
     let quality: f64 = args.value("quality").map(|v| v.parse().map_err(|_| format!("--quality: not a number: {v}"))).transpose()?.unwrap_or(16.0);
     let budget = args.value("frame-bytes").map(|v| v.parse::<usize>().map_err(|_| format!("--frame-bytes: not a number: {v}"))).transpose()?;
     let threads = args.num("threads", std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4))?.max(1) as usize;
-    let p = LmbxParams { chroma, quality, threads, ..LmbxParams::default() };
+    // Tile modes: `dct` alone writes bitstream v1.
+    let modes: Vec<&str> = args.value("modes").unwrap_or("flat,palette,lossy").split(',').collect();
+    if let Some(bad) = modes.iter().find(|m| !["dct", "flat", "palette", "lossy"].contains(m)) {
+        return Err(format!("--modes: dct, flat, palette, lossy; got {bad}"));
+    }
+    let zstd = match args.value("compressor").unwrap_or("zstd") {
+        "none" => None,
+        "zstd" => Some(i32::try_from(args.num("level", 19)?).map_err(|_| "--level out of range".to_string())?),
+        other => return Err(format!("--compressor: none or zstd, got {other}")),
+    };
+    let p = LmbxParams {
+        chroma,
+        quality,
+        threads,
+        zstd,
+        flat: modes.contains(&"flat"),
+        palette: modes.contains(&"palette"),
+        palette_lossy: modes.contains(&"lossy"),
+        ..LmbxParams::default()
+    };
     let header = Header::new_lmbx(info.width, info.height, fps_num, fps_den);
     let file = std::fs::File::create(out).map_err(|e| format!("{out}: {e}"))?;
     let mut w = Writer::new(std::io::BufWriter::new(file), header.clone()).map_err(|e| e.to_string())?;
@@ -130,8 +149,7 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
             Some(b) => encode_frame_to_size(&rgba, info.width, info.height, &p, b, 600.0).map_err(|e| e.to_string())?,
             None => (encode_frame(&rgba, info.width, info.height, &p).map_err(|e| e.to_string())?, quality),
         };
-        let raw = u32::try_from(blob.len()).map_err(|_| "frame over 4 GiB".to_string())?;
-        let payload = frame_payload(&header, &[ChunkData { compressor: Compressor::None, raw_size: raw, data: &blob }]).map_err(|e| e.to_string())?;
+        let payload = dxvkit_plus_lmbd_enc::lmbx::frame_payload(&header, &blob, p.zstd).map_err(|e| e.to_string())?;
         w.push_payload(&payload).map_err(|e| e.to_string())?;
         total = total.saturating_add(payload.len());
         qualities.push(q);
@@ -169,16 +187,25 @@ fn frame_bytes(info: &MediaInfo, n: u32) -> Option<u64> {
 pub struct Metrics {
     pub psnr: [f64; 4],
     pub psnr_rgb: f64,
+    /// PSNR of the RGB as shown: each image's colour premultiplied by its own alpha
+    /// (`c * a / 255`), so colour under transparent pixels does not count.
+    pub psnr_rgb_premultiplied: f64,
     pub ssim: f64,
     pub windows: u64,
 }
 
 pub fn metrics(a: &[u8], b: &[u8], w: usize, h: usize) -> Metrics {
     let mut se = [0f64; 4];
+    let mut se_pm = 0f64;
     for (p, q) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
         for (c, s) in se.iter_mut().enumerate() {
             let d = f64::from(p.get(c).copied().unwrap_or(0)) - f64::from(q.get(c).copied().unwrap_or(0));
             *s += d * d;
+        }
+        let (pa, qa) = (f64::from(p.get(3).copied().unwrap_or(255)) / 255.0, f64::from(q.get(3).copied().unwrap_or(255)) / 255.0);
+        for c in 0..3 {
+            let d = f64::from(p.get(c).copied().unwrap_or(0)) * pa - f64::from(q.get(c).copied().unwrap_or(0)) * qa;
+            se_pm += d * d;
         }
     }
     let n = (w.saturating_mul(h)).max(1) as f64;
@@ -186,6 +213,7 @@ pub fn metrics(a: &[u8], b: &[u8], w: usize, h: usize) -> Metrics {
     let mse = se.map(|s| s / n);
     let psnr = mse.map(psnr_of);
     let psnr_rgb = psnr_of((mse[0] + mse[1] + mse[2]) / 3.0);
+    let psnr_rgb_premultiplied = psnr_of(se_pm / (3.0 * n));
     let luma = |px: &[u8]| -> Vec<f64> {
         px.chunks_exact(4)
             .map(|p| {
@@ -228,7 +256,7 @@ pub fn metrics(a: &[u8], b: &[u8], w: usize, h: usize) -> Metrics {
             }
         }
     }
-    Metrics { psnr, psnr_rgb, ssim: if windows > 0 { sum / windows as f64 } else { 1.0 }, windows }
+    Metrics { psnr, psnr_rgb, psnr_rgb_premultiplied, ssim: if windows > 0 { sum / windows as f64 } else { 1.0 }, windows }
 }
 
 fn num(v: f64) -> serde_json::Value {
@@ -254,10 +282,7 @@ pub fn compare(args: &Args) -> Result<(), String> {
         if info.codec != "LMBX" {
             return Err("--float: only for LMBX files".into());
         }
-        let f = LmbdFile::open(Path::new(file)).map_err(|e| e.to_string())?;
-        let (mut scratch, mut blob) = (Vec::new(), Vec::new());
-        f.decode_frame(frame, &mut scratch, &mut blob, true).map_err(|e| e.to_string())?;
-        b = dxvkit_plus_lmbd_enc::lmbx::float_reference_rgba8(&blob, w, h).map_err(|e| e.to_string())?;
+        b = float_rgba(file, frame, w, h)?;
     }
     if (rw, rh) != (w, h) {
         return Err(format!("size mismatch: reference {rw}x{rh}, {file} {w}x{h}"));
@@ -266,10 +291,19 @@ pub fn compare(args: &Args) -> Result<(), String> {
     json_line(&json!({
         "reference": reference, "ref_frame": ref_frame, "file": file, "frame": frame, "codec": info.codec, "float_reference": args.has("float"),
         "width": w, "height": h, "frame_bytes": frame_bytes(&info, frame),
-        "psnr_rgb": num(m.psnr_rgb), "psnr": {"r": num(m.psnr[0]), "g": num(m.psnr[1]), "b": num(m.psnr[2]), "a": num(m.psnr[3])},
+        "psnr_rgb": num(m.psnr_rgb), "psnr_rgb_premultiplied": num(m.psnr_rgb_premultiplied), "psnr": {"r": num(m.psnr[0]), "g": num(m.psnr[1]), "b": num(m.psnr[2]), "a": num(m.psnr[3])},
         "ssim": (m.ssim * 1_000_000.0).round() / 1_000_000.0, "ssim_windows": m.windows,
     }));
     Ok(())
+}
+
+/// An LMBX frame decoded with the floating-point inverse transform (not conforming; see
+/// `float_reference_rgba8`), 8-bit RGBA.
+pub(crate) fn float_rgba(file: &str, frame: u32, w: u32, h: u32) -> Result<Vec<u8>, String> {
+    let f = LmbdFile::open(Path::new(file)).map_err(|e| e.to_string())?;
+    let (mut scratch, mut blob) = (Vec::new(), Vec::new());
+    f.decode_frame(frame, &mut scratch, &mut blob, true).map_err(|e| e.to_string())?;
+    dxvkit_plus_lmbd_enc::lmbx::float_reference_rgba8(&blob, w, h).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

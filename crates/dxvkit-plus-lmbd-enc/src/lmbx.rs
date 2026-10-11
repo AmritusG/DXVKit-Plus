@@ -18,7 +18,8 @@
 
 use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::lmbx::{
-    COEF_SYMBOLS, Chroma, EOB, Frame, FrameHeader, FreqTable, LEVEL_OFFSET, PLANES, PROB_BITS, PROB_SCALE, PlaneKind, RANS_L, TILE, ZIGZAG, visit_stream,
+    COEF_SYMBOLS, Chroma, EOB, Frame, FrameHeader, FreqTable, LEVEL_OFFSET, PLANES, PROB_BITS, PROB_SCALE, PlaneKind, RANS_L, TILE, TileMode, ZIGZAG,
+    visit_stream,
 };
 
 /// 8x8 blocks per tile edge.
@@ -47,12 +48,57 @@ pub struct LmbxParams {
     pub protect: usize,
     /// Worker threads for the tiles.
     pub threads: usize,
+    /// Store frames as a Zstandard chunk at this level when that is smaller (the LMBD container's
+    /// own option; the decoder decompresses before decoding). `None` = always stored. Rate control
+    /// counts the stored size.
+    pub zstd: Option<i32>,
+    /// Bitstream v2 tile modes the encoder may choose, per tile by rate-distortion against the DCT
+    /// coding (W6, all on by default — measured; all off writes a v1 frame): flat tiles; palette
+    /// tiles (at most 16 colours: measured better than 4 or 8); lossy palettes.
+    pub flat: bool,
+    pub palette: bool,
+    /// With `palette`: also lossy palettes (the most frequent 2..16 colours, refined) for tiles
+    /// with more colours.
+    pub palette_lossy: bool,
 }
 
 impl Default for LmbxParams {
     fn default() -> Self {
-        LmbxParams { chroma: Chroma::Full444, quality: 16.0, chroma_ratio: None, lambda: 0.25, deadzone: 0.45, rdo_passes: 2, protect: 3, threads: 8 }
+        LmbxParams {
+            chroma: Chroma::Full444,
+            quality: 16.0,
+            chroma_ratio: None,
+            lambda: 0.25,
+            deadzone: 0.45,
+            rdo_passes: 2,
+            protect: 3,
+            threads: 8,
+            zstd: None,
+            flat: true,
+            palette: true,
+            palette_lossy: true,
+        }
     }
+}
+
+/// The stored size of a frame bitstream: Zstandard at `zstd` when that is smaller.
+pub fn stored_size(blob: &[u8], zstd: Option<i32>) -> usize {
+    match zstd.and_then(|l| zstd::bulk::compress(blob, l).ok()) {
+        Some(z) if z.len() < blob.len() => z.len(),
+        _ => blob.len(),
+    }
+}
+
+/// The LMBD frame payload of a bitstream: one chunk, Zstandard at `zstd` when smaller, else stored.
+pub fn frame_payload(header: &dxvkit_plus_core::lmbd::Header, blob: &[u8], zstd: Option<i32>) -> Result<Vec<u8>, MediaError> {
+    use dxvkit_plus_core::lmbd::{ChunkData, Compressor};
+    let raw = u32::try_from(blob.len()).map_err(|_| MediaError::Invalid("frame over 4 GiB".into()))?;
+    let z = zstd.map(|l| zstd::bulk::compress(blob, l).map_err(|e| MediaError::Io(format!("zstd: {e}")))).transpose()?;
+    let chunk = match &z {
+        Some(z) if z.len() < blob.len() => ChunkData { compressor: Compressor::Zstd, raw_size: raw, data: z },
+        _ => ChunkData { compressor: Compressor::None, raw_size: raw, data: blob },
+    };
+    dxvkit_plus_core::lmbd::frame_payload(header, &[chunk])
 }
 
 /// The orthonormal 8x8 DCT-II basis.
@@ -135,7 +181,7 @@ fn prepare(rgba: &[u8], width: u32, height: u32, chroma: Chroma, chroma_ratio: u
         return Err(MediaError::Invalid(format!("{width}x{height} RGBA8 needs {} bytes, got {}", width * height * 4, rgba.len())));
     }
     let alpha = rgba.chunks_exact(4).any(|p| p[3] != 255);
-    let header = FrameHeader { chroma, alpha, width, height, chroma_ratio, qt: QT };
+    let header = FrameHeader { version: dxvkit_plus_core::lmbx::VERSION_2, chroma, alpha, width, height, chroma_ratio, qt: QT };
     let (cw, ch) = header.coded_size();
     let n = (cw * ch) as usize;
     let (mut y, mut co, mut cg, mut a) = (vec![0; n], vec![0; n], vec![0; n], vec![0; n]);
@@ -249,13 +295,14 @@ fn emit_block(syms: &mut Symbols, lev: &[i32; 64]) {
 }
 
 /// One tile's streams (Y, Co, Cg, and A with alpha) for the given rate model.
-fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64], p: &LmbxParams, rdo: bool, ti: u32) -> Vec<Symbols> {
+fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64], p: &LmbxParams, rdo: bool, ti: u32) -> (Vec<Symbols>, f64) {
     let h = &s.header;
     let (tx, ty) = (ti % h.tiles_x(), ti / h.tiles_x());
     let qi = &qidx[ti as usize];
     // The DC is coded as a residual from the previous block's reconstructed DC in the stream
     // (`dc`, the decoder's value), so flat runs cost only their end-of-block.
-    let block = |plane: &Plane, x0: u32, y0: u32, shift: i32, q: u32, chroma: bool, dc: &mut i32, syms: &mut Symbols| {
+    // Returns the block's squared reconstruction error (sample domain).
+    let block = |plane: &Plane, x0: u32, y0: u32, shift: i32, q: u32, chroma: bool, dc: &mut i32, syms: &mut Symbols| -> f64 {
         let c = fdct(m, &plane.block(x0, y0, shift));
         let lambda = p.lambda * f64::from(q) * f64::from(q);
         let mut lev = quant_block(&c, q, rate, lambda, p, rdo);
@@ -265,9 +312,19 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
         lev[0] = l0;
         *dc = (*dc + l0 * qdc as i32).clamp(-dxvkit_plus_core::lmbx::DEQUANT_MAX, dxvkit_plus_core::lmbx::DEQUANT_MAX);
         emit_block(syms, &lev);
+        let dm = dxvkit_plus_core::lmbx::DEQUANT_MAX;
+        let mut sse = (c[0] - f64::from(*dc)).powi(2);
+        for k in 1..64 {
+            let r = ZIGZAG[k] as usize;
+            sse += (c[r] - f64::from((lev[k] * q as i32).clamp(-dm, dm))).powi(2);
+        }
+        sse
     };
     let q_of = |by: u32, bx: u32| u32::from(QT[qi[(by * TB + bx) as usize]]);
     let mut out = Vec::with_capacity(4);
+    // The tile's error, approximately in RGB terms (R, G, B = Y +- Co / 2 +- Cg / 2: 3 eY^2 +
+    // eCo^2 / 2 + 3 eCg^2 / 4; a 4:2:2 chroma sample covers two pixels), for the mode decision.
+    let mut sse = 0f64;
     for kind in PLANES.into_iter().take(h.planes() as usize) {
         let (mut syms, mut dc) = (Symbols::new(), 0i32);
         match kind {
@@ -275,7 +332,9 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
                 let plane = if kind == PlaneKind::Y { &s.y } else { s.a.as_ref().unwrap_or(&s.y) };
                 for by in 0..TB {
                     for bx in 0..TB {
-                        block(plane, tx * TILE + bx * 8, ty * TILE + by * 8, 128, q_of(by, bx), false, &mut dc, &mut syms);
+                        let (x0, y0) = (tx * TILE + bx * 8, ty * TILE + by * 8);
+                        let wgt = if kind == PlaneKind::Y { 3.0 } else { 1.0 };
+                        sse += wgt * block(plane, x0, y0, 128, q_of(by, bx), false, &mut dc, &mut syms);
                     }
                 }
             }
@@ -285,27 +344,31 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
                 for by in 0..TB {
                     for bx in 0..cbw {
                         let lbx = if h.chroma == Chroma::Halo422 { 2 * bx } else { bx };
-                        block(plane, tx * cw + bx * 8, ty * TILE + by * 8, 0, h.chroma_q(q_of(by, lbx)), true, &mut dc, &mut syms);
+                        let wgt = if kind == PlaneKind::Co { 0.5 } else { 0.75 } * if h.chroma == Chroma::Halo422 { 2.0 } else { 1.0 };
+                        sse += wgt * block(plane, tx * cw + bx * 8, ty * TILE + by * 8, 0, h.chroma_q(q_of(by, lbx)), true, &mut dc, &mut syms);
                     }
                 }
             }
         }
         out.push(syms);
     }
-    out
+    (out, sse)
 }
 
-fn all_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64], p: &LmbxParams, rdo: bool) -> Vec<Symbols> {
+/// Every tile's streams (flattened, tile-major) and squared error.
+fn all_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64], p: &LmbxParams, rdo: bool) -> (Vec<Symbols>, Vec<f64>) {
     let nt = s.header.tile_count();
     let threads = p.threads.clamp(1, 64) as u32;
     let per = nt.div_ceil(threads).max(1);
-    std::thread::scope(|sc| {
+    let tiles: Vec<(Vec<Symbols>, f64)> = std::thread::scope(|sc| {
         let handles: Vec<_> = (0..nt)
             .step_by(per as usize)
-            .map(|start| sc.spawn(move || (start..(start + per).min(nt)).flat_map(|ti| tile_symbols(m, s, qidx, rate, p, rdo, ti)).collect::<Vec<_>>()))
+            .map(|start| sc.spawn(move || (start..(start + per).min(nt)).map(|ti| tile_symbols(m, s, qidx, rate, p, rdo, ti)).collect::<Vec<_>>()))
             .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
-    })
+    });
+    let sse = tiles.iter().map(|t| t.1).collect();
+    (tiles.into_iter().flat_map(|t| t.0).collect(), sse)
 }
 
 /// Normalise a histogram to frequencies adding up to [`PROB_SCALE`], every present symbol >= 1
@@ -370,6 +433,131 @@ fn rans_encode(syms: &Symbols, t: &FreqTable) -> Vec<u8> {
     out
 }
 
+/// A tile's direct-mode candidates (v2), from the straight RGBA8 source (edge-replicated).
+struct Direct {
+    /// The squared error of the tile's mean colour, and that colour.
+    flat: Option<(f64, [u8; 4])>,
+    /// Palette candidates (exact, or lossy ones).
+    palette: Vec<Palette>,
+    /// The palette chosen (index into `palette`) when the tile is coded as a palette tile.
+    palette_pick: std::cell::Cell<usize>,
+}
+
+/// A palette candidate: colours, index symbols, squared error.
+struct Palette {
+    cols: Vec<[u8; 4]>,
+    syms: Symbols,
+    dist: f64,
+}
+
+/// Palette candidates of a tile: the exact palette when it has at most 16 colours; with
+/// `palette_lossy` also the most frequent 2, 4, 8 and 16 colours refined
+/// by two Lloyd iterations, each pixel mapped to the nearest colour (RGBA squared distance).
+fn palette_candidates(px: &[[u8; 4]], p: &LmbxParams) -> Vec<Palette> {
+    let max = dxvkit_plus_core::lmbx::PALETTE_SYMBOLS;
+    if !p.palette {
+        return Vec::new();
+    }
+    let mut count: Vec<([u8; 4], usize)> = Vec::new();
+    let mut at: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+    for q in px {
+        let k = *at.entry(*q).or_insert_with(|| {
+            count.push((*q, 0));
+            count.len() - 1
+        });
+        count[k].1 += 1;
+    }
+    // Most frequent first; ties by first appearance (stable sort).
+    count.sort_by_key(|c| std::cmp::Reverse(c.1));
+    let d2 = |a: [u8; 4], b: [u8; 4]| (0..4).map(|c| (f64::from(a[c]) - f64::from(b[c])).powi(2)).sum::<f64>();
+    let build = |cols: Vec<[u8; 4]>| -> Palette {
+        let nearest = |q: [u8; 4]| (0..cols.len()).min_by(|&a, &b| d2(q, cols[a]).total_cmp(&d2(q, cols[b]))).unwrap_or(0);
+        let idx: Vec<usize> = px.iter().map(|&q| nearest(q)).collect();
+        let dist = px.iter().zip(&idx).map(|(&q, &i)| d2(q, cols[i])).sum();
+        let n = cols.len();
+        let syms = (0..idx.len())
+            .map(|i| {
+                let (x, y) = (i % TILE as usize, i / TILE as usize);
+                let pred = if x > 0 {
+                    idx[i - 1]
+                } else if y > 0 {
+                    idx[i - TILE as usize]
+                } else {
+                    0
+                };
+                ((idx[i] + n - pred) % n) as u16
+            })
+            .collect();
+        Palette { cols, syms, dist }
+    };
+    let mut out = Vec::new();
+    if count.len() <= max {
+        out.push(build(count.iter().map(|c| c.0).collect()));
+        return out;
+    }
+    if !p.palette_lossy {
+        return out;
+    }
+    for k in [2usize, 4, 8, 16] {
+        let mut cols: Vec<[u8; 4]> = count.iter().take(k).map(|c| c.0).collect();
+        for _ in 0..2 {
+            let mut acc = vec![([0f64; 4], 0f64); k];
+            for &(q, n) in &count {
+                let i = (0..k).min_by(|&a, &b| d2(q, cols[a]).total_cmp(&d2(q, cols[b]))).unwrap_or(0);
+                for (a, &v) in acc[i].0.iter_mut().zip(&q) {
+                    *a += f64::from(v) * n as f64;
+                }
+                acc[i].1 += n as f64;
+            }
+            for (col, (sum, n)) in cols.iter_mut().zip(&acc) {
+                if *n > 0.0 {
+                    *col = sum.map(|v| (v / n).round() as u8);
+                }
+            }
+        }
+        out.push(build(cols));
+    }
+    out
+}
+
+fn rates(f: &[u16]) -> Vec<f64> {
+    f.iter().map(|&v| -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2()).collect()
+}
+
+fn hist_of<'a>(streams: impl Iterator<Item = &'a Symbols>, n: usize) -> Vec<u64> {
+    let mut h = vec![0u64; n];
+    streams.for_each(|s| s.iter().for_each(|&v| h[v as usize] += 1));
+    h
+}
+
+/// Tile `t`'s pixels as the direct modes see them: straight RGBA8, edge-replicated; without alpha
+/// every alpha is 255.
+fn direct_pixels(rgba: &[u8], width: u32, height: u32, h: &FrameHeader, t: u32) -> Vec<[u8; 4]> {
+    let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+    (0..TILE * TILE)
+        .map(|i| {
+            let (x, y) = ((tx * TILE + i % TILE).min(width - 1), (ty * TILE + i / TILE).min(height - 1));
+            let s = ((y * width + x) * 4) as usize;
+            [rgba[s], rgba[s + 1], rgba[s + 2], if h.alpha { rgba[s + 3] } else { 255 }]
+        })
+        .collect()
+}
+
+fn direct_candidates(rgba: &[u8], width: u32, height: u32, h: &FrameHeader, t: u32, p: &LmbxParams) -> Direct {
+    let px = direct_pixels(rgba, width, height, h, t);
+    let n = px.len() as f64;
+    let flat = p.flat.then(|| {
+        let mean: [u8; 4] = std::array::from_fn(|c| (px.iter().map(|q| f64::from(q[c])).sum::<f64>() / n).round() as u8);
+        let d = px
+            .iter()
+            .map(|q| (0..3).map(|c| (f64::from(q[c]) - f64::from(mean[c])).powi(2)).sum::<f64>() + (f64::from(q[3]) - f64::from(mean[3])).powi(2))
+            .sum();
+        (d, mean)
+    });
+    let palette = palette_candidates(&px, p);
+    Direct { flat, palette, palette_pick: std::cell::Cell::new(0) }
+}
+
 /// Encode one straight-RGBA8 frame to an LMBX frame bitstream.
 pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Result<Vec<u8>, MediaError> {
     if !(p.quality.is_finite() && p.quality > 0.0 && p.lambda.is_finite() && p.lambda >= 0.0 && (0.0..=0.5).contains(&p.deadzone)) {
@@ -377,7 +565,12 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
     }
     let ratio = p.chroma_ratio.unwrap_or(if p.chroma == Chroma::Halo422 { 1.0 } else { 1.6 });
     let ratio256 = (ratio * 256.0).round().clamp(1.0, 65535.0) as u16;
-    let s = prepare(rgba, width, height, p.chroma, ratio256)?;
+    let mut s = prepare(rgba, width, height, p.chroma, ratio256)?;
+    // Without tile modes the frame is a v1 frame.
+    let v2 = p.flat || p.palette;
+    if !v2 {
+        s.header.version = dxvkit_plus_core::lmbx::VERSION;
+    }
     let m = basis();
     let h = s.header;
     let qidx: Vec<Vec<usize>> = (0..h.tile_count())
@@ -388,26 +581,109 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
         .collect();
     // Bootstrap (deadzone only) -> rate model -> RDOQ passes.
     let mut rate = vec![0f64; COEF_SYMBOLS];
-    let mut syms = all_symbols(&m, &s, &qidx, &rate, p, false);
+    let (mut syms, mut sse) = all_symbols(&m, &s, &qidx, &rate, p, false);
     for _ in 0..p.rdo_passes {
         let f = normalize(&histogram(&syms));
         for (r, &v) in rate.iter_mut().zip(&f) {
             *r = -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2();
         }
-        syms = all_symbols(&m, &s, &qidx, &rate, p, true);
+        (syms, sse) = all_symbols(&m, &s, &qidx, &rate, p, true);
     }
-    let coef_f = normalize(&histogram(&syms));
+    let np = h.planes() as usize;
+    let mut coef_f = normalize(&histogram(&syms));
+    // v2: per-tile mode by rate-distortion (J = D + lambda * bits, lambda = the RDO multiplier
+    // times the tile's mean squared step), the direct modes' tables from the tiles that use them.
+    let (modes, direct) = if v2 {
+        let dct_rate: Vec<f64> = coef_f.iter().map(|&v| -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2()).collect();
+        let dct_bits: Vec<f64> = (0..h.tile_count() as usize)
+            .map(|t| syms[t * np..t * np + np].iter().map(|st| 32.0 + st.iter().map(|&x| dct_rate[x as usize]).sum::<f64>()).sum())
+            .collect();
+        let lam: Vec<f64> = qidx.iter().map(|qi| p.lambda * qi.iter().map(|&i| f64::from(QT[i]).powi(2)).sum::<f64>() / qi.len() as f64).collect();
+        // Per-tile candidates, tile-parallel (each tile's are a pure function of its pixels).
+        let (nt, threads) = (h.tile_count(), p.threads.clamp(1, 64) as u32);
+        let per = nt.div_ceil(threads).max(1);
+        let hh = &h;
+        let cand: Vec<Direct> = std::thread::scope(|sc| {
+            let handles: Vec<_> = (0..nt)
+                .step_by(per as usize)
+                .map(|start| sc.spawn(move || (start..(start + per).min(nt)).map(|t| direct_candidates(rgba, width, height, hh, t, p)).collect::<Vec<_>>()))
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        });
+        let pal_rate = rates(&normalize(&hist_of(cand.iter().flat_map(|c| c.palette.iter().map(|x| &x.syms)), dxvkit_plus_core::lmbx::PALETTE_SYMBOLS)));
+        let mut modes = vec![TileMode::Dct; h.tile_count() as usize];
+        for (t, c) in cand.iter().enumerate() {
+            // (J, mode)
+            let mut best = (sse[t] + lam[t] * dct_bits[t], TileMode::Dct);
+            let mut try_mode = |d: f64, bits: f64, m: TileMode| {
+                let better = d + lam[t] * bits < best.0;
+                if better {
+                    best = (d + lam[t] * bits, m);
+                }
+                better
+            };
+            if let Some((d, _)) = c.flat {
+                let _ = try_mode(d, 32.0, TileMode::Flat);
+            }
+            for (k, pc) in c.palette.iter().enumerate() {
+                if try_mode(pc.dist, 8.0 + 32.0 * pc.cols.len() as f64 + 32.0 + pc.syms.iter().map(|&x| pal_rate[x as usize]).sum::<f64>(), TileMode::Palette) {
+                    c.palette_pick.set(k);
+                }
+            }
+            modes[t] = best.1;
+        }
+        // The coefficient table from the DCT tiles only.
+        let dct_streams: Vec<Symbols> =
+            modes.iter().enumerate().filter(|m| *m.1 == TileMode::Dct).flat_map(|(t, _)| syms[t * np..t * np + np].to_vec()).collect();
+        coef_f = normalize(&histogram(&dct_streams));
+        (modes, Some(cand))
+    } else {
+        (vec![TileMode::Dct; h.tile_count() as usize], None)
+    };
     let coef_t = FreqTable::from_freq(coef_f.clone())?;
-    let streams: Vec<Vec<u8>> = syms.iter().map(|t| rans_encode(t, &coef_t)).collect();
     let mut out = h.to_bytes().to_vec();
     out.extend(FreqTable::sparse_bytes(&coef_f));
-    for q in &qidx {
-        out.extend(q.chunks_exact(2).map(|p| (p[0] | (p[1] << 4)) as u8));
+    let mut streams: Vec<Vec<u8>> = Vec::with_capacity(syms.len());
+    if let Some(cand) = direct {
+        let pick = |m: TileMode| modes.iter().zip(&cand).filter(move |x| *x.0 == m);
+        let mut pal_h = vec![0u64; dxvkit_plus_core::lmbx::PALETTE_SYMBOLS];
+        pick(TileMode::Palette).filter_map(|x| x.1.palette.get(x.1.palette_pick.get())).for_each(|pc| pc.syms.iter().for_each(|&v| pal_h[v as usize] += 1));
+        let pal_f = normalize(&pal_h);
+        let pal_t = FreqTable::from_freq(pal_f.clone())?;
+        out.extend(FreqTable::sparse_bytes(&pal_f));
+        out.extend(modes.iter().map(|&m| m as u8));
+        for (t, (m, c)) in modes.iter().zip(&cand).enumerate() {
+            let first = match m {
+                TileMode::Dct => {
+                    streams.extend(syms[t * np..t * np + np].iter().map(|st| rans_encode(st, &coef_t)));
+                    continue;
+                }
+                TileMode::Flat => c.flat.map_or_else(Vec::new, |f| f.1.to_vec()),
+                TileMode::Palette => c.palette.get(c.palette_pick.get()).map_or_else(Vec::new, |pc| {
+                    let mut b = vec![pc.cols.len() as u8];
+                    pc.cols.iter().for_each(|c| b.extend_from_slice(c));
+                    b.extend(rans_encode(&pc.syms, &pal_t));
+                    b
+                }),
+            };
+            streams.push(first);
+            streams.extend((1..np).map(|_| Vec::new()));
+        }
+    } else {
+        streams.extend(syms.iter().map(|t| rans_encode(t, &coef_t)));
+    }
+    for (q, m) in qidx.iter().zip(&modes) {
+        if *m == TileMode::Dct {
+            out.extend(q.chunks_exact(2).map(|p| (p[0] | (p[1] << 4)) as u8));
+        } else {
+            out.extend([0u8; 8]);
+        }
     }
     out.extend_from_slice(&h.stream_count().to_le_bytes());
+    // The directory: v1 stream offsets, v2 stream lengths.
     let mut off = 0u32;
     for st in &streams {
-        out.extend_from_slice(&off.to_le_bytes());
+        out.extend_from_slice(&(if v2 { st.len() as u32 } else { off }).to_le_bytes());
         off += st.len() as u32;
     }
     for st in &streams {
@@ -417,23 +693,24 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
 }
 
 /// Rate control: the best quality (smallest base quantiser in `1..=max_quality`, searched in
-/// halves to 0.25) whose frame fits `budget` bytes. Returns the bitstream and the quality used; if
-/// even `max_quality` does not fit, its frame.
+/// halves to 0.25) whose frame's stored size ([`stored_size`]) fits `budget` bytes. Returns the
+/// bitstream and the quality used; if even `max_quality` does not fit, its frame.
 pub fn encode_frame_to_size(rgba: &[u8], width: u32, height: u32, p: &LmbxParams, budget: usize, max_quality: f64) -> Result<(Vec<u8>, f64), MediaError> {
     let at = |q: f64| encode_frame(rgba, width, height, &LmbxParams { quality: q, ..*p });
+    let size = |b: &[u8]| stored_size(b, p.zstd);
     let (mut lo, mut hi) = (1.0f64, max_quality.max(1.0));
     let first = at(lo)?;
-    if first.len() <= budget {
+    if size(&first) <= budget {
         return Ok((first, lo));
     }
     let mut best = (at(hi)?, hi);
-    if best.0.len() > budget {
+    if size(&best.0) > budget {
         return Ok(best);
     }
     while hi - lo > 0.25 {
         let mid = (lo + hi) / 2.0;
         let f = at(mid)?;
-        if f.len() <= budget {
+        if size(&f) <= budget {
             best = (f, mid);
             hi = mid;
         } else {
@@ -453,8 +730,13 @@ pub fn float_reference_rgba8(b: &[u8], width: u32, height: u32) -> Result<Vec<u8
     let chw = h.chroma.plane_width(cw);
     let (mut y, mut co, mut cg, mut a) =
         (vec![0f64; (cw * ch) as usize], vec![0f64; (chw * ch) as usize], vec![0f64; (chw * ch) as usize], vec![255f64; (cw * ch) as usize]);
+    let mut direct = std::collections::HashMap::new();
     for ti in 0..h.tile_count() {
         let ty = ti / h.tiles_x();
+        if f.mode(ti) != TileMode::Dct {
+            direct.insert(ti, dxvkit_plus_core::lmbx::direct_tile(&f, ti));
+            continue;
+        }
         for kind in PLANES.into_iter().take(h.planes() as usize) {
             let (plane, stride, shift) = match kind {
                 PlaneKind::Y => (&mut y, cw, 128.0),
@@ -492,9 +774,11 @@ pub fn float_reference_rgba8(b: &[u8], width: u32, height: u32) -> Result<Vec<u8
             let gg = g + t;
             let bb = t - o / 2.0;
             let rr = bb + o;
-            for v in [rr, gg, bb, at(&a, cw, px)] {
-                out.push(v.round().clamp(0.0, 255.0) as u8);
+            if let Some(d) = direct.get(&((py / TILE) * h.tiles_x() + px / TILE)) {
+                out.extend_from_slice(&d[((py % TILE) * TILE + px % TILE) as usize]);
+                continue;
             }
+            out.extend([rr, gg, bb, at(&a, cw, px)].map(|v| v.round().clamp(0.0, 255.0) as u8));
         }
     }
     Ok(out)
@@ -552,5 +836,35 @@ mod tests {
         let budget = (fine.len() + coarse.len()) / 2;
         let (b, q) = encode_frame_to_size(&src, 192, 128, &LmbxParams::default(), budget, 400.0).unwrap();
         assert!(b.len() <= budget && q > 2.0 && q < 64.0, "{} <= {budget}, quality {q}", b.len());
+    }
+
+    /// v2 tile modes: a graphics card with alpha codes flat and palette tiles; exact palette tiles
+    /// decode exactly; every mode off writes a v1 frame; the float reference agrees on direct
+    /// tiles.
+    #[test]
+    fn tile_modes() {
+        let (w, h) = (200u32, 120u32);
+        let src = dxvkit_plus_core::testpattern::graphics(1, w, h, true);
+        for chroma in [Chroma::Halo422, Chroma::Full444] {
+            let b = encode_frame(&src, w, h, &LmbxParams { chroma, ..Default::default() }).unwrap();
+            let f = Frame::parse(&b, w, h).unwrap();
+            assert_eq!(f.header.version, dxvkit_plus_core::lmbx::VERSION_2);
+            let modes: std::collections::BTreeSet<u32> = (0..f.header.tile_count()).map(|t| f.mode(t) as u32).collect();
+            assert!(modes.contains(&1) && modes.contains(&2), "{modes:?}");
+            let out = decode_rgba8(&b, w, h, true).unwrap();
+            let float = float_reference_rgba8(&b, w, h).unwrap();
+            for t in (0..f.header.tile_count()).filter(|&t| matches!(f.mode(t), TileMode::Palette | TileMode::Flat)) {
+                let (tx, ty) = (t % f.header.tiles_x(), t / f.header.tiles_x());
+                for y in ty * TILE..((ty + 1) * TILE).min(h) {
+                    for x in tx * TILE..((tx + 1) * TILE).min(w) {
+                        let i = ((y * w + x) * 4) as usize;
+                        assert_eq!(out[i..i + 4], float[i..i + 4], "tile {t} at {x},{y}: integer == float on direct tiles");
+                    }
+                }
+            }
+            assert!(psnr(&src, &out) > 40.0, "{chroma:?}: {:.1} dB", psnr(&src, &out));
+            let v1 = encode_frame(&src, w, h, &LmbxParams { chroma, flat: false, palette: false, ..Default::default() }).unwrap();
+            assert_eq!(Frame::parse(&v1, w, h).unwrap().header.version, dxvkit_plus_core::lmbx::VERSION);
+        }
     }
 }

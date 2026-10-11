@@ -1,0 +1,11 @@
+asset: tests/fixtures/lmbx_v2_plasma_alpha_444_q48.lmbd
+title: LMBX v2 conformance vector (4:4:4, quality 48, tile modes) — plasma with alpha (testpattern::plasma) 333x141, 2 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 444 --quality 48 --threads 1 --modes flat,palette,lossy --compressor none (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-12
+sha256: e9057de3cfc061fd5d2fe9e4a3b85a8ec27fba11ddb589979ba68de8fd4bf6ac
+params: pattern=plasma_a chroma=444 quality=48 modes=flat,palette,lossy
+decoded_rgba_q_sha256 frame 0: cf62dc15829f106a810cc331a1efaa06bf52093ea4df307be75c26aef0318061
+decoded_rgba_q_sha256 frame 1: ed439a0b0bf4ecc90aa4e8687a3b6de008a67843b280dc33062000cf893deb36
+notes: An LMBX (profile 0x10, bitstream v2: per-tile modes — DCT, flat, palette — and a stream-length directory) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own procedural content, no third-party content.

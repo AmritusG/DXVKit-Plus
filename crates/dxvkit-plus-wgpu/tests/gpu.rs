@@ -196,7 +196,8 @@ fn lmbx_vectors() -> Vec<PathBuf> {
 }
 
 /// LMBX's compute decode is bit-exact with the CPU reference decoder on every conformance-vector
-/// frame (both chroma modes, alpha, odd sizes), through `write_buffer` and through the staging
+/// frame (both bitstream versions, every tile mode, both chroma modes, alpha, odd sizes), through
+/// `write_buffer` and through the staging
 /// belt — and on hostile frames: the same headers with every tile's bytes replaced (random,
 /// truncated to nothing, or swapped between tiles), which exercise the zero-fill past a tile's end,
 /// the bounded renormalisation and the wrapping state arithmetic.
@@ -237,6 +238,14 @@ fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
             let mut reversed = blob.clone();
             reversed[data..].reverse();
             variants.push(reversed);
+            if fr.header.version >= dxvkit_plus_core::lmbx::VERSION_2 {
+                // Every tile a random mode over random data.
+                let mut m = variants[0].clone();
+                for t in 0..fr.header.tile_count() as usize {
+                    m[fr.sections.modes + t] = ((rng(&mut state) >> 60) % 3) as u8;
+                }
+                variants.push(m);
+            }
             for v in variants {
                 let planes = vec![Plane { format: PixelFormat::LmbxBitstream, width: planes[0].width, height: planes[0].height, data: v }];
                 let h = Decoded::Planes { index: f, width: *width, height: *height, shading: Shading::Lmbx, planes };
@@ -246,7 +255,7 @@ fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
         }
     }
     eprintln!("LMBX GPU == CPU: {frames} vector frames, {hostile} hostile frames");
-    assert!(frames >= 12 && hostile >= 36, "{frames} / {hostile}");
+    assert!(frames >= 20 && hostile >= 68, "{frames} / {hostile}");
     // Negative control: a malformed header is refused before anything reaches the GPU.
     let bad = Decoded::Planes {
         index: 0,

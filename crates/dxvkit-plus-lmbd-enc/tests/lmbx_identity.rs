@@ -1,5 +1,6 @@
 //! The LMBX encoder is deterministic: re-encoding each conformance vector's pattern with the
-//! parameters in its sidecar writes the committed file byte for byte, at any thread count.
+//! parameters in its sidecar (v2: with its tile modes) writes the committed file byte for byte,
+//! at any thread count.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use dxvkit_plus_core::lmbd::{ChunkData, Compressor, Header, Writer, frame_payload};
@@ -17,6 +18,7 @@ fn pattern(name: &str, f: u32) -> (Vec<u8>, u32, u32) {
             testpattern::stamp_frame_id(&mut p, w, h, f);
             (p, w, h)
         }
+        "graphics" | "graphics_a" => (testpattern::graphics(f, 333, 185, name == "graphics_a"), 333, 185),
         other => panic!("{other}"),
     }
 }
@@ -33,7 +35,10 @@ fn reencoding_the_vectors_is_byte_identical_at_any_thread_count() {
         }
         let side = std::fs::read_to_string(dir.join(format!("{name}.attribution"))).unwrap();
         let params = side.lines().find_map(|l| l.strip_prefix("params: ")).unwrap();
-        let kv = |k: &str| params.split(' ').find_map(|t| t.strip_prefix(&format!("{k}="))).unwrap().to_string();
+        let kv = |k: &str| params.split(' ').find_map(|t| t.strip_prefix(&format!("{k}="))).unwrap_or_default().to_string();
+        let modes = kv("modes");
+        let has = |m: &str| modes.split(',').any(|x| x == m);
+        let tile_modes = LmbxParams { flat: has("flat"), palette: has("palette"), palette_lossy: has("lossy"), ..LmbxParams::default() };
         let frames = side.lines().filter(|l| l.starts_with("decoded_rgba_q_sha256")).count() as u32;
         let chroma = if kv("chroma") == "444" { Chroma::Full444 } else { Chroma::Halo422 };
         let quality: f64 = kv("quality").parse().unwrap();
@@ -45,7 +50,7 @@ fn reencoding_the_vectors_is_byte_identical_at_any_thread_count() {
             let mut wr = Writer::new(&mut out, header.clone()).unwrap();
             for f in 0..frames {
                 let (rgba, w, h) = pattern(&kv("pattern"), f);
-                let b = encode_frame(&rgba, w, h, &LmbxParams { chroma, quality, threads, ..LmbxParams::default() }).unwrap();
+                let b = encode_frame(&rgba, w, h, &LmbxParams { chroma, quality, threads, ..tile_modes }).unwrap();
                 let payload = frame_payload(&header, &[ChunkData { compressor: Compressor::None, raw_size: b.len() as u32, data: &b }]).unwrap();
                 wr.push_payload(&payload).unwrap();
             }
@@ -54,5 +59,5 @@ fn reencoding_the_vectors_is_byte_identical_at_any_thread_count() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 5);
+    assert_eq!(checked, 9);
 }
