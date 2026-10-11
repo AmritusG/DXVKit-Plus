@@ -124,14 +124,22 @@ fn sym(r: ptr<function, Rans>) -> u32 {
 }
 
 // Decode one block's coefficients into raster positions of its 8x8 area (base index, stride).
-fn block(r: ptr<function, Rans>, q: i32, base: u32, stride: u32) {
-    for (var k = 0u; k < 64u; k++) { planes[base + (k >> 3u) * stride + (k & 7u)] = 0; }
+// `dc`: the previous block's dequantised DC in this stream; the DC level is a residual from it.
+fn block(r: ptr<function, Rans>, q: i32, qdc: i32, dc: ptr<function, i32>, base: u32, stride: u32) {
+    for (var k = 1u; k < 64u; k++) { planes[base + (k >> 3u) * stride + (k & 7u)] = 0; }
+    var d0 = *dc;
     for (var k = 0u; k < 64u; k++) {
         let s = sym(r);
         if (s == 2047u) { break; }
         let z = ZZ[k];
-        planes[base + (z >> 3u) * stride + (z & 7u)] = clamp((i32(s) - 1023) * q, -4095, 4095);
+        if (k == 0u) {
+            d0 = clamp(*dc + (i32(s) - 1023) * qdc, -4095, 4095);
+        } else {
+            planes[base + (z >> 3u) * stride + (z & 7u)] = clamp((i32(s) - 1023) * q, -4095, 4095);
+        }
     }
+    planes[base] = d0;
+    *dc = d0;
 }
 
 fn chroma_q(q: u32) -> i32 { return i32(clamp((q * p.cratio + 128u) >> 8u, 2u, 4095u)); }
@@ -165,6 +173,7 @@ fn entropy(@builtin(global_invocation_id) gid: vec3<u32>) {
         x = x | (b << (8u * i));
     }
     r.x = x;
+    var dc = 0;
     let ysz = p.cw * p.ch;
     let csz = p.chw * p.ch;
     if (k == 0u || k == 3u) {
@@ -172,7 +181,8 @@ fn entropy(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (k == 3u) { base0 = ysz + 2u * csz; }
         for (var by = 0u; by < TB; by++) {
             for (var bx = 0u; bx < TB; bx++) {
-                block(&r, i32(qstep(t, by * TB + bx)), base0 + (ty * TILE + by * 8u) * p.cw + tx * TILE + bx * 8u, p.cw);
+                let q = i32(qstep(t, by * TB + bx));
+                block(&r, q, max(q, 2), &dc, base0 + (ty * TILE + by * 8u) * p.cw + tx * TILE + bx * 8u, p.cw);
             }
         }
     } else {
@@ -183,7 +193,8 @@ fn entropy(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (var bx = 0u; bx < ctw / 8u; bx++) {
                 var lbx = bx;
                 if (p.chroma == 1u) { lbx = 2u * bx; }
-                block(&r, chroma_q(qstep(t, by * TB + lbx)), base0 + (ty * TILE + by * 8u) * p.chw + tx * ctw + bx * 8u, p.chw);
+                let q = chroma_q(qstep(t, by * TB + lbx));
+                block(&r, q, max(q, 4), &dc, base0 + (ty * TILE + by * 8u) * p.chw + tx * ctw + bx * 8u, p.chw);
             }
         }
     }

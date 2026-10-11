@@ -13,13 +13,18 @@ use dxvkit_plus_core::transport::{Direction, PlayMode, SyncMode};
 #[test]
 fn enum_values_are_pinned() {
     use PixelFormat as P;
-    assert_eq!([P::Bc1, P::Bc3, P::Bc4, P::Bc5, P::Bc6hUfloat, P::Bc6hSfloat, P::Bc7, P::Rgba8].map(|v| v as u32), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(
+        [P::Bc1, P::Bc3, P::Bc4, P::Bc5, P::Bc6hUfloat, P::Bc6hSfloat, P::Bc7, P::Rgba8, P::LmbxBitstream].map(|v| v as u32),
+        [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    );
     use SourceKind as K;
     assert_eq!([K::Hap, K::Native, K::ImageSequence, K::Still, K::Dxv, K::Lmbd].map(|v| v as u32), [0, 1, 2, 3, 4, 5]);
     // LMBD: the enum values are the bytes written in the file.
     use dxvkit_plus_core::lmbd::{Colorspace, Compressor, Profile, TexFormat};
-    assert_eq!(Profile::Lmb7 as u32, 0x01);
-    assert_eq!(TexFormat::Bc7Rgba as u32, 0x01);
+    assert_eq!([Profile::Lmb7, Profile::Lmbx].map(|v| v as u32), [0x01, 0x10]);
+    assert_eq!([TexFormat::Bc7Rgba, TexFormat::LmbxV1].map(|v| v as u32), [0x01, 0x11]);
+    use dxvkit_plus_core::lmbx::Chroma;
+    assert_eq!([Chroma::Full444, Chroma::Halo422].map(|v| v as u32), [0, 1]);
     assert_eq!([Compressor::None, Compressor::Zstd].map(|v| v as u32), [0, 1]);
     assert_eq!([Colorspace::Srgb, Colorspace::Linear].map(|v| v as u32), [0, 1]);
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(|v| v as u32), [0, 1, 2]);

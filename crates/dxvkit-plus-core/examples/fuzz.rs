@@ -6,10 +6,12 @@
 //! Ported from Loombda-rs `crates/loombda-media/examples/fuzz_media.rs` (Amrit's).
 //!
 //! ```text
-//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads> [all|lmbd|dxv]
+//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads> [all|lmbd|dxv|lmbx]
 //! ```
 //!
-//! `lmbd` restricts the corpus to the LMBD vectors (the reader alone); `dxv` to DXV packets and
+//! `lmbd` restricts the corpus to the LMBD vectors (the reader alone); `lmbx` to the LMBX vectors
+//! and their frame bitstreams (container + bitstream parser + decoder, parallel and sequential
+//! decodes compared); `dxv` to DXV packets and
 //! DXV movies. With `DXVKIT_DIR=<a DXVKit checkout>` its full vector streams join the corpus (the
 //! Resolume-encoder streams carry the entropy-coded HQ opcodes; never committed here).
 //!
@@ -40,6 +42,7 @@ mod qt_movie;
 enum Seed {
     Hap { frame: Vec<u8>, w: u32, h: u32 },
     Dxv { packet: Vec<u8>, w: u32, h: u32 },
+    LmbxFrame { bits: Vec<u8>, w: u32, h: u32 },
     File(Vec<u8>),
     Lmbd(Vec<u8>),
 }
@@ -66,6 +69,14 @@ fn corpus(dirs: &[PathBuf]) -> Vec<Seed> {
     for f in files {
         let bytes = std::fs::read(&f).unwrap_or_default();
         if f.extension().and_then(|e| e.to_str()) == Some("lmbd") {
+            if let Ok(l) = LmbdFile::open(&f)
+                && l.header().profile == dxvkit_plus_core::lmbd::Profile::Lmbx
+            {
+                let (mut s, mut b) = (Vec::new(), Vec::new());
+                if l.decode_frame(0, &mut s, &mut b, false).is_ok() {
+                    seeds.push(Seed::LmbxFrame { bits: b, w: l.header().width, h: l.header().height });
+                }
+            }
             seeds.push(Seed::Lmbd(bytes));
             continue;
         }
@@ -192,6 +203,20 @@ impl PlaneSink for CheckedSink {
     }
 }
 
+/// Decode an LMBX frame bitstream with the tiles in parallel and sequentially: both must agree
+/// (a panic is a crash).
+fn lmbx_both(bits: &[u8], w: u32, h: u32) {
+    if u64::from(w) * u64::from(h) > 2048 * 2048 {
+        return;
+    }
+    let a = dxvkit_plus_core::lmbx::decode_rgba_q(bits, w, h, true);
+    let b = dxvkit_plus_core::lmbx::decode_rgba_q(bits, w, h, false);
+    assert_eq!(a.is_ok(), b.is_ok());
+    if let (Ok(a), Ok(b)) = (a, b) {
+        assert!(a == b, "parallel and sequential LMBX decodes differ");
+    }
+}
+
 fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
     match seed {
         Seed::Hap { w, h, .. } => {
@@ -208,12 +233,25 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                 let _ = dxv::rgba::blocks_to_rgba(&b, true);
             }
         }
+        Seed::LmbxFrame { w, h, .. } => {
+            let (w, h) = if r.below(16) == 0 { (1 + r.below(300) as u32, 1 + r.below(300) as u32) } else { (*w, *h) };
+            lmbx_both(data, w, h);
+        }
         Seed::Lmbd(_) => {
             let src: Arc<[u8]> = Arc::from(data);
             if let Ok(f) = LmbdFile::from_source(Arc::new(MemSource(src))) {
                 let h = f.header().clone();
                 // Same allocation bound as for movies below.
                 if u64::from(h.width) * u64::from(h.height) > 4096 * 4096 {
+                    return;
+                }
+                if h.profile == dxvkit_plus_core::lmbd::Profile::Lmbx {
+                    let (mut s, mut b) = (Vec::new(), Vec::new());
+                    for i in 0..f.frame_count().min(2) {
+                        if f.decode_frame(i, &mut s, &mut b, r.below(2) == 0).is_ok() {
+                            lmbx_both(&b, h.width, h.height);
+                        }
+                    }
                     return;
                 }
                 let (mut s, mut blocks) = (Vec::new(), Vec::new());
@@ -279,6 +317,11 @@ fn main() {
     let mut all = corpus(&dirs);
     match only {
         "lmbd" => all.retain(|s| matches!(s, Seed::Lmbd(_))),
+        "lmbx" => all.retain(|s| match s {
+            Seed::LmbxFrame { .. } => true,
+            Seed::Lmbd(b) => b.get(6) == Some(&0x10),
+            _ => false,
+        }),
         // DXV packets, and the movies that carry them (the demuxer path).
         "dxv" => all.retain(|s| match s {
             Seed::Dxv { .. } => true,
@@ -292,7 +335,7 @@ fn main() {
         Seed::Hap { .. } => (a.0 + 1, a.1, a.2, a.3),
         Seed::Dxv { .. } => (a.0, a.1 + 1, a.2, a.3),
         Seed::File(_) => (a.0, a.1, a.2 + 1, a.3),
-        Seed::Lmbd(_) => (a.0, a.1, a.2, a.3 + 1),
+        Seed::Lmbd(_) | Seed::LmbxFrame { .. } => (a.0, a.1, a.2, a.3 + 1),
     });
     std::panic::set_hook(Box::new(|_| {})); // crashes are counted, not printed per hit
     let execs = Arc::new(AtomicU64::new(0));
@@ -311,7 +354,7 @@ fn main() {
                 while !stop.load(Ordering::Relaxed) {
                     let seed = &seeds[r.below(seeds.len())];
                     let mut data = match seed {
-                        Seed::Hap { frame, .. } | Seed::Dxv { packet: frame, .. } => frame.clone(),
+                        Seed::Hap { frame, .. } | Seed::Dxv { packet: frame, .. } | Seed::LmbxFrame { bits: frame, .. } => frame.clone(),
                         Seed::File(b) | Seed::Lmbd(b) => b.clone(),
                     };
                     mutate(&mut data, &mut r);

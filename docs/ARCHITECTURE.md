@@ -28,8 +28,8 @@
 
 | Crate | `unsafe` | GPU | What |
 |---|---|---|---|
-| `dxvkit-plus-core` | forbidden | none | demux, HAP, DXV, the LMBD container, CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
-| `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoder (4-mode BC7 + RDO, Zstd); links libzstd through the `zstd` crate |
+| `dxvkit-plus-core` | forbidden | none | demux, HAP, DXV, the LMBD container (LMB7 and LMBX), CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
+| `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoders: LMB7 (4-mode BC7 + RDO, Zstd; links libzstd through the `zstd` crate) and LMBX (DCT + RDOQ + rANS, rate control) |
 | `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, staged uploads (`Uploader`, `StagedFrame`), the WGSL conversion and direct sampling (`DirectView`), read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
 | `dxvkit-plus-cli` | forbidden | wgpu | the `dxvkit-plus` command |
@@ -72,6 +72,19 @@ inside the file), then reads a frame's payload with one positioned read. The chu
 own slice (Zstd through the compiled-in backend, below; it must produce exactly the declared
 size), on worker threads when asked. The block stream uploads unchanged into a BC7 texture; the GPU decodes it on sampling
 (`LmbdTexture` adds an sRGB view). The format is in `docs/LMBD.md`.
+
+**LMBX** (LMBD profile `0x10`, `core::lmbx`, spec in `docs/LMBD.md` §11). The container is LMBD's;
+a frame's chunks hold its LMBX bitstream. The source validates the bitstream's header, table and
+stream directory on the CPU and hands the bytes over unchanged as one `PixelFormat::LmbxBitstream`
+plane (`Shading::Lmbx`); nothing else happens on the CPU. `FrameRenderer` uploads the bytes into a
+storage buffer (`write_buffer`, or through the staging belt) and decodes them with compute passes:
+`tables` (expand the rANS table, one workgroup), `entropy` (one invocation per stream = per plane of
+each 32x32 tile: rANS, dequantise, write coefficients in place), `idct` (one invocation per 8x8
+block: the integer inverse DCT as generated straight-line WGSL), then a fragment pass (4:2:2 halo or
+4:4:4 chroma, inverse YCoCg-R, 8-bit output). The arithmetic is the reference decoder's, so GPU and
+CPU agree bit for bit on every frame, hostile ones included. LMBX frames vary in size, so they have
+no fixed `FrameSource::layout` (no decode-into-staging, no direct view). The encoder is
+`lmbd_enc::lmbx` (B1d's RDOQ, with rate control).
 
 *Zstd backend.* One private function, `lmbd::zstd_decompress(data, out) -> bytes written`, sits
 behind two core features. `zstd-c` (default) calls libzstd's `ZSTD_decompressDCtx` through the
@@ -144,6 +157,9 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | LMBD encoder vs the original encoder | byte-identical files (five vectors; 1080p frames checked by hand) | `lmbd-enc/tests/encoder_identity.rs` |
+| LMBX reference decoder vs the conformance vectors | every frame's normative output hashes to its sidecar (both chroma modes, alpha, odd sizes) | `core/tests/lmbx.rs` |
+| LMBX GPU vs CPU | bit-exact: every vector frame (`write_buffer` and staged uploads) and hostile frames (random, empty, swapped streams) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| LMBX encoder | deterministic: the vectors re-encode byte for byte at 1, 3 and 8 threads | `lmbd-enc/tests/lmbx_identity.rs` |
 | Native BGRA (ProRes 4444) zero-copy vs Apple's own CPU read-back | bit-exact | `apple/tests/native.rs` |
 | Native 4:2:0 WGSL conversion vs Apple's conversion | tile interiors mean ≤ 1/255; whole frame no further from the source than Apple's | same |
 | Frame identity + seek | every frame carries its index; shuffled seeks equal sequential decodes | `apple/tests/native.rs`, `dxvkit-plus verify` |
@@ -207,12 +223,13 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 |---|---|
 | `Box<dyn FrameSource>`, `cache::Player`, `transport::Transport`, `FrameRenderer` | opaque handles (`*mut T` created and freed by the wrapper) |
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
-| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
+| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}`, `lmbx::Chroma` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
 | `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
 | `Uploader`, `StagedFrame` | opaque handles; `decode_into` takes a source handle + a `StagedFrame` handle (the `PlaneSink` is implemented on the Rust side — no C callback) |
 | `source::FrameLayout`, `PlaneLayout`, `DirectView` | plain-data `#[repr(C)]` mirrors (`DirectView`'s view as a borrowed handle, valid until the next upload) |
 | `GpuError` | `GpuError::code()` (stable `u32`, pinned by `wgpu/tests/abi.rs`) + the message through a separate call |
-| `lmbd::Header`, `IndexEntry`, `ChunkEntry` | plain-data `#[repr(C)]` mirrors |
+| `lmbd::Header`, `IndexEntry`, `ChunkEntry`, `lmbx::FrameHeader`, `lmbx::Sections` | plain-data `#[repr(C)]` mirrors |
+| `lmbd_enc::lmbx::LmbxParams` | a plain-data `#[repr(C)]` mirror; `encode_frame` / `encode_frame_to_size` take an RGBA8 buffer and return the frame bitstream |
 | `lmbd_enc::EncodeParams` (`Bc7Params`, `RdoParams`) | a plain-data `#[repr(C)]` mirror (numbers and bools); encoding maps to `encode_frame` (RGBA8 buffer in, payload out) + `Writer::push_payload` / `finish` — no callbacks (`encode_frames` is a Rust convenience over those) |
 | `PixelLayout`, `Shading` (enums with a field) | a `u32` tag + the field |
 | `Decoded::Planes` | count + per-plane (format, width, height, pointer, length) borrowed from the handle |

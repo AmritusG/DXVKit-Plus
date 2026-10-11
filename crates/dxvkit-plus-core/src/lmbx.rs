@@ -441,16 +441,29 @@ pub struct Planes {
 }
 
 /// Read one block's coefficients and dequantise them with step `q` into raster order.
-fn read_block(r: &mut Rans<'_>, coef: &FreqTable, q: i32, d: &mut [i32; 64]) {
+/// The DC step for a block of step `q`: at least 2 (Y, A) or 4 (Co, Cg), so a DC residual —
+/// up to +-2040 (Y, A) or +-4080 (Co, Cg) — always fits a level of +-1023.
+pub fn dc_step(q: u32, chroma: bool) -> u32 {
+    q.max(if chroma { 4 } else { 2 })
+}
+
+/// Read one block's coefficients and dequantise them with step `q` into raster order. The DC
+/// level is a residual from `dc`, the previous block's dequantised DC in this stream (0 before
+/// the first), with step `qdc` ([`dc_step`]): `D[0] = clamp(dc + level * qdc)`, and `dc` becomes
+/// it — so a block that repeats its predecessor's DC costs nothing but its end-of-block (an
+/// immediate EOB keeps `D[0] = dc`).
+fn read_block(r: &mut Rans<'_>, coef: &FreqTable, q: i32, qdc: i32, dc: &mut i32, d: &mut [i32; 64]) {
     *d = [0; 64];
-    for &z in &ZIGZAG {
+    d[0] = *dc;
+    for (k, &z) in ZIGZAG.iter().enumerate() {
         let s = r.sym(coef);
         if s == EOB {
             break;
         }
-        let v = (i32::from(s) - LEVEL_OFFSET) * q;
+        let v = if k == 0 { *dc + (i32::from(s) - LEVEL_OFFSET) * qdc } else { (i32::from(s) - LEVEL_OFFSET) * q };
         d[z as usize] = v.clamp(-DEQUANT_MAX, DEQUANT_MAX);
     }
+    *dc = d[0];
 }
 
 fn put_block(plane: &mut [i32], stride: u32, x0: u32, y0: u32, s: &[i32; 64]) {
@@ -497,12 +510,13 @@ pub fn visit_stream(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMu
     };
     let mut r = Rans::new(f.stream((t * h.planes() + k) as usize));
     let q_of = |by: u32, bx: u32| u32::from(h.qt[f.qidx(t, by * TB + bx)]);
-    let mut d = [0i32; 64];
+    let (mut d, mut dc) = ([0i32; 64], 0i32);
     match kind {
         PlaneKind::Y | PlaneKind::A => {
             for by in 0..TB {
                 for bx in 0..TB {
-                    read_block(&mut r, &f.coef, q_of(by, bx) as i32, &mut d);
+                    let q = q_of(by, bx);
+                    read_block(&mut r, &f.coef, q as i32, dc_step(q, false) as i32, &mut dc, &mut d);
                     visit(tx * TILE + bx * 8, by * 8, &d);
                 }
             }
@@ -512,7 +526,8 @@ pub fn visit_stream(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMu
             for by in 0..TB {
                 for bx in 0..cbw {
                     let lbx = if h.chroma == Chroma::Halo422 { 2 * bx } else { bx };
-                    read_block(&mut r, &f.coef, h.chroma_q(q_of(by, lbx)) as i32, &mut d);
+                    let q = h.chroma_q(q_of(by, lbx));
+                    read_block(&mut r, &f.coef, q as i32, dc_step(q, true) as i32, &mut dc, &mut d);
                     visit(tx * cw + bx * 8, by * 8, &d);
                 }
             }
