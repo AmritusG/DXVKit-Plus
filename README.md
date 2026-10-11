@@ -1,6 +1,6 @@
 # DXVKit Plus
 
-**Rust video for VJs: DXV, HAP, native OS codecs and the LMBD GPU codec, zero-copy into wgpu.**
+**Rust video for VJs: HAP and native OS codecs, frame-exact, zero-copy into wgpu.**
 
 DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (HAP) decompressed to
 blocks and uploaded straight into BC textures, platform codecs (H.264, HEVC, ProRes, MJPEG)
@@ -13,7 +13,7 @@ no FFmpeg, GStreamer or libmpv.
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
 This is release **0.1.0**. DXV decoding and the LMBD codec are on the [roadmap](#roadmap), not in
-this release: the tagline describes where the project is going.
+this release.
 
 ## Codec support
 
