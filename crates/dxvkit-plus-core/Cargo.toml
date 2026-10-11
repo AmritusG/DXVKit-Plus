@@ -1,6 +1,6 @@
 [package]
 name = "dxvkit-plus-core"
-description = "Pure-Rust video for VJs: QuickTime/MP4 demux (with tmcd timecode), HAP decode (every variant), a frame cache and an exact-time transport. No unsafe, no GPU dependency."
+description = "Rust video for VJs: QuickTime/MP4 demux (with tmcd timecode), HAP decode (every variant), the LMBD container, a frame cache and an exact-time transport. No unsafe code, no GPU dependency; LMBD Zstd decode links libzstd by default, or stays pure Rust with the zstd-rust feature."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,14 +15,27 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# LMBD's Zstd decode backend. Exactly one is used: zstd-c by default; zstd-rust keeps the crate
+# pure Rust (build with --no-default-features --features zstd-rust). If both are on, zstd-c wins;
+# if neither is, the crate does not compile.
+[features]
+default = ["zstd-c"]
+zstd-c = ["dep:zstd"]
+zstd-rust = ["dep:ruzstd"]
+
 [dependencies]
 # Snappy, HAP's second-stage compressor. BSD-3-Clause.
 snap = { workspace = true }
 # PNG stills and image sequences. MIT OR Apache-2.0.
 png = { workspace = true }
 serde = { workspace = true }
-# Zstandard decode for LMBD chunks, pure Rust. MIT.
-ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+# Zstandard decode for LMBD chunks: one backend, chosen by feature (see [features]).
+# zstd-c: libzstd 1.5.7, bundled C, built by zstd-sys. zstd / zstd-safe / zstd-sys: BSD-3-Clause;
+# libzstd itself is dual BSD-3-Clause / GPLv2, used under BSD-3-Clause. Default features off: no
+# legacy formats, no dictionary builder; only lib/{common,decompress,compress} is compiled.
+zstd = { version = "0.14", default-features = false, optional = true }
+# zstd-rust: the pure-Rust fallback. MIT.
+ruzstd = { version = "0.9", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

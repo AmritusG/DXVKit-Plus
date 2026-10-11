@@ -1,7 +1,9 @@
 //! # dxvkit-plus-core
 //!
-//! Video the way VJs use it, in pure Rust — no `unsafe`, no GPU dependency, no FFmpeg, GStreamer or
-//! libmpv:
+//! Video the way VJs use it, in Rust — no `unsafe` in this crate, no GPU dependency, no FFmpeg,
+//! GStreamer or libmpv. One C library is linked by default: libzstd (BSD-3-Clause), for LMBD's
+//! Zstd chunks; the `zstd-rust` feature (with default features off) swaps it for the pure-Rust
+//! `ruzstd` and the crate is pure Rust again:
 //!
 //! - [`container`]: our own QuickTime / MP4 demuxer for video tracks, including the QuickTime
 //!   timecode track (`tmcd`).

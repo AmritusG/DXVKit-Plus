@@ -106,6 +106,7 @@ fn lmbd_end_to_end() {
     for f in &vectors {
         let p = &run(bin().arg("probe").arg(f))[0];
         assert_eq!((p["kind"].as_str(), p["codec"].as_str()), (Some("lmbd"), Some("LMB7")));
+        assert_eq!(p["zstd_backend"].as_str(), Some(if cfg!(feature = "zstd-c") { "libzstd" } else { "ruzstd" }));
         for route in [None, Some("--cpu")] {
             let mut c = bin();
             c.arg("decode").arg(f).arg("1").arg(tmp.join("f.png"));

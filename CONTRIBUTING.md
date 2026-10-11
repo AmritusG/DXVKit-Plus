@@ -30,6 +30,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace        # or: cargo test --workspace
 cargo deny check licenses bans sources
 cargo run --release -p dxvkit-plus-core --example fuzz -- 60 8
+# and, if you touched LMBD decode, the pure-Rust Zstd backend too:
+cargo nextest run --workspace --no-default-features --features zstd-rust
 ```
 
 GPU tests skip without a GPU unless `DXVKIT_PLUS_REQUIRE_GPU=1`; native tests run on macOS only.

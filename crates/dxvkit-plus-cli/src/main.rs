@@ -23,6 +23,10 @@ use dxvkit_plus_core::testpattern;
 use std::path::Path;
 use std::process::ExitCode;
 
+/// The Zstd decode backend LMBD chunks go through in this build (core's `zstd-c` / `zstd-rust`
+/// feature, forwarded by this crate; `zstd-c` wins when both are on). Printed by probe and bench.
+pub const ZSTD_BACKEND: &str = if cfg!(feature = "zstd-c") { "libzstd" } else { "ruzstd" };
+
 const USAGE: &str = "usage:
   dxvkit-plus probe <file|folder>
   dxvkit-plus decode <file> <frame> <out.png> [--cpu]
@@ -94,6 +98,9 @@ fn probe(args: &Args) -> Result<(), String> {
     if let Some(o) = v.as_object_mut() {
         o.insert("fps".into(), serde_json::json!(info.rate.as_f64()));
         o.insert("backend".into(), serde_json::json!(opts.backend.as_ref().map(|b| b.name())));
+        if info.kind == source::SourceKind::Lmbd {
+            o.insert("zstd_backend".into(), serde_json::json!(ZSTD_BACKEND));
+        }
         if let Some(tc) = &info.timecode {
             o.insert("timecode_label".into(), serde_json::json!(tc.label()));
         }

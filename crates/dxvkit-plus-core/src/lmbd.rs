@@ -16,6 +16,10 @@
 //! must decompress to exactly its declared size. Reserved values (the `LMB7-YCC` and `LMBX`
 //! profiles, the LZ4 compressor) are refused with [`MediaError::Unsupported`]; unknown values with
 //! [`MediaError::Lmbd`].
+//!
+//! Zstd chunks decompress through libzstd (feature `zstd-c`, the default) or the pure-Rust
+//! `ruzstd` (feature `zstd-rust`); both decode every frame identically, and either way a chunk is
+//! written straight into its slice of the frame buffer.
 
 use crate::bytes::{arr, byte, le16, le32};
 use crate::container::{FileSource, ReadAt};
@@ -312,14 +316,29 @@ fn unpack_chunk(payload: &[u8], c: &ChunkEntry, out: &mut [u8]) -> Result<(), Me
             Ok(())
         }
         Compressor::Zstd => {
-            let mut dec = ruzstd::decoding::FrameDecoder::new();
-            let n = dec.decode_all(data, out).map_err(|e| MediaError::Lmbd(format!("zstd: {e}")))?;
+            let n = zstd_decompress(data, out)?;
             if n != out.len() {
                 return Err(MediaError::Lmbd(format!("zstd chunk decompressed to {n} bytes, declared {}", out.len())));
             }
             Ok(())
         }
     }
+}
+
+#[cfg(not(any(feature = "zstd-c", feature = "zstd-rust")))]
+compile_error!("dxvkit-plus-core needs a Zstd decode backend: enable feature \"zstd-c\" (default, libzstd) or \"zstd-rust\" (pure Rust)");
+
+/// Decompress every Zstd frame in `data` into `out`, returning the bytes written. Output larger
+/// than `out` is an error, never a reallocation. libzstd (feature `zstd-c`, the default).
+#[cfg(feature = "zstd-c")]
+fn zstd_decompress(data: &[u8], out: &mut [u8]) -> Result<usize, MediaError> {
+    zstd::bulk::decompress_to_buffer(data, out).map_err(|e| MediaError::Lmbd(format!("zstd: {e}")))
+}
+
+/// As above, through the pure-Rust `ruzstd` (feature `zstd-rust`, used only without `zstd-c`).
+#[cfg(all(feature = "zstd-rust", not(feature = "zstd-c")))]
+fn zstd_decompress(data: &[u8], out: &mut [u8]) -> Result<usize, MediaError> {
+    ruzstd::decoding::FrameDecoder::new().decode_all(data, out).map_err(|e| MediaError::Lmbd(format!("zstd: {e}")))
 }
 
 /// Decode a frame payload into its BC7 block stream (`out` is resized to one frame). `parallel`

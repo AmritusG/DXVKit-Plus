@@ -15,11 +15,19 @@ publish.workspace = true
 [lints]
 workspace = true
 
+
+# LMBD's Zstd decode backend, forwarded to dxvkit-plus-core (see its [features]).
+[features]
+default = ["zstd-c"]
+zstd-c = ["dxvkit-plus-core/zstd-c"]
+zstd-rust = ["dxvkit-plus-core/zstd-rust"]
+
 [dependencies]
 dxvkit-plus-core = { workspace = true }
 # Zstandard compression (libzstd 1.5.7, bundled and built by zstd-sys; the same library version the
-# original LMBD encoder links, so chunk bytes match). zstd: MIT; zstd-sys: MIT OR Apache-2.0;
-# libzstd itself is BSD-3-Clause (dual BSD / GPLv2; used under BSD).
+# original LMBD encoder links, so chunk bytes match). zstd, zstd-safe, zstd-sys: BSD-3-Clause;
+# libzstd itself is dual BSD-3-Clause / GPLv2, used under BSD-3-Clause. Always libzstd, whichever
+# decode backend core uses.
 zstd = { version = "0.14", default-features = false }
 
 [dev-dependencies]

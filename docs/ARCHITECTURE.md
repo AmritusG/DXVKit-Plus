@@ -27,7 +27,7 @@
 
 | Crate | `unsafe` | GPU | What |
 |---|---|---|---|
-| `dxvkit-plus-core` | forbidden | none | demux, HAP, CPU block decoders, sources, cache, transport, time, the `Backend` trait |
+| `dxvkit-plus-core` | forbidden | none | demux, HAP, the LMBD container, CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
 | `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoder (4-mode BC7 + RDO, Zstd); links libzstd through the `zstd` crate |
 | `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, the WGSL conversion, read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
@@ -50,9 +50,24 @@ blocks upload unchanged (`write_bc`); the GPU decodes them. No CPU pixel work on
 inside the file), then reads a frame's payload with one positioned read. The chunk table is checked
 (profile echo, chunks inside the payload, whole 16-byte blocks adding up to exactly
 `ceil(w/4) * ceil(h/4) * 16`) before the frame buffer is allocated; each chunk decompresses into its
-own slice (Zstd through `ruzstd`, which must produce exactly the declared size), on worker threads
-when asked. The block stream uploads unchanged into a BC7 texture; the GPU decodes it on sampling
+own slice (Zstd through the compiled-in backend, below; it must produce exactly the declared
+size), on worker threads when asked. The block stream uploads unchanged into a BC7 texture; the GPU decodes it on sampling
 (`LmbdTexture` adds an sRGB view). The format is in `docs/LMBD.md`.
+
+*Zstd backend.* One private function, `lmbd::zstd_decompress(data, out) -> bytes written`, sits
+behind two core features. `zstd-c` (default) calls libzstd's `ZSTD_decompressDCtx` through the
+`zstd` crate's `bulk::decompress_to_buffer`, straight into the chunk's slice of the frame buffer:
+the raw size is known from the chunk table, so there is no growth and no copy, and output larger
+than the slice is an error. `zstd-rust` calls `ruzstd`'s `FrameDecoder::decode_all` into the same
+slice — the pure-Rust fallback, for a core with no C in it. Both accept one or more Zstd frames per
+chunk, neither reads legacy (pre-v0.8) frames, and both map every failure to `MediaError::Lmbd`.
+If both features are on, `zstd-c` wins; if neither is, `compile_error!`. Workspace crates depend on
+the core with default features off and forward the two features (`zstd-c` by default), so one
+`--no-default-features --features zstd-rust` switches the whole build. The core's
+`#![forbid(unsafe_code)]` covers this crate's code, not its dependencies: with `zstd-c` the unsafe
+FFI lives in `zstd-safe` / `zstd-sys`, as the encoder's always has. libzstd is about 5x (λ 0) to 8x
+(λ 1) faster per thread on LMBD chunks, which is what moves 16 layers of 1080p from decode-bound to
+upload-bound (README benchmarks).
 
 **Native.** `NativeReader` (macOS) opens the first video track with `AVURLAsset`
 (`AVURLAssetPreferPreciseDurationAndTimingKey`) and an `AVAssetReaderTrackOutput` asking for

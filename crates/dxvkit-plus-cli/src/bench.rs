@@ -35,7 +35,10 @@ pub fn run(args: &Args) -> Result<(), String> {
     for path in &args.positional {
         let (info, mut src) = probe_open(path)?;
         let n = frames.min(info.frames.max(1));
-        let base = json!({"file": path, "codec": info.codec, "kind": info.kind, "width": info.width, "height": info.height, "frames": n});
+        let mut base = json!({"file": path, "codec": info.codec, "kind": info.kind, "width": info.width, "height": info.height, "frames": n});
+        if let (SourceKind::Lmbd, Some(o)) = (info.kind, base.as_object_mut()) {
+            o.insert("zstd_backend".into(), json!(crate::ZSTD_BACKEND));
+        }
         // CPU decode (read + decode: the work a cache worker does), 3 passes.
         let mut cpu = Vec::new();
         for _ in 0..3 {
@@ -160,7 +163,11 @@ fn layers_bench(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: 
             }
         }
     }
-    json_line(&json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
-        "decode_all_layers": stats(decode_ms), "step_decode_upload_convert": stats(step_ms)}));
+    let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
+        "decode_all_layers": stats(decode_ms), "step_decode_upload_convert": stats(step_ms)});
+    if let (SourceKind::Lmbd, Some(o)) = (info.kind, row.as_object_mut()) {
+        o.insert("zstd_backend".into(), json!(crate::ZSTD_BACKEND));
+    }
+    json_line(&row);
     Ok(())
 }

@@ -1,0 +1,1 @@
+fuzz: 600 s, 8 threads, corpus 5 (hap frames 0, files 0, lmbd 5), execs 94148542 (156914/s), crashes 0, hangs 0, slowest input 203.6 ms (zstd backend: libzstd, default features)

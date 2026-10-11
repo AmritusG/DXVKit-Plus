@@ -34,6 +34,10 @@ No third-party media, and none of Amrit's footage, is in this repository.
 Every dependency is permissive (MIT, Apache-2.0, BSD-2/3, Zlib, ISC, MIT-0), enforced by
 `cargo deny check licenses bans sources` (`deny.toml`). The one crate-scoped exception is
 `unicode-ident` (Unicode-3.0, permissive; Unicode's data tables), a build-time dependency of
-serde's derive macros. FFmpeg, libmpv and GStreamer bindings are banned. LMBD uses `ruzstd` (MIT,
-pure Rust) to decode and the `zstd` crate (MIT; it builds libzstd 1.5.7, BSD-3-Clause) to encode —
-the encoder crate only.
+serde's derive macros. FFmpeg, libmpv and GStreamer bindings are banned. LMBD's Zstd goes through
+the `zstd` / `zstd-safe` / `zstd-sys` crates (BSD-3-Clause, Alexandre Bury), which build the
+bundled libzstd 1.5.7 (Meta Platforms, Inc. and affiliates; dual BSD-3-Clause / GPLv2, used under
+BSD-3-Clause; only `lib/common`, `lib/compress` and `lib/decompress` are compiled — no legacy
+formats, no dictionary builder): the encoder always, the decoder by default (core feature
+`zstd-c`). With `zstd-rust` the decoder uses `ruzstd` (MIT, pure Rust) instead. Notices:
+`LICENSES/libzstd-BSD-3-Clause.txt`, `LICENSES/zstd-rs-BSD-3-Clause.txt`.

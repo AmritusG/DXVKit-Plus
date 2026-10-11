@@ -19,6 +19,13 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+
+# LMBD's Zstd decode backend, forwarded to dxvkit-plus-core (see its [features]).
+[features]
+default = ["zstd-c"]
+zstd-c = ["dxvkit-plus-core/zstd-c"]
+zstd-rust = ["dxvkit-plus-core/zstd-rust"]
+
 [dependencies]
 dxvkit-plus-core = { workspace = true }
 dxvkit-plus-wgpu = { workspace = true }
