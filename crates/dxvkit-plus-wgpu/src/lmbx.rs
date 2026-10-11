@@ -12,6 +12,11 @@
 //!
 //! The planes are `i32` storage at the coded size (whole tiles): `4 * (2 + chroma planes) *
 //! coded pixels` bytes per renderer (1080p 4:2:2 with alpha: 26 MB).
+//
+// Lint note: sizes here derive from a frame header already validated by
+// `dxvkit_plus_core::lmbx::Frame::parse` (dimensions <= 16384), so their products fit u32 / u64;
+// the arithmetic lint is relaxed for this module only.
+#![allow(clippy::arithmetic_side_effects)]
 
 use crate::GpuError;
 use dxvkit_plus_core::lmbx::{Chroma, Frame};
@@ -273,7 +278,7 @@ pub const LMBX_OUT_WGSL: &str = r#"
 /// literals (`dxvkit_plus_core::lmbx::IDCT_MATRIX`) — no array indexing, so every value stays in
 /// a register. The same sums, in the same order, as `dxvkit_plus_core::lmbx::idct`.
 fn idct_wgsl() -> String {
-    let m = dxvkit_plus_core::lmbx::IDCT_MATRIX;
+    let m = |k: usize, n: usize| dxvkit_plus_core::lmbx::IDCT_MATRIX.get(k).and_then(|r| r.get(n)).copied().unwrap_or(0);
     let mut w = String::from("fn idct_block(o: u32, stride: u32, offset: i32) {\n");
     for k in 0..8 {
         for j in 0..8 {
@@ -282,13 +287,13 @@ fn idct_wgsl() -> String {
     }
     for i in 0..8 {
         for j in 0..8 {
-            let terms: Vec<String> = (0..8).map(|k| format!("({}) * d{k}_{j}", m[k][i])).collect();
+            let terms: Vec<String> = (0..8).map(|k| format!("({}) * d{k}_{j}", m(k, i))).collect();
             w.push_str(&format!("    let t{i}_{j} = ({} + 512) >> 10u;\n", terms.join(" + ")));
         }
     }
     for i in 0..8 {
         for j in 0..8 {
-            let terms: Vec<String> = (0..8).map(|l| format!("t{i}_{l} * ({})", m[l][j])).collect();
+            let terms: Vec<String> = (0..8).map(|l| format!("t{i}_{l} * ({})", m(l, j))).collect();
             w.push_str(&format!("    planes[o + {i}u * stride + {j}u] = (({} + 2048) >> 12u) + offset;\n", terms.join(" + ")));
         }
     }

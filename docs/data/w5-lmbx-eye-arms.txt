@@ -1,0 +1,25 @@
+LMBX eye-test arms (W5 step 6), 2026-10-12, Mac Studio. Two 60-frame 1920x1080 segments of Amrit's footage (local only, never committed): glow = ShroomiesKingdom_31 (DXV DXT5) frames 100-159; alpha = ShroomiesKingdom_05 (DXV YG10, real alpha) frames 100-159, 4K downscaled with sips. Arms: LMB7 (encode-lmbd defaults: lambda 1, look-back 16384), LMBX 422halo and 444 rate-controlled to LMB7's average bytes per frame. Each arm decoded (CPU, normative) and written as ProRes 4444 XQ with Apple's encoder (_eye/, gitignored). Spot checks against the source frames: file frame bytes, PSNR RGB, PSNR A, SSIM.
+glow lmb7 bytes/frame 723579
+glow lmbx 422halo bytes/frame 625019 quality range 21.912353515625 21.912353515625
+glow lmbx 444 bytes/frame 639756 quality range 20.742431640625 21.912353515625
+glow lmb7 frame 0 684924 41.3691 52.2059 0.98662
+glow lmb7 frame 30 716210 41.5892 52.5893 0.984565
+glow lmb7 frame 59 753697 41.3688 53.525 0.982682
+glow lmbx_422halo frame 0 600978 40.409 inf 0.986019
+glow lmbx_422halo frame 30 620075 40.4655 inf 0.984056
+glow lmbx_422halo frame 59 649395 40.3577 inf 0.982453
+glow lmbx_444 frame 0 722987 42.9882 inf 0.989843
+glow lmbx_444 frame 30 625232 42.1973 inf 0.984604
+glow lmbx_444 frame 59 651459 41.9665 inf 0.982941
+alpha lmb7 bytes/frame 257317
+alpha lmbx 422halo bytes/frame 250621 quality range 46.480712890625 48.3818359375
+alpha lmbx 444 bytes/frame 253278 quality range 43.848388671875 46.91943359375
+alpha lmb7 frame 0 283879 43.2243 42.5054 0.996572
+alpha lmb7 frame 30 237844 43.6085 42.4181 0.997082
+alpha lmb7 frame 59 292269 43.7695 43.0794 0.993878
+alpha lmbx_422halo frame 0 257019 39.1412 40.6726 0.983746
+alpha lmbx_422halo frame 30 257165 39.5937 41.1865 0.985349
+alpha lmbx_422halo frame 59 254706 40.008 41.6491 0.984778
+alpha lmbx_444 frame 0 255942 39.4402 40.9041 0.984365
+alpha lmbx_444 frame 30 257146 40.0623 41.6325 0.986515
+alpha lmbx_444 frame 59 251375 40.1637 41.6737 0.984815

@@ -702,8 +702,12 @@ mod tests {
         let mut bad = good.clone();
         bad[0] = b'X';
         assert!(matches!(open(bad), Err(MediaError::Lmbd(_))));
+        // Profile 0x10 (LMBX) needs texture format 0x11: with BC7's it is an error; with the
+        // never-frozen prototype's 0x10 it is Unsupported.
         let mut bad = good.clone();
         bad[6] = 0x10;
+        assert!(matches!(open(bad.clone()), Err(MediaError::Lmbd(_))));
+        bad[7] = 0x10;
         assert!(matches!(open(bad), Err(MediaError::Unsupported(_))));
         let mut bad = good.clone();
         bad[6] = 0x09;

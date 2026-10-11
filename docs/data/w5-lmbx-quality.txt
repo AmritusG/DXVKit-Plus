@@ -1,0 +1,61 @@
+LMBX quality at matched size (W5, 2026-10-11, Mac Studio). One frame per content (source frame 1),
+compared with `dxvkit-plus compare` (PSNR of the RGB mean squared error; alpha PSNR; SSIM on Rec.601
+luma, 8x8 windows). "float-IDCT" = the same LMBX bitstream decoded with a floating-point inverse DCT
+and YCoCg (the prototypes' decoder) instead of the normative integer decoder (LMBX-D1).
+
+Content: five CC0 960x540 patterns (scratch generator, W5 handoff) — gradient_over_black (two soft
+glows over black), flat (hard-edged flat shapes), detail (fine rings, 3-px checker, random blue),
+film_grain (gradient + gaussian grain sigma 8), alpha (plasma, soft alpha rings) — and two 1920x1080
+frames of Amrit's footage, decoded locally and never committed: shroom_glow (ShroomiesKingdom_31,
+DXV DXT5, glowing mushrooms over dark, frame 150) and shroom_alpha (ShroomiesKingdom_05, DXV YG10,
+real alpha, 4K centre crop, frame 150).
+
+Arms: LMB7 = dxvkit-plus encode-lmbd defaults (lambda 1, look-back 16384, Zstd 9). HAP Q =
+glenc-cli hapy (hapm for the alpha contents). LMBX = encode-lmbd --profile lmbx with rate control
+(--frame-bytes = the reference's frame bytes - 60), both chroma modes. Rate control cannot go
+above its best quality (q 1) or below its coarsest (q 600), so some LMBX rows are smaller than
+their budget.
+
+content | arm | bytes | PSNR RGB | PSNR A | SSIM | float-IDCT PSNR RGB | float SSIM
+gradient_over_black | LMB7 | 53051 | 48.2461 | 56.6922 | 0.990126 | | 
+gradient_over_black | LMBX 422halo @ lmb7 (q 9.48) | 51744 | 53.0286 | inf | 0.997983 | 51.251 | 0.996657
+gradient_over_black | LMBX 444 @ lmb7 (q 21.91) | 51013 | 52.5565 | inf | 0.997321 | 50.9806 | 0.996178
+gradient_over_black | HAPQ | 309249 | 49.4762 | inf | 0.997609 | | 
+gradient_over_black | LMBX 422halo @ hapq (q 1.00) | 62329 | 53.2403 | inf | 0.998263 | 51.3817 | 0.996885
+gradient_over_black | LMBX 444 @ hapq (q 1.00) | 77230 | 54.0512 | inf | 0.998302 | 51.7807 | 0.996663
+flat | LMB7 | 1605 | 53.72 | 48.1308 | 0.999549 | | 
+flat | LMBX 422halo @ lmb7 (q 600.00) | 20826 | 30.1091 | inf | 0.968719 | 30.1037 | 0.968756
+flat | LMBX 444 @ lmb7 (q 600.00) | 20496 | 30.8057 | inf | 0.968148 | 30.2896 | 0.964003
+flat | HAPQ | 26270 | 50.974 | inf | 0.999966 | | 
+flat | LMBX 422halo @ hapq (q 90.65) | 25924 | 34.3547 | inf | 0.98389 | 34.3501 | 0.983971
+flat | LMBX 444 @ hapq (q 71.93) | 24742 | 35.1418 | inf | 0.986854 | 34.9642 | 0.986433
+detail | LMB7 | 353406 | 16.9904 | 78.8134 | 0.981594 | | 
+detail | LMBX 422halo @ lmb7 (q 32.59) | 352046 | 14.6769 | inf | 0.964516 | 14.6763 | 0.964484
+detail | LMBX 444 @ lmb7 (q 46.19) | 350464 | 18.273 | inf | 0.948812 | 18.2707 | 0.948777
+detail | HAPQ | 520035 | 17.339 | inf | 0.991936 | | 
+detail | LMBX 422halo @ hapq (q 14.89) | 518058 | 15.1548 | inf | 0.983164 | 15.1544 | 0.983142
+detail | LMBX 444 @ hapq (q 32.00) | 517907 | 22.7859 | inf | 0.982269 | 22.7798 | 0.982232
+film_grain | LMB7 | 321197 | 44.7599 | 52.8098 | 0.98948 | | 
+film_grain | LMBX 422halo @ lmb7 (q 9.34) | 321072 | 51.7069 | inf | 0.998514 | 51.0355 | 0.998549
+film_grain | LMBX 444 @ lmb7 (q 9.48) | 299489 | 50.8769 | inf | 0.997967 | 50.3879 | 0.997996
+film_grain | HAPQ | 341612 | 44.2405 | inf | 0.992906 | | 
+film_grain | LMBX 422halo @ hapq (q 8.75) | 338812 | 52.5066 | inf | 0.998931 | 51.6281 | 0.998973
+film_grain | LMBX 444 @ hapq (q 8.90) | 340198 | 52.2988 | inf | 0.99883 | 51.4716 | 0.998868
+alpha | LMB7 | 175434 | 46.643 | 45.5392 | 0.994202 | | 
+alpha | LMBX 422halo @ lmb7 (q 1.00) | 158820 | 49.2864 | 55.7326 | 0.998402 | 48.5269 | 0.998495
+alpha | LMBX 444 @ lmb7 (q 9.48) | 150756 | 52.5648 | 53.4046 | 0.998062 | 51.1322 | 0.998136
+alpha | HAPQ | 579465 | 43.4547 | 53.2643 | 0.996832 | | 
+alpha | LMBX 422halo @ hapq (q 1.00) | 158820 | 49.2864 | 55.7326 | 0.998402 | 48.5269 | 0.998495
+alpha | LMBX 444 @ hapq (q 1.00) | 190284 | 53.5331 | 55.7056 | 0.99845 | 51.655 | 0.998446
+shroom_glow | LMB7 | 752814 | 41.3972 | 54.0842 | 0.982654 | | 
+shroom_glow | LMBX 422halo @ lmb7 (q 21.91) | 642297 | 40.3498 | inf | 0.982491 | 40.2369 | 0.982551
+shroom_glow | LMBX 444 @ lmb7 (q 21.91) | 643893 | 41.9693 | inf | 0.982998 | 41.8051 | 0.983047
+shroom_glow | HAPQ | 1830852 | 45.3934 | inf | 0.996927 | | 
+shroom_glow | LMBX 422halo @ hapq (q 1.00) | 1533296 | 43.0359 | inf | 0.996802 | 42.8329 | 0.996876
+shroom_glow | LMBX 444 @ hapq (q 8.75) | 1827854 | 48.9584 | inf | 0.997098 | 48.2091 | 0.997152
+shroom_alpha | LMB7 | 361703 | 46.8498 | 45.0333 | 0.99747 | | 
+shroom_alpha | LMBX 422halo @ lmb7 (q 23.67) | 361596 | 44.8584 | 48.0694 | 0.994675 | 44.8362 | 0.994986
+shroom_alpha | LMBX 444 @ lmb7 (q 23.52) | 361364 | 45.4861 | 48.0672 | 0.994862 | 45.462 | 0.995117
+shroom_alpha | HAPQ | 768714 | 52.4639 | 59.8698 | 0.999529 | | 
+shroom_alpha | LMBX 422halo @ hapq (q 6.85) | 766154 | 49.2241 | 58.2475 | 0.999221 | 49.1409 | 0.999412
+shroom_alpha | LMBX 444 @ hapq (q 9.48) | 675079 | 51.997 | 54.4372 | 0.998829 | 51.8325 | 0.998991

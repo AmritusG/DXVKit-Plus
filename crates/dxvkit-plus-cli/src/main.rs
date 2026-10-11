@@ -7,7 +7,7 @@
 //! dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
 //! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
 //! dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D] ...
-//! dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 422halo|444] [--quality Q | --frame-bytes N]
+//! dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo] [--quality Q | --frame-bytes N]
 //! dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 //! ```
 //!
@@ -41,7 +41,7 @@ const USAGE: &str = "usage:
   dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
                           [--level Z] [--compressor zstd|none] [--rdo-partitions P] [--threads T]
                           [--start F] [--frames N] [--quiet]
-  dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 422halo|444]
+  dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo]
                           [--quality Q | --frame-bytes N] [--start F] [--frames N] [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:

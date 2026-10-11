@@ -353,7 +353,8 @@ quantiser index is the step nearest `base * clamp(AC energy / 380, 0.16, 2.6)` (
 setting, default 16). Levels by deadzone quantisation (bias 0.45) refined by RDOQ against the
 actual rANS cost (lambda = 0.25 q^2, two passes over a bootstrapped rate model) with an
 end-of-block trellis; DC and the two lowest AC terms are never deadzoned or dropped (banding).
-Chroma ratio 1.0 (4:2:2) or 1.6 (4:4:4). The DC residual is quantised against the decoder's
+Chroma ratio 1.0 (4:2:2) or 1.6 (4:4:4); the default mode is 4:4:4, chosen by measurement on real
+footage (W5). The DC residual is quantised against the decoder's
 reconstructed DC. Rate control: the best quality whose frame fits a byte budget (bisection on
 `base`).
 

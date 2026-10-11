@@ -300,10 +300,14 @@ fn bc_upload_is_validated() {
     assert!(matches!(create_bc_texture(&g.device, PixelFormat::Bc7, 6, 8, "t"), Err(GpuError::Invalid(_))));
 }
 
+/// The LMB7 compatibility vectors (`lmbd_*.lmbd`; the LMBX ones are `lmbx_*`).
 fn lmbd_vectors() -> Vec<PathBuf> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    let mut v: Vec<PathBuf> =
-        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().and_then(|e| e.to_str()) == Some("lmbd")).collect();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbd_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
+        .collect();
     v.sort();
     v
 }

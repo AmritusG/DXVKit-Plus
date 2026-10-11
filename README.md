@@ -12,7 +12,9 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.4.0**: **DXV** decodes — DXV3 Normal and High Quality, with and without alpha,
+This is release **0.5.0**: **LMBX**, the variable-rate profile of our LMBD codec — YCoCg, an
+integer DCT and rANS, decoded on the GPU by compute shaders bit-exactly with the CPU, with a
+frozen specification ([LMBX](#lmbx)). 0.4.0 added **DXV**: it decodes — DXV3 Normal and High Quality, with and without alpha,
 and legacy DXV1/2 — through a safe-Rust port of DXVKit's decoder that is bit-exact on DXVKit's 334
 test vectors and against its C core; High Quality converts on the GPU bit-exactly with the CPU;
 alpha reads as straight (Resolume Alley's convention, the default) or premultiplied, per clip
@@ -70,9 +72,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.5.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -130,7 +132,7 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.4.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.5.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
@@ -182,18 +184,50 @@ bitstream v1 ([`docs/LMBD.md`](docs/LMBD.md) §11):
   rounding are specified in integers, so every conforming decoder — CPU or GPU, ours or anyone's —
   produces the same samples bit for bit (10 bits of precision; 8-bit output is `(v + 2) >> 2`).
   Five CC0 conformance vectors carry the expected hashes.
-- **Two chroma modes** (LMBX-D2): `422halo` (half-width chroma, interpolated across tile edges) and
-  `444`, signalled per clip.
+- **Two chroma modes** (LMBX-D2): `444` (the encoder's default, by measurement) and `422halo`
+  (half-width chroma, interpolated across tile edges; ~26% faster to decode), signalled per clip.
 - **Parallel by construction.** Every plane of every 32x32 tile is its own stream: a 1080p frame is
   6,000-8,000 independent streams.
 
 ```sh
+dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --quality 16                 # 4:4:4
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 422halo --quality 16
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 444 --frame-bytes 400000   # rate control
 dxvkit-plus compare frames/ clip.lmbd --frame 3 [--float]
 ```
 
-LMBX_RESULTS_PLACEHOLDER
+**Quality at matched size** (one frame each, PSNR of RGB / SSIM; LMBX rate-controlled to the other
+codec's frame size, the better chroma mode shown; `docs/data/w5-lmbx-quality.txt` has every row):
+
+| Content | LMB7 (λ 1) | LMBX at LMB7's size | HAP Q | LMBX at HAP Q's size |
+|---|---|---|---|---|
+| gradient over black, 960x540 | 48.25 dB / .9901 (53 KB) | **53.03 / .9980** (52 KB, 4:2:2) | 49.48 / .9976 (309 KB) | **54.05 / .9983** (77 KB) |
+| flat hard-edged shapes | **53.72 / .9995 (1.6 KB)** | 30.81 / .9681 (20 KB, its floor) | **50.97 / .99997** (26 KB) | 35.14 / .9869 (25 KB) |
+| film grain | 44.76 / .9895 | **51.71 / .9985** | 44.24 / .9929 | **52.51 / .9989** |
+| synthetic alpha | 46.64 / .9942, alpha 45.5 | **52.56 / .9981**, alpha 53.4 | 43.45 / .9968 | **53.53 / .9985**, alpha 55.7 |
+| Amrit's glow-over-dark clip, 1080p | 41.40 / .9827 (753 KB) | **41.97 / .9830** (644 KB, 4:4:4) | 45.39 / .9969 (1.83 MB) | **48.96 / .9971** (4:4:4) |
+| Amrit's real-alpha clip, 1080p | **46.85 / .9975**, alpha 45.0 | 45.49 / .9949, alpha 48.1 (4:4:4) | **52.46 / .9995**, alpha 59.9 | 52.00 / .9988, alpha 54.4 (12% smaller) |
+
+LMBX wins on gradients, grain and alpha, ties or wins on the glow footage, and trails on hard-edged
+flat graphics (where BC7 + Zstd is nearly free) and slightly on the real-alpha footage. The integer
+transform costs nothing measurable: decoding the same bitstreams with a floating-point inverse DCT
+gives equal or lower PSNR in every row (0 to 1.8 dB lower) and SSIM within 0.001.
+
+**Decode speed** (Mac Studio, release, Arena not running, two rounds; `docs/data/w5-lmbx-speed-macstudio.jsonl`):
+
+| Clip | Layers | GPU per layer, steps/s | CPU (reference decoder) |
+|---|---|---|---|
+| 1080p plasma, 4:2:2 halo | 16 | 92.6-92.8 (10.8 ms/step) | 6.4 ms/frame on all cores, 18.3 single-threaded |
+| 1080p plasma, 4:4:4 | 16 | 73.6-74.2 (13.5 ms) | 5.9 / 19.4 ms |
+| 1080p Shroomies, 4:2:2 halo | 16 | 49.6-92.4 (10.8-15.3 ms) | 6.4 / 16.7 ms |
+| 1080p Shroomies, 4:4:4 | 16 | 70.9-72.6 (13.7-14.0 ms) | 6.1 / 17.1 ms |
+| 4K Shroomies (alpha), 4:2:2 halo | 4 | 129.4-129.6 (7.7 ms) | 23.4 / 50.7 ms |
+| 4K Shroomies (alpha), 4:4:4 | 4 | 99.3-102.1 (9.9-10.0 ms) | 21.6 / 54.3 ms |
+| LMB7 1080p plasma (λ 1), for reference | 16 | 147-151 per layer; 526-530 pipelined | — |
+
+One 4K LMBX frame decodes on the GPU in about 1.9 ms (4:2:2) / 2.5 ms (4:4:4) — the prototype it
+came from measured 5.75 / 7.2 ms — and 4:4:4 costs about 26% more than 4:2:2. LMBX is GPU-bound,
+so pipelining does not add throughput the way it does for LMB7.
 
 ## LMBD
 
