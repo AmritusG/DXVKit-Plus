@@ -9,13 +9,18 @@
 //!   2020, video or full range) for native frames imported by a platform crate.
 //! - [`FrameRenderer`] keeps the upload textures and the output across frames (a steady clip
 //!   reallocates nothing).
+//! - **LMBD** ([`LmbdTexture`]): an LMB7 frame's BC7 blocks upload as they are and the GPU decodes
+//!   them in hardware when it samples — bit-exact with the CPU decoder; an sRGB view gives linear
+//!   light for files whose colorspace is sRGB.
 //!
 //! Nothing here panics on bad input or a missing GPU feature; failures are [`GpuError`]s.
 #![forbid(unsafe_code)]
 
 mod convert;
+mod lmbd;
 
 pub use convert::{CONVERT_WGSL, Converter, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
+pub use lmbd::LmbdTexture;
 
 use dxvkit_plus_core::source::PixelFormat;
 use std::fmt;
@@ -120,6 +125,19 @@ fn check_size(format: PixelFormat, width: u32, height: u32) -> Result<usize, Gpu
 /// Create a reusable texture (`TEXTURE_BINDING | COPY_DST`) for codec frames of `format` (BC sizes
 /// must be multiples of 4). Refill it each frame with [`write_bc`].
 pub fn create_bc_texture(device: &wgpu::Device, format: PixelFormat, width: u32, height: u32, label: &str) -> Result<wgpu::Texture, GpuError> {
+    create_bc_texture_with_views(device, format, width, height, label, &[])
+}
+
+/// [`create_bc_texture`] with extra view formats (for example the sRGB variant of the format, to
+/// sample linear light).
+pub fn create_bc_texture_with_views(
+    device: &wgpu::Device,
+    format: PixelFormat,
+    width: u32,
+    height: u32,
+    label: &str,
+    view_formats: &[wgpu::TextureFormat],
+) -> Result<wgpu::Texture, GpuError> {
     if format.is_compressed() && !device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC) {
         return Err(GpuError::Unsupported("TEXTURE_COMPRESSION_BC is not available on this adapter".into()));
     }
@@ -132,7 +150,7 @@ pub fn create_bc_texture(device: &wgpu::Device, format: PixelFormat, width: u32,
         dimension: wgpu::TextureDimension::D2,
         format: texture_format(format),
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+        view_formats,
     }))
 }
 

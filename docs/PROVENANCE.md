@@ -15,12 +15,16 @@ sponsored by Resolume or Vidvox. "DXV" and "HAP" are named only to describe file
 | Frame cache, transport, sources, test pattern | Loombda-rs (Amrit's), ported. |
 | macOS native decode (`dxvkit-plus-apple`) | Loombda-rs's island, written against Apple's AVFoundation / CoreVideo / Metal documentation through the `objc2` bindings. The `CVMetalTextureCache` route was written from Apple's CoreVideo documentation after reading how Cutlass (MIT OR Apache-2.0) does it; no Cutlass code is in this repository. |
 | WGSL conversion (`dxvkit-plus-wgpu`) | Loombda-rs; YCbCr matrices from ITU-R BT.601 / BT.709 / BT.2020. |
+| LMBD container (`core::lmbd`), `docs/LMBD.md` | Reimplemented in Rust from the frozen v1 contract of Amrit's original LMBD codec (`loomda-codec` @ c6d80e6: `lmbd_format.h`, `lmbd_write.c`, `lmbd_encode.cpp`, `lmbd_probe.cpp`). Zstd decode through `ruzstd` (MIT). |
+| LMBD encoder (`dxvkit-plus-lmbd-enc`) | A line-by-line Rust port of the parts of bc7enc_rdo (Richard Geldreich, Jr.; MIT or Unlicense) the original encoder runs: `bc7enc.cpp` (4-mode BC7), `ert.cpp` (entropy reduction), the BC7 path of `rdo_bc_encoder.cpp`. Fused multiply-adds placed where Apple clang's `-ffp-contract=on` fuses them (the list taken from clang's own IR), so the output is byte-identical (checked on 1080p frames and five vectors). Not ported: bc7e.ispc (Apache-2.0, the original's optional x86-only `--allmode` path), the perceptual and reduced-entropy options. |
+| LMBD compatibility vectors | Our own CC0 patterns, encoded by the original C tools built on this machine (`scripts/mint-lmbd-vectors.sh`). No other file from loomda-codec is in this repository: its test media include third-party footage and Amrit's own clips, which stay out. |
 
-DXV decoding (a safe-Rust port of DXVKit's decoder, verified against DXVKit's 334 test vectors in
-Loombda-rs) is **not in this release**: it waits for an open accuracy question on semi-transparent
+LMBD's later profile (`0x10`, reserved in the format) is not in this release either. DXV decoding
+(a safe-Rust port of DXVKit's decoder, verified against DXVKit's 334 test vectors in Loombda-rs) is
+**not in this release**: it waits for an open accuracy question on semi-transparent
 edge pixels to be settled first (see the README roadmap).
 
-## Encoders (not in this release) — one warning
+## Encoders — one warning (HAP; LMBD encoding ships in 0.2.0)
 
 A future HAP encoder must **not** derive from the YCoCg encoder inside Vidvox's `hap-qt-codec`: it
 is LGPL-2.1 (Id Software). The HAP Q encode path is to be written from the paper the HAP
@@ -51,6 +55,8 @@ committed. Benchmark clips are minted locally by `scripts/mint-bench.sh` and nev
 ## Licence inventory (this release)
 
 See `ATTRIBUTION.md` for the table of every adapted file and asset. Third-party code: EffectCraft
-(MIT, notice in `LICENSES/effectcraft-MIT.txt`). Amrit's own code: DXVKit (MIT, notice in
-`LICENSES/DXVKit-MIT.txt`) and Loombda-rs (released here under MIT). No GPL, LGPL, AGPL, EPL or MPL
+(MIT, notice in `LICENSES/effectcraft-MIT.txt`) and bc7enc_rdo (MIT / Unlicense, notice in
+`LICENSES/bc7enc_rdo.txt`). Amrit's own code: DXVKit (MIT, notice in
+`LICENSES/DXVKit-MIT.txt`), Loombda-rs and the LMBD codec `loomda-codec` (both released here under
+MIT). No GPL, LGPL, AGPL, EPL or MPL
 code or dependency.

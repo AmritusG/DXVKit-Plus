@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0 — 2026-10-11
+
+LMBD, our own GPU codec (BC7 + rate-distortion optimisation + Zstd), encoder and decoder.
+
+- `dxvkit-plus-core`: the `lmbd` module — read (validated, hostile-input safe, chunks decompress in
+  parallel with the pure-Rust `ruzstd`) and write the LMBD v1 container, profile LMB7;
+  `SourceKind::Lmbd` (= 5) through `source::probe` / `open`, decoding to one BC7 plane;
+  `MediaError::Lmbd` (code 11). Files written by the original C encoder decode bit-exact (five
+  compatibility vectors in `tests/fixtures/lmbd_*.lmbd`).
+- `dxvkit-plus-lmbd-enc` (new): the LMBD encoder — a faithful Rust port of bc7enc_rdo's 4-mode BC7
+  encoder and RDO pass (MIT), reproducing the original's fused multiply-adds, + libzstd level 9.
+  Writes byte-identical files to the original encoder; frames encode in parallel.
+- `dxvkit-plus-wgpu`: `LmbdTexture` (a BC7 texture with an sRGB view; the GPU decodes the blocks
+  when it samples, bit-exact with the CPU), `FrameRenderer::render_view`,
+  `create_bc_texture_with_views`.
+- `dxvkit-plus` CLI: `encode-lmbd`, `compare` (PSNR / SSIM against a reference),
+  `gen-pattern --alpha`; `verify` requires LMBD GPU == CPU exactly; `probe`, `decode`, `bench`
+  accept `.lmbd`.
+- Fuzzer: the LMBD reader is a target (`fuzz ... lmbd` runs it alone).
+- Docs: `docs/LMBD.md` (the container and bitstream spec), LMBD vs HAP Q measurements.
+
+
 ## 0.1.0 — 2026-10-11
 
 First public release.

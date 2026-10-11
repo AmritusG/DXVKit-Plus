@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # MSRV: the oldest toolchain this workspace is built and tested with (let-chains, edition 2024).
 rust-version = "1.95"
@@ -17,9 +17,10 @@ categories = ["multimedia::video", "graphics"]
 publish = false
 
 [workspace.dependencies]
-dxvkit-plus-core = { path = "crates/dxvkit-plus-core", version = "0.1.0" }
-dxvkit-plus-wgpu = { path = "crates/dxvkit-plus-wgpu", version = "0.1.0" }
-dxvkit-plus-apple = { path = "crates/dxvkit-plus-apple", version = "0.1.0" }
+dxvkit-plus-core = { path = "crates/dxvkit-plus-core", version = "0.2.0" }
+dxvkit-plus-wgpu = { path = "crates/dxvkit-plus-wgpu", version = "0.2.0" }
+dxvkit-plus-apple = { path = "crates/dxvkit-plus-apple", version = "0.2.0" }
+dxvkit-plus-lmbd-enc = { path = "crates/dxvkit-plus-lmbd-enc", version = "0.2.0" }
 # Same wgpu major as Loombda-rs (D7: wgpu 30.x).
 wgpu = "30.0.1"
 wgpu-hal = { version = "30.0.1", features = ["metal"] }
@@ -58,3 +59,10 @@ type_complexity = "allow"
 
 [profile.release]
 debug = 1
+
+# The LMBD encoder's RDO pass is millions of trial block decodes per frame; tests and debug builds
+# run it optimised (codegen only — the code and its checks are the same).
+[profile.dev.package.dxvkit-plus-lmbd-enc]
+opt-level = 3
+[profile.dev.package.dxvkit-plus-core]
+opt-level = 3

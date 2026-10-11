@@ -14,6 +14,8 @@ explains how each part was written.
 | `clippy.toml`, `rustfmt.toml` | storytold/effectcraft, via Loombda-rs | MIT (`LICENSES/effectcraft-MIT.txt`) |
 | `crates/dxvkit-plus-core/src/hap.rs` | written from the public HAP specification `documentation/HapVideoDRAFT.md` (Vidvox/hap @ d847f6b); no code read or copied | spec only (repository BSD-2-Clause) |
 | `crates/dxvkit-plus-core/src/bc7.rs` | written for DXVKit Plus from the public BPTC definition (Khronos Data Format Specification 1.3; Microsoft "BC7 Format") | own code, MIT |
+| `crates/dxvkit-plus-lmbd-enc/src/{bc7enc,ert,rdo,tables}.rs` | bc7enc_rdo (Richard Geldreich, Jr.; github.com/richgel999/bc7enc_rdo) `bc7enc.cpp`, `ert.cpp`, the BC7 path of `rdo_bc_encoder.cpp`, ported to Rust — read from the copy vendored in Amrit's loomda-codec @ c6d80e6 | MIT (dual MIT / Unlicense upstream; `LICENSES/bc7enc_rdo.txt`) |
+| `crates/dxvkit-plus-core/src/lmbd.rs`, `crates/dxvkit-plus-lmbd-enc/src/lib.rs` (container, chunking, encoder driver), `docs/LMBD.md` | the LMBD v1 format and `lmbd-encode` / `lmbd-write` / `lmbd-probe` of Amrit's loomda-codec @ c6d80e6 (AmritusG/loomda-codec), reimplemented in Rust; the spec is written in our own words | Amrit's own; released here under MIT |
 | `crates/dxvkit-plus-apple/src/surface.rs` (`TextureCacheImporter`) | written from Apple's CoreVideo documentation; the technique (a `CVMetalTextureCache` adopted through `wgpu_hal`) was learned from 1mrnewton/cutlass @ 22437e2 `crates/cutlass-compositor/src/metal_import.rs` — read, not copied | own code, MIT (Cutlass: MIT OR Apache-2.0) |
 
 ## Assets
@@ -25,9 +27,13 @@ explains how each part was written.
 
 No third-party media, and none of Amrit's footage, is in this repository.
 
+| `tests/fixtures/lmbd_*.lmbd` (5 files, sidecars `*.attribution`) | LMBD compatibility vectors: our own procedural patterns (`testpattern::tiles` / `plasma`), written by the ORIGINAL LMBD encoder (`scripts/mint-lmbd-vectors.sh`) | CC0-1.0 |
+
 ## Dependencies
 
 Every dependency is permissive (MIT, Apache-2.0, BSD-2/3, Zlib, ISC, MIT-0), enforced by
 `cargo deny check licenses bans sources` (`deny.toml`). The one crate-scoped exception is
 `unicode-ident` (Unicode-3.0, permissive; Unicode's data tables), a build-time dependency of
-serde's derive macros. FFmpeg, libmpv and GStreamer bindings are banned.
+serde's derive macros. FFmpeg, libmpv and GStreamer bindings are banned. LMBD uses `ruzstd` (MIT,
+pure Rust) to decode and the `zstd` crate (MIT; it builds libzstd 1.5.7, BSD-3-Clause) to encode —
+the encoder crate only.

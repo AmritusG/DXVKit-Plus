@@ -15,7 +15,13 @@ fn enum_values_are_pinned() {
     use PixelFormat as P;
     assert_eq!([P::Bc1, P::Bc3, P::Bc4, P::Bc5, P::Bc6hUfloat, P::Bc6hSfloat, P::Bc7, P::Rgba8].map(|v| v as u32), [0, 1, 2, 3, 4, 5, 6, 7]);
     use SourceKind as K;
-    assert_eq!([K::Hap, K::Native, K::ImageSequence, K::Still, K::Dxv].map(|v| v as u32), [0, 1, 2, 3, 4]);
+    assert_eq!([K::Hap, K::Native, K::ImageSequence, K::Still, K::Dxv, K::Lmbd].map(|v| v as u32), [0, 1, 2, 3, 4, 5]);
+    // LMBD: the enum values are the bytes written in the file.
+    use dxvkit_plus_core::lmbd::{Colorspace, Compressor, Profile, TexFormat};
+    assert_eq!(Profile::Lmb7 as u32, 0x01);
+    assert_eq!(TexFormat::Bc7Rgba as u32, 0x01);
+    assert_eq!([Compressor::None, Compressor::Zstd].map(|v| v as u32), [0, 1]);
+    assert_eq!([Colorspace::Srgb, Colorspace::Linear].map(|v| v as u32), [0, 1]);
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(|v| v as u32), [0, 1, 2]);
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(YuvMatrix::index), [0, 1, 2]);
     assert_eq!([Codec::Dxv, Codec::Hap, Codec::Native].map(|v| v as u32), [0, 1, 2]);
@@ -41,6 +47,7 @@ fn error_codes_are_pinned_and_distinct() {
         MediaError::Invalid(String::new()),
         MediaError::Platform(String::new()),
         MediaError::Unsupported(String::new()),
+        MediaError::Lmbd(String::new()),
     ];
-    assert_eq!(all.map(|e| e.code()), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(all.map(|e| e.code()), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 }

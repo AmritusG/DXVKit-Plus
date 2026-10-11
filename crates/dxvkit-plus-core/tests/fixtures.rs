@@ -137,5 +137,5 @@ fn every_fixture_has_a_cc0_sidecar_with_a_matching_hash() {
         let digest: String = Sha256::digest(std::fs::read(&p).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
         assert!(sidecar.lines().any(|l| l == format!("sha256: {digest}")), "{name}: sha256 mismatch");
     }
-    assert_eq!(media, 14);
+    assert_eq!(media, 19);
 }

@@ -1,22 +1,27 @@
-//! Mutation fuzzer for the QuickTime demuxer and the HAP decoder, including the BC7 CPU decoder
+//! Mutation fuzzer for the QuickTime demuxer, the HAP decoder and the LMBD reader (container, chunk
+//! table, Zstd chunks), including the BC7 CPU decoder
 //! (no libFuzzer: the toolchain is stable-only; this is a seeded, multi-threaded,
 //! structure-unaware mutator with a crash and hang detector, run for a fixed wall time).
 //! Ported from Loombda-rs `crates/loombda-media/examples/fuzz_media.rs` (Amrit's), without DXV.
 //!
 //! ```text
-//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads>
+//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads> [all|lmbd]
 //! ```
 //!
-//! Corpus: every committed fixture (whole files and their HAP frames) plus synthetic HAP R (BC7,
-//! all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
+//! `lmbd` restricts the corpus to the LMBD vectors (the reader alone).
+//!
+//! Corpus: every committed fixture (whole files, their HAP frames, the LMBD vectors) plus synthetic
+//! HAP R (BC7, all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
-//! shorten) and runs it through one target: `hap::decode` + CPU RGBA, or `Movie::from_source` +
-//! `read_sample` + the codec + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
+//! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `Movie::from_source` +
+//! `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use dxvkit_plus_core::container::{Codec, MemSource, Movie};
 use dxvkit_plus_core::hap;
+use dxvkit_plus_core::lmbd::LmbdFile;
+use dxvkit_plus_core::source::{PixelFormat, Plane, Shading, planes_to_rgba};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +34,7 @@ mod qt_movie;
 enum Seed {
     Hap { frame: Vec<u8>, w: u32, h: u32 },
     File(Vec<u8>),
+    Lmbd(Vec<u8>),
 }
 
 fn movies(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -37,7 +43,7 @@ fn movies(dir: &Path, out: &mut Vec<PathBuf>) {
             let p = e.path();
             if p.is_dir() {
                 movies(&p, out);
-            } else if matches!(p.extension().and_then(|e| e.to_str()), Some("mov" | "mp4")) {
+            } else if matches!(p.extension().and_then(|e| e.to_str()), Some("mov" | "mp4" | "lmbd")) {
                 out.push(p);
             }
         }
@@ -52,6 +58,10 @@ fn corpus(dirs: &[PathBuf]) -> Vec<Seed> {
     let mut seeds = Vec::new();
     for f in files {
         let bytes = std::fs::read(&f).unwrap_or_default();
+        if f.extension().and_then(|e| e.to_str()) == Some("lmbd") {
+            seeds.push(Seed::Lmbd(bytes));
+            continue;
+        }
         seeds.push(Seed::File(bytes));
         let Ok(m) = Movie::open(&f) else { continue };
         for t in m.tracks.clone() {
@@ -164,6 +174,24 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                 let _ = hap::to_rgba(&f, w, h);
             }
         }
+        Seed::Lmbd(_) => {
+            let src: Arc<[u8]> = Arc::from(data);
+            if let Ok(f) = LmbdFile::from_source(Arc::new(MemSource(src))) {
+                let h = f.header().clone();
+                // Same allocation bound as for movies below.
+                if u64::from(h.width) * u64::from(h.height) > 4096 * 4096 {
+                    return;
+                }
+                let (mut s, mut blocks) = (Vec::new(), Vec::new());
+                for i in 0..f.frame_count().min(3) {
+                    if f.decode_frame(i, &mut s, &mut blocks, r.below(2) == 0).is_ok() {
+                        let (cw, ch) = h.coded_size();
+                        let planes = [Plane { format: PixelFormat::Bc7, width: cw, height: ch, data: std::mem::take(&mut blocks) }];
+                        let _ = planes_to_rgba(Shading::Rgba { opaque: false }, &planes, h.width, h.height);
+                    }
+                }
+            }
+        }
         Seed::File(_) => {
             let src: Arc<[u8]> = Arc::from(data);
             if let Ok(m) = Movie::from_source(Arc::new(MemSource(src))) {
@@ -195,10 +223,16 @@ fn main() {
     let seconds: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(60);
     let threads: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    let seeds = Arc::new(corpus(&[root]));
-    let (n_hap, n_file) = seeds.iter().fold((0, 0), |a, s| match s {
-        Seed::Hap { .. } => (a.0 + 1, a.1),
-        Seed::File(_) => (a.0, a.1 + 1),
+    let only_lmbd = args.get(3).map(String::as_str) == Some("lmbd");
+    let mut all = corpus(&[root]);
+    if only_lmbd {
+        all.retain(|s| matches!(s, Seed::Lmbd(_)));
+    }
+    let seeds = Arc::new(all);
+    let (n_hap, n_file, n_lmbd) = seeds.iter().fold((0, 0, 0), |a, s| match s {
+        Seed::Hap { .. } => (a.0 + 1, a.1, a.2),
+        Seed::File(_) => (a.0, a.1 + 1, a.2),
+        Seed::Lmbd(_) => (a.0, a.1, a.2 + 1),
     });
     std::panic::set_hook(Box::new(|_| {})); // crashes are counted, not printed per hit
     let execs = Arc::new(AtomicU64::new(0));
@@ -218,7 +252,7 @@ fn main() {
                     let seed = &seeds[r.below(seeds.len())];
                     let mut data = match seed {
                         Seed::Hap { frame, .. } => frame.clone(),
-                        Seed::File(b) => b.clone(),
+                        Seed::File(b) | Seed::Lmbd(b) => b.clone(),
                     };
                     mutate(&mut data, &mut r);
                     let t0 = Instant::now();
@@ -247,7 +281,7 @@ fn main() {
     let secs = start.elapsed().as_secs_f64();
     let (e, c, h) = (execs.load(Ordering::Relaxed), crashes.load(Ordering::Relaxed), hangs.load(Ordering::Relaxed));
     println!(
-        "fuzz: {secs:.0} s, {threads} threads, corpus {} (hap frames {n_hap}, files {n_file}), execs {e} ({:.0}/s), crashes {c}, hangs {h}, slowest input {:.1} ms",
+        "fuzz: {secs:.0} s, {threads} threads, corpus {} (hap frames {n_hap}, files {n_file}, lmbd {n_lmbd}), execs {e} ({:.0}/s), crashes {c}, hangs {h}, slowest input {:.1} ms",
         seeds.len(),
         e as f64 / secs,
         slowest_us.load(Ordering::Relaxed) as f64 / 1000.0

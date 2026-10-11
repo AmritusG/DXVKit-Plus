@@ -1,0 +1,11 @@
+asset: tests/fixtures/lmbd_plasma_alpha_odd_l05_c3.lmbd
+title: LMBD (LMB7) 130x74 (not a multiple of 4), 2 frames, lambda 0.5, 3 chunks
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern (plasma with alpha 130x74 frames 0-1)
+source: Written by the ORIGINAL LMBD encoder (Amrit's loomda-codec @ c6d80e6: lmbd-encode -w 130 -h 74 -fps 30/1 -q 0.5 -zc 16384 -chunks 3; bc7enc_rdo bc7enc 4-mode, cmake Release, no OpenMP; libzstd 1.5.7), reproducible with scripts/mint-lmbd-vectors.sh
+license: CC0-1.0
+added: 2026-10-11
+sha256: f09c19dc5aa46f56274d2a7df26b95dde438bc961c91c17c332a02ac87ba3bcc
+params: pattern=plasma_alpha width=130 height=74 frames=2 lambda=0.5 lookback=16384 chunks=3 compressor=zstd level=9
+decoded_rgba_sha256 frame 0: 66d544a6a0c8811fed557861008307c0ac26677765e183d3b75be3c1bd50186a
+decoded_rgba_sha256 frame 1: 74e953fec867763496819127bdf51a9fe4d9c97f2152a9b4d744ddf08d19deb3
+notes: A compatibility vector. decoded_rgba_sha256 is each frame as the original decoder (lmbd-probe decode: bc7enc_rdo's scalar BC7 reference) returns it, straight RGBA8 at the frame size; DXVKit Plus must reproduce it, and re-encoding the pattern with params must reproduce this file byte for byte. Our own footage, no third-party content.

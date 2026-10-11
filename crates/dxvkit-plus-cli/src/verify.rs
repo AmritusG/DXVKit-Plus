@@ -1,7 +1,8 @@
 //! `dxvkit-plus verify`: per file, every frame through the CPU and the GPU paths —
 //!
-//! - CPU vs GPU: block codecs within 1/255 (the BC conventions allow a GPU to differ by 1), BGRA
-//!   native frames exactly (Apple's own conversion vs our zero-copy import);
+//! - CPU vs GPU: block codecs within 1/255 (the BC conventions allow a GPU to differ by 1), LMBD
+//!   (BC7) and BGRA native frames exactly (BC7 decode is exact integer arithmetic; Apple's own
+//!   conversion vs our zero-copy import);
 //! - `--tiles`: frame identity (the frame index the fixture pattern carries) on every frame, and,
 //!   with `--source-tolerance N`, every frame against the source pattern within N/255;
 //! - seek: the frames decoded in a shuffled order are identical to the sequential pass (frame-exact
@@ -133,7 +134,9 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
             seek_mismatch.push(f);
         }
     }
-    let cpu_tol = if info.kind == SourceKind::Native { 0 } else { 1 };
+    // Native (BGRA) frames and LMBD (BC7 sampled texel for texel) must match the CPU exactly; the
+    // other block codecs allow the BC conventions' 1/255.
+    let cpu_tol = if matches!(info.kind, SourceKind::Native | SourceKind::Lmbd) { 0 } else { 1 };
     if worst_c > cpu_tol || worst_a > cpu_tol {
         problems.push(format!("CPU vs GPU differ by {worst_c} (rgb) / {worst_a} (alpha), allowed {cpu_tol}"));
     }

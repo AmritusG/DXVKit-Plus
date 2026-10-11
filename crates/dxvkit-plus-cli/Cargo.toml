@@ -22,6 +22,7 @@ workspace = true
 [dependencies]
 dxvkit-plus-core = { workspace = true }
 dxvkit-plus-wgpu = { workspace = true }
+dxvkit-plus-lmbd-enc = { workspace = true }
 wgpu = { workspace = true }
 png = { workspace = true }
 serde = { workspace = true }

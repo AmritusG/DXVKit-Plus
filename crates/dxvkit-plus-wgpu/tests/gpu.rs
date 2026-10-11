@@ -150,3 +150,59 @@ fn bc_upload_is_validated() {
     assert!(matches!(write_bc(&g.queue, &t, PixelFormat::Bc3, 8, 8, &[0; 64]), Err(GpuError::Invalid(_))));
     assert!(matches!(create_bc_texture(&g.device, PixelFormat::Bc7, 6, 8, "t"), Err(GpuError::Invalid(_))));
 }
+
+fn lmbd_vectors() -> Vec<PathBuf> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut v: Vec<PathBuf> =
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().and_then(|e| e.to_str()) == Some("lmbd")).collect();
+    v.sort();
+    v
+}
+
+/// sRGB-encoded byte to linear light (IEC 61966-2-1), as an 8-bit unorm value.
+fn srgb_to_linear(v: u8) -> f64 {
+    let c = f64::from(v) / 255.0;
+    let l = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
+    l * 255.0
+}
+
+/// GPU LMBD decode — the frame's BC7 blocks sampled by the GPU — equals the CPU decode exactly on
+/// every frame of every compatibility vector (written by the original encoder), through the frame
+/// renderer and through `LmbdTexture`; the sRGB view gives linear light.
+#[test]
+fn lmbd_gpu_decode_is_bit_exact_with_the_cpu() {
+    let Some(g) = gpu() else { return };
+    let (mut r, mut r2) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
+    let opts = ImportOptions::default();
+    let mut frames = 0;
+    for path in lmbd_vectors() {
+        let info = source::probe(path.to_str().unwrap(), &opts).unwrap();
+        let mut src = source::open(&info, &opts, true).unwrap();
+        let file = dxvkit_plus_core::lmbd::LmbdFile::open(&path).unwrap();
+        let tex = dxvkit_plus_wgpu::LmbdTexture::new(&g.device, file.header()).unwrap();
+        for f in 0..info.frames {
+            let d = src.decode(f).unwrap();
+            let cpu = d.to_rgba().unwrap();
+            let gpu = render(&g, &mut r, &d);
+            assert_eq!(cpu, gpu, "{path:?} frame {f}: frame renderer");
+            let (mut s, mut blocks) = (Vec::new(), Vec::new());
+            file.decode_frame(f, &mut s, &mut blocks, false).unwrap();
+            tex.upload(&g.queue, &blocks).unwrap();
+            let (w, h) = tex.frame_size();
+            let out = r2.render_view(&g.device, &g.queue, &tex.view(false), w, h).unwrap().clone();
+            assert_eq!(cpu, read_texture_rgba(&g.device, &g.queue, &out).unwrap(), "{path:?} frame {f}: LmbdTexture");
+            let out = r2.render_view(&g.device, &g.queue, &tex.view(true), w, h).unwrap().clone();
+            let lin = read_texture_rgba(&g.device, &g.queue, &out).unwrap();
+            let worst = cpu
+                .chunks_exact(4)
+                .zip(lin.chunks_exact(4))
+                .map(|(c, l)| (0..3).map(|i| (srgb_to_linear(c[i]) - f64::from(l[i])).abs()).fold(f64::from(c[3].abs_diff(l[3])), f64::max))
+                .fold(0.0, f64::max);
+            assert!(worst <= 1.0, "{path:?} frame {f}: sRGB view off linear light by {worst}");
+            frames += 1;
+        }
+    }
+    assert_eq!(frames, 13);
+    // Negative control: the sRGB view really converts (mid grey is not stored grey).
+    assert!((srgb_to_linear(128) - 128.0).abs() > 50.0);
+}

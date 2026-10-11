@@ -3,6 +3,7 @@
 //! | Path | Decoder | Decoded as |
 //! |---|---|---|
 //! | `.mov` with a `Hap*` track | [`crate::hap`] (Vidvox spec) | BC1 / BC3 / BC7 / BC4 / BC6H block planes |
+//! | `.lmbd` (LMB7) | [`crate::lmbd`] (`docs/LMBD.md`) | one BC7 block plane |
 //! | any other movie the platform reads | a [`Backend`] (macOS: `dxvkit-plus-apple`) | a platform frame, imported zero-copy |
 //! | a folder of numbered PNGs | image sequence, frame rate chosen on import | RGBA8 |
 //! | one PNG | a still | RGBA8 |
@@ -30,6 +31,8 @@ pub enum SourceKind {
     Still = 3,
     /// A DXV movie: probed (size, frames, rate, timecode) but not decodable in this release.
     Dxv = 4,
+    /// An LMBD file (profile LMB7): BC7 blocks.
+    Lmbd = 5,
 }
 
 /// What a probe learned about a path.
@@ -176,6 +179,21 @@ pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> 
         return Err(MediaError::Io(format!("{path}: no such file")));
     }
     let ext = ext_of(p);
+    if ext == "lmbd" || starts_with_lmbd_magic(p) {
+        let f = crate::lmbd::LmbdFile::open(p)?;
+        let h = f.header();
+        return Ok(MediaInfo {
+            path: path.into(),
+            kind: SourceKind::Lmbd,
+            codec: "LMB7".into(),
+            width: h.width,
+            height: h.height,
+            frames: h.frame_count,
+            rate: h.rate(),
+            has_alpha: true,
+            timecode: None,
+        });
+    }
     if IMAGE_EXTS.contains(&ext.as_str()) {
         if ext != "png" {
             return Err(MediaError::Unsupported(format!("{path}: .{ext} images (only PNG decodes in this build)")));
@@ -248,6 +266,13 @@ pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> 
         }
         Err(e) => Err(e),
     }
+}
+
+/// Whether the file begins with the LMBD magic (so a renamed `.lmbd` still opens as one).
+fn starts_with_lmbd_magic(p: &Path) -> bool {
+    use std::io::Read;
+    let mut b = [0u8; 4];
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).is_ok() && crate::lmbd::is_lmbd(&b)
 }
 
 /// Whether a HAP FourCC can carry alpha (HAP Alpha, HAP Q Alpha, HAP Alpha-Only, HAP R).
@@ -501,6 +526,42 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
             Ok(Box::new(NativeSource { info: info.clone(), decoder }))
         }
         SourceKind::Dxv => Err(MediaError::Unsupported(format!("{}: DXV decoding is on the roadmap (not in this release)", info.path))),
+        SourceKind::Lmbd => {
+            let file = crate::lmbd::LmbdFile::open(Path::new(&info.path))?;
+            Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), parallel }))
+        }
+    }
+}
+
+/// LMBD (LMB7): each frame decodes to one BC7 block plane at the coded (block-rounded) size,
+/// shaded as stored RGBA. The values are sRGB-encoded unless the header says linear; renderers
+/// that want linear light sample the texture through an sRGB view.
+struct LmbdSource {
+    info: MediaInfo,
+    file: crate::lmbd::LmbdFile,
+    scratch: Vec<u8>,
+    parallel: bool,
+}
+
+impl FrameSource for LmbdSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
+        let mut data = Vec::new();
+        self.file.decode_frame(frame, &mut self.scratch, &mut data, self.parallel)?;
+        let h = self.file.header();
+        let (cw, ch) = h.coded_size();
+        Ok(Decoded::Planes {
+            index: frame,
+            width: h.width,
+            height: h.height,
+            shading: Shading::Rgba { opaque: false },
+            planes: vec![Plane { format: PixelFormat::Bc7, width: cw, height: ch, data }],
+        })
+    }
+    fn fork(&self) -> Option<Box<dyn FrameSource>> {
+        Some(Box::new(LmbdSource { info: self.info.clone(), file: self.file.clone(), scratch: Vec::new(), parallel: self.parallel }))
     }
 }
 

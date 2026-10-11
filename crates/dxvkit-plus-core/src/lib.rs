@@ -7,6 +7,8 @@
 //!   timecode track (`tmcd`).
 //! - [`hap`]: HAP decode, every variant (Hap1, Hap5, HapY, HapM, HapA, Hap7 / HAP R, HapH), Snappy
 //!   and chunked frames (chunks decompress in parallel), from the public Vidvox specification.
+//! - [`lmbd`]: our own GPU codec's container (profile LMB7: BC7 blocks in Zstd-compressed,
+//!   block-aligned chunks) — read, validate, decode to BC7 blocks, and write.
 //! - [`bc`] / [`bc7`]: CPU block decoders (BC1, BC3, BC4, BC7) — the oracle for the GPU path and
 //!   the route to CPU RGBA ([`source::Decoded::to_rgba`]).
 //! - [`source`]: probe + decode for movies, PNG image sequences and stills. Output is GPU-ready:
@@ -30,6 +32,7 @@ pub mod cache;
 pub mod container;
 mod error;
 pub mod hap;
+pub mod lmbd;
 pub mod source;
 pub mod testpattern;
 pub mod time;
