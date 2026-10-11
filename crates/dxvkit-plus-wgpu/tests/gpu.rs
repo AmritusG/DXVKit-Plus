@@ -283,3 +283,106 @@ fn uploader_keeps_frames_in_flight_apart() {
         assert_eq!(&read_texture_rgba(&g.device, &g.queue, o).unwrap(), w);
     }
 }
+
+/// Frames that need no conversion expose their uploaded texture, and sampling it gives exactly the
+/// conversion pass's pixels (alpha taken as 1 for HAP RGB); frames that need the pass expose
+/// nothing.
+#[test]
+fn direct_view_samples_like_the_conversion() {
+    let Some(g) = gpu() else { return };
+    let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
+    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "synthetic_hap7.mov", "tiles_hapy.mov", "tiles_hapm.mov", "tiles_hapa.mov"]
+        .iter()
+        .map(|n| fixtures().join(n))
+        .collect();
+    files.extend(lmbd_vectors());
+    let (mut direct, mut converted) = (0, 0);
+    for p in files {
+        let opts = ImportOptions::default();
+        let info = source::probe(p.to_str().unwrap(), &opts).unwrap();
+        let mut src = source::open(&info, &opts, true).unwrap();
+        for f in 0..info.frames.min(3) {
+            let d = src.decode(f).unwrap();
+            let want = render(&g, &mut a, &d);
+            b.upload(&g.device, &g.queue, &d).unwrap();
+            let Some(v) = b.direct_view() else {
+                assert!(["hapy", "hapm", "hapa"].iter().any(|n| p.to_string_lossy().contains(n)), "{p:?} should sample directly");
+                converted += 1;
+                continue;
+            };
+            let (w, h, opaque, view) = (v.width, v.height, v.opaque, v.view.clone());
+            let mut c = FrameRenderer::new(&g.device);
+            let out = c.render_view(&g.device, &g.queue, &view, w, h).unwrap().clone();
+            let mut got = read_texture_rgba(&g.device, &g.queue, &out).unwrap();
+            if opaque {
+                got.chunks_exact_mut(4).for_each(|px| px[3] = 255);
+            }
+            assert_eq!(got, want, "{p:?} frame {f}");
+            direct += 1;
+        }
+    }
+    assert!(direct >= 15 && converted >= 6, "{direct} direct, {converted} converted");
+    // After a conversion-only frame (render_view), nothing stale is exposed.
+    let src_view = a.output().unwrap().create_view(&Default::default());
+    let _ = b.render_view(&g.device, &g.queue, &src_view, 8, 8);
+    assert!(b.direct_view().is_none());
+}
+
+/// Decoding straight into staging memory (`decode_into` a `StagedFrame`, on another thread) gives
+/// exactly the pixels of the plain render, on every fixture with a fixed layout (padded and tight
+/// rows, one and two planes, LMBD streamed chunk by chunk). An incomplete frame is refused, and
+/// the uploader will not submit while a staged frame is still open.
+#[test]
+fn decode_into_staging_equals_render() {
+    let Some(g) = gpu() else { return };
+    let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
+    let mut up = dxvkit_plus_wgpu::Uploader::new(&g.device, 1 << 16, 2);
+    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "tiles_hapa.mov", "tiles_hapy.mov", "tiles_hapm.mov", "synthetic_hap7.mov"]
+        .iter()
+        .map(|n| fixtures().join(n))
+        .collect();
+    files.extend(lmbd_vectors());
+    let mut frames = 0;
+    for p in files {
+        let opts = ImportOptions::default();
+        let info = source::probe(p.to_str().unwrap(), &opts).unwrap();
+        let mut plain = source::open(&info, &opts, true).unwrap();
+        let mut seq = source::open(&info, &opts, false).unwrap();
+        let layout = seq.layout().unwrap();
+        for f in 0..info.frames.min(3) {
+            let want = render(&g, &mut a, &plain.decode(f).unwrap());
+            let mut staged = up.stage(&layout).unwrap();
+            let staged = std::thread::scope(|s| {
+                s.spawn(|| {
+                    seq.decode_into(f, &mut staged).unwrap();
+                    staged
+                })
+                .join()
+                .unwrap()
+            });
+            let mut enc = g.device.create_command_encoder(&Default::default());
+            b.upload_from_stage(&g.device, &mut enc, staged).unwrap();
+            let out = b.encode_convert(&g.device, &g.queue, &mut enc, None).unwrap().clone();
+            up.submit(&g.device, &g.queue, enc).unwrap();
+            assert_eq!(read_texture_rgba(&g.device, &g.queue, &out).unwrap(), want, "{p:?} frame {f}");
+            frames += 1;
+        }
+    }
+    assert!(frames >= 20, "{frames}");
+    // Negative controls.
+    let layout = source::open(&source::probe(lmbd_vectors()[0].to_str().unwrap(), &ImportOptions::default()).unwrap(), &ImportOptions::default(), false)
+        .unwrap()
+        .layout()
+        .unwrap();
+    let staged = up.stage(&layout).unwrap();
+    assert!(!staged.is_complete());
+    let enc = g.device.create_command_encoder(&Default::default());
+    assert!(matches!(up.submit(&g.device, &g.queue, enc), Err(GpuError::Invalid(_))), "submit with an open staged frame");
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    assert!(matches!(b.upload_from_stage(&g.device, &mut enc, staged), Err(GpuError::Invalid(_))), "incomplete frame");
+    up.submit(&g.device, &g.queue, enc).unwrap();
+    let mut staged = up.stage(&layout).unwrap();
+    use dxvkit_plus_core::source::PlaneSink;
+    assert!(staged.write(0, 16, &[0; 16]).is_err(), "out-of-order write");
+    assert!(staged.write(1, 0, &[0; 16]).is_err(), "no such plane");
+}

@@ -7,7 +7,7 @@
 use crate::bench::stats;
 use crate::json_line;
 use dxvkit_plus_core::source::{self, Decoded, SourceKind};
-use dxvkit_plus_wgpu::{FrameRenderer, Gpu, Uploader, wait_idle};
+use dxvkit_plus_wgpu::{FrameRenderer, Gpu, StagedFrame, Uploader, wait_idle};
 use serde_json::json;
 use std::time::Instant;
 
@@ -107,7 +107,10 @@ pub enum Variant {
     Staged,
     /// Staged, decoding ahead on per-layer threads, at most `depth` steps in flight on the GPU (no
     /// device-wide wait). Sustained throughput and decode-to-texture latency.
-    Pipelined { depth: usize },
+    Pipelined { depth: usize, direct: bool },
+    /// Pipelined (2 in flight), decoding straight into staging memory (`FrameSource::decode_into`
+    /// a `StagedFrame` on each layer's thread): no decoded frame buffers, no copy on the main thread.
+    Into { direct: bool },
 }
 
 impl Variant {
@@ -116,9 +119,14 @@ impl Variant {
             "per_layer" => Variant::PerLayer,
             "batched" => Variant::Batched,
             "staged" => Variant::Staged,
-            "pipelined" | "pipelined2" => Variant::Pipelined { depth: 2 },
-            "pipelined3" => Variant::Pipelined { depth: 3 },
-            other => return Err(format!("unknown variant {other} (per_layer, batched, staged, pipelined2, pipelined3)")),
+            "pipelined" | "pipelined2" => Variant::Pipelined { depth: 2, direct: false },
+            "pipelined3" => Variant::Pipelined { depth: 3, direct: false },
+            "pipelined2_direct" => Variant::Pipelined { depth: 2, direct: true },
+            "into2" => Variant::Into { direct: false },
+            "into2_direct" => Variant::Into { direct: true },
+            other => {
+                return Err(format!("unknown variant {other} (per_layer, batched, staged, pipelined2, pipelined3, pipelined2_direct, into2, into2_direct)"));
+            }
         })
     }
     pub fn name(self) -> &'static str {
@@ -126,15 +134,21 @@ impl Variant {
             Variant::PerLayer => "per_layer",
             Variant::Batched => "batched",
             Variant::Staged => "staged",
-            Variant::Pipelined { depth: 2 } => "pipelined2",
-            Variant::Pipelined { .. } => "pipelined3",
+            Variant::Pipelined { depth: 2, direct: false } => "pipelined2",
+            Variant::Pipelined { direct: false, .. } => "pipelined3",
+            Variant::Pipelined { direct: true, .. } => "pipelined2_direct",
+            Variant::Into { direct: false } => "into2",
+            Variant::Into { direct: true } => "into2_direct",
         }
     }
 }
 
 pub fn run(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu, variant: Variant) -> Result<(), String> {
-    if let Variant::Pipelined { depth } = variant {
-        return run_pipelined(path, info, layers, n, gpu, variant, depth);
+    if let Variant::Pipelined { depth, direct } = variant {
+        return run_pipelined(path, info, layers, n, gpu, variant, depth, direct);
+    }
+    if let Variant::Into { direct } = variant {
+        return run_into(path, info, layers, n, gpu, variant, direct);
     }
     let opts = crate::options();
     let mut srcs = Vec::new();
@@ -175,7 +189,7 @@ pub fn run(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu,
                         sb += ms(t1);
                     }
                 }
-                Variant::Batched | Variant::Staged | Variant::Pipelined { .. } => {
+                Variant::Batched | Variant::Staged | Variant::Pipelined { .. } | Variant::Into { .. } => {
                     let mut enc = new_encoder();
                     let t1 = Instant::now();
                     if variant == Variant::Staged {
@@ -258,9 +272,10 @@ type Ahead = Result<(Instant, f64, Decoded), String>;
 
 /// Decode ahead on one thread per layer (bounded queue of `depth` frames), stage + convert every
 /// layer into one submission per step through an [`Uploader`] (at most `depth` steps in flight), and
-/// time each step's completion on a poller thread: sustained throughput and latency from the
+/// time each step's completion on a poller thread (`direct`: skip the conversion pass for frames a
+/// compositor can sample as they are): sustained throughput and latency from the
 /// first layer's decode start to the step's textures being ready.
-fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu, variant: Variant, depth: usize) -> Result<(), String> {
+fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu, variant: Variant, depth: usize, direct: bool) -> Result<(), String> {
     let opts = crate::options();
     let total = n.saturating_mul(2);
     let mut srcs = Vec::new();
@@ -319,7 +334,10 @@ fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu:
             let tu = ms(t1);
             let t1 = Instant::now();
             for r in renderers.iter_mut() {
-                r.encode_convert(&gpu.device, &gpu.queue, &mut enc, None).map_err(|e| e.to_string())?;
+                // `direct`: a compositor samples `direct_view()` itself; only frames that need it convert.
+                if !(direct && r.direct_view().is_some()) {
+                    r.encode_convert(&gpu.device, &gpu.queue, &mut enc, None).map_err(|e| e.to_string())?;
+                }
             }
             let te = ms(t1);
             let t1 = Instant::now();
@@ -342,6 +360,128 @@ fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu:
         }
         drop(ptx);
         for (k, l) in drx {
+            if k >= n {
+                latency.push(l);
+            }
+        }
+        wait_idle(&gpu.device).map_err(|e| e.to_string())?;
+        if let (Some(a), Some(b)) = (first_measured, last) {
+            measured_ms = b.duration_since(a).as_secs_f64() * 1000.0;
+        }
+        Ok(())
+    })?;
+    let sustained = if measured_ms > 0.0 { (f64::from(n) * 1000.0 / measured_ms * 10.0).round() / 10.0 } else { 0.0 };
+    let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
+    "variant": variant.name(), "mode": "sustained", "sustained_fps": sustained,
+    "step_interval": stats(interval.clone()), "step_decode_upload_convert": stats(interval),
+    "latency_decode_start_to_texture_ready": stats(latency),
+    "decode_all_layers": stats(decode.clone()),
+    "breakdown_p50_ms": {
+        "cpu_decode": p50(&decode), "cpu_wait_decoded": p50(&wait_dec), "cpu_upload": p50(&up), "cpu_encode": p50(&en),
+        "cpu_submit": p50(&sb), "cpu_wait_gpu": 0.0, "gpu_convert_passes_sum": 0.0, "gpu_convert_first_to_last": 0.0
+    }});
+    if let (SourceKind::Lmbd, Some(o)) = (info.kind, row.as_object_mut()) {
+        o.insert("zstd_backend".into(), json!(crate::ZSTD_BACKEND));
+    }
+    json_line(&row);
+    Ok(())
+}
+
+type Filled = Result<(StagedFrame, Instant, f64), String>;
+
+/// Pipelined with decoding straight into staging: each step the main thread stages every layer's
+/// frame and hands it to that layer's thread, which `decode_into`s it; then the copies (and
+/// conversions, unless `direct` and the frame samples as it is) are recorded and submitted with at
+/// most 2 steps in flight. Decoding step k+1 overlaps the GPU's work on step k.
+fn run_into(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu, variant: Variant, direct: bool) -> Result<(), String> {
+    let opts = crate::options();
+    let total = n.saturating_mul(2);
+    let mut srcs = Vec::new();
+    for _ in 0..layers {
+        srcs.push(source::open(info, &opts, false).map_err(|e| e.to_string())?);
+    }
+    let layout = srcs.first().and_then(|s| s.layout()).ok_or("this clip has no fixed frame layout (decode_into needs one)")?;
+    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::new(&gpu.device)).collect();
+    let step_bytes: u64 = layout.planes.iter().filter_map(|p| p.bytes()).map(|b| b as u64).sum::<u64>().saturating_mul(u64::from(layers));
+    let mut uploader = Uploader::new(&gpu.device, step_bytes, 2);
+    let (mut interval, mut latency, mut wait_dec, mut decode, mut up, mut en, mut sb) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
+    let mut measured_ms = 0.0;
+    std::thread::scope(|s| -> Result<(), String> {
+        let mut jobs = Vec::new();
+        let mut done = Vec::new();
+        for mut src in srcs {
+            let (jtx, jrx) = std::sync::mpsc::channel::<(u32, StagedFrame)>();
+            let (dtx, drx) = std::sync::mpsc::channel::<Filled>();
+            jobs.push(jtx);
+            done.push(drx);
+            s.spawn(move || {
+                for (f, mut staged) in jrx {
+                    let t0 = Instant::now();
+                    let r = src.decode_into(f, &mut staged).map(|()| (staged, t0, ms(t0))).map_err(|e| e.to_string());
+                    if dtx.send(r).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        let (ptx, prx) = std::sync::mpsc::channel::<(u32, Instant, wgpu::SubmissionIndex)>();
+        let (ltx, lrx) = std::sync::mpsc::channel::<(u32, f64)>();
+        let device = gpu.device.clone();
+        s.spawn(move || {
+            for (k, start, index) in prx {
+                let done = Uploader::wait_for(&device, index).map(|()| ms(start)).unwrap_or(f64::NAN);
+                let _ = ltx.send((k, done));
+            }
+        });
+        let mut last: Option<Instant> = None;
+        let mut first_measured: Option<Instant> = None;
+        for k in 0..total {
+            let t = Instant::now();
+            let f = k.checked_rem(n).unwrap_or(0);
+            for job in &jobs {
+                job.send((f, uploader.stage(&layout).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?;
+            }
+            let mut filled = Vec::with_capacity(done.len());
+            for d in &done {
+                filled.push(d.recv().map_err(|e| e.to_string())??);
+            }
+            let tw = ms(t);
+            let start = filled.iter().map(|f| f.1).min().unwrap_or(t);
+            let dec = filled.iter().map(|f| f.2).fold(0.0, f64::max);
+            let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render") });
+            let t1 = Instant::now();
+            for (r, (staged, _, _)) in renderers.iter_mut().zip(filled) {
+                r.upload_from_stage(&gpu.device, &mut enc, staged).map_err(|e| e.to_string())?;
+            }
+            let tu = ms(t1);
+            let t1 = Instant::now();
+            for r in renderers.iter_mut() {
+                if !(direct && r.direct_view().is_some()) {
+                    r.encode_convert(&gpu.device, &gpu.queue, &mut enc, None).map_err(|e| e.to_string())?;
+                }
+            }
+            let te = ms(t1);
+            let t1 = Instant::now();
+            let index = uploader.submit(&gpu.device, &gpu.queue, enc).map_err(|e| e.to_string())?;
+            let ts = ms(t1);
+            ptx.send((k, start, index)).map_err(|e| e.to_string())?;
+            let now = Instant::now();
+            if k >= n {
+                first_measured.get_or_insert(last.unwrap_or(t));
+                if let Some(l) = last {
+                    interval.push(now.duration_since(l).as_secs_f64() * 1000.0);
+                }
+                wait_dec.push(tw);
+                decode.push(dec);
+                up.push(tu);
+                en.push(te);
+                sb.push(ts);
+            }
+            last = Some(now);
+        }
+        drop(jobs);
+        drop(ptx);
+        for (k, l) in lrx {
             if k >= n {
                 latency.push(l);
             }

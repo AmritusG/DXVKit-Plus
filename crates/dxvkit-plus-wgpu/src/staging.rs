@@ -3,7 +3,10 @@
 //! not already a multiple of it (1080p and 4K BC rows are, so those frames copy as one block).
 
 use crate::{GpuError, check_size};
-use dxvkit_plus_core::source::PixelFormat;
+use dxvkit_plus_core::MediaError;
+use dxvkit_plus_core::source::{FrameLayout, PixelFormat, PlaneSink};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Alignment of each staged plane in the staging buffer (a copy pitch, and a multiple of every
 /// block size).
@@ -88,6 +91,8 @@ pub struct Uploader {
     belt: wgpu::util::StagingBelt,
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
     depth: usize,
+    /// [`StagedFrame`]s handed out and not yet recorded (the belt cannot be finished under them).
+    outstanding: Arc<AtomicUsize>,
 }
 
 impl Uploader {
@@ -95,7 +100,12 @@ impl Uploader {
     /// `depth`: submissions allowed in flight (2 = double buffered, 3 = triple).
     pub fn new(device: &wgpu::Device, chunk_bytes: u64, depth: usize) -> Uploader {
         let chunk = chunk_bytes.max(STAGING_ALIGNMENT.get()).next_multiple_of(STAGING_ALIGNMENT.get());
-        Uploader { belt: wgpu::util::StagingBelt::new(device.clone(), chunk), in_flight: Default::default(), depth: depth.max(1) }
+        Uploader {
+            belt: wgpu::util::StagingBelt::new(device.clone(), chunk),
+            in_flight: Default::default(),
+            depth: depth.max(1),
+            outstanding: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     /// The staging belt to pass to [`crate::FrameRenderer::upload_staged`].
@@ -107,6 +117,10 @@ impl Uploader {
     /// wait for with [`Uploader::wait_for`] or `Device::poll`). Waits for the oldest submission
     /// first when `depth` are already in flight (bounded: 10 s).
     pub fn submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: wgpu::CommandEncoder) -> Result<wgpu::SubmissionIndex, GpuError> {
+        let open = self.outstanding.load(Ordering::Acquire);
+        if open > 0 {
+            return Err(GpuError::Invalid(format!("{open} staged frame(s) not yet recorded with upload_from_stage")));
+        }
         while self.in_flight.len() >= self.depth {
             if let Some(oldest) = self.in_flight.pop_front() {
                 Uploader::wait_for(device, oldest)?;
@@ -129,9 +143,102 @@ impl Uploader {
             .map_err(|e| GpuError::Device(e.to_string()))
     }
 
+    /// Reserve staging memory for one frame of `layout` (from [`dxvkit_plus_core::source::FrameSource::layout`]).
+    /// Fill it on any thread — it is a [`PlaneSink`], so `FrameSource::decode_into` decodes straight
+    /// into it — then record it with [`crate::FrameRenderer::upload_from_stage`] before the next
+    /// [`Uploader::submit`].
+    pub fn stage(&mut self, layout: &FrameLayout) -> Result<StagedFrame, GpuError> {
+        if layout.planes.is_empty() || layout.planes.len() > 2 {
+            return Err(GpuError::Invalid(format!("{} planes", layout.planes.len())));
+        }
+        let mut planes = Vec::with_capacity(layout.planes.len());
+        for p in &layout.planes {
+            let l = StagingLayout::of(p.format, p.width, p.height)?;
+            let slice = self.belt.allocate(l.size()?, STAGING_ALIGNMENT);
+            let (buffer, offset) = (slice.buffer().clone(), slice.offset());
+            let view = slice.get_mapped_range_mut().map_err(|e| GpuError::Device(e.to_string()))?;
+            planes.push(StagedPlane { buffer, offset, layout: l, view, written: 0 });
+        }
+        self.outstanding.fetch_add(1, Ordering::AcqRel);
+        Ok(StagedFrame { layout: layout.clone(), planes, token: Token(Arc::clone(&self.outstanding)) })
+    }
+
     /// Submissions not yet known to be finished.
     pub fn in_flight(&self) -> usize {
         self.in_flight.len()
+    }
+}
+
+/// Releases an [`Uploader`]'s count of open staged frames when the frame is recorded or dropped.
+struct Token(Arc<AtomicUsize>);
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) struct StagedPlane {
+    pub(crate) buffer: wgpu::Buffer,
+    pub(crate) offset: u64,
+    pub(crate) layout: StagingLayout,
+    view: wgpu::BufferViewMut,
+    written: usize,
+}
+
+/// Mapped staging memory for one frame ([`Uploader::stage`]); `Send`, so a decoder thread can fill
+/// it. Writes take the tight block rows a decoder produces ([`PlaneSink`]) and land in the padded
+/// staging layout.
+pub struct StagedFrame {
+    pub(crate) layout: FrameLayout,
+    pub(crate) planes: Vec<StagedPlane>,
+    #[allow(dead_code)] // held for its Drop
+    token: Token,
+}
+
+impl StagedFrame {
+    pub fn layout(&self) -> &FrameLayout {
+        &self.layout
+    }
+    /// Whether every plane has been written in full.
+    pub fn is_complete(&self) -> bool {
+        self.planes.iter().all(|p| p.written == p.layout.tight_bytes())
+    }
+}
+
+impl std::fmt::Debug for StagedFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StagedFrame").field("layout", &self.layout).field("complete", &self.is_complete()).finish()
+    }
+}
+
+impl PlaneSink for StagedFrame {
+    /// Writes must arrive in order (each at the end of the previous one) and stay inside the plane.
+    fn write(&mut self, plane: usize, offset: usize, bytes: &[u8]) -> Result<(), MediaError> {
+        let p = self.planes.get_mut(plane).ok_or_else(|| MediaError::Invalid(format!("staged frame has no plane {plane}")))?;
+        let end = offset.checked_add(bytes.len()).filter(|&e| e <= p.layout.tight_bytes());
+        if offset != p.written || end.is_none() {
+            return Err(MediaError::Invalid(format!("plane {plane}: write of {} bytes at {offset} (written {})", bytes.len(), p.written)));
+        }
+        let (t, pad) = (p.layout.tight_row as usize, p.layout.padded_row as usize);
+        let mut dst = p.view.slice(..);
+        if t == pad {
+            dst.slice(offset..offset.saturating_add(bytes.len())).copy_from_slice(bytes);
+        } else {
+            // Split at row ends: tight offset `pos` is row `pos / t`, column `pos % t`.
+            let (mut pos, mut rest) = (offset, bytes);
+            while !rest.is_empty() {
+                let (row, col) = (pos.checked_div(t).unwrap_or(0), pos.checked_rem(t).unwrap_or(0));
+                let n = t.saturating_sub(col).min(rest.len()).max(1);
+                let at = row.saturating_mul(pad).saturating_add(col);
+                let (head, tail) = rest.split_at(n.min(rest.len()));
+                dst.slice(at..at.saturating_add(head.len())).copy_from_slice(head);
+                pos = pos.saturating_add(head.len());
+                rest = tail;
+            }
+        }
+        p.written = p.written.saturating_add(bytes.len());
+        Ok(())
     }
 }
 

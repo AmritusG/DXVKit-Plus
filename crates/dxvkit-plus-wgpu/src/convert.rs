@@ -1,6 +1,6 @@
 //! Upload + WGSL conversion of decoded frames into straight-alpha RGBA8 at the clip size.
 
-use crate::staging::{STAGING_ALIGNMENT, StagingLayout};
+use crate::staging::{STAGING_ALIGNMENT, StagedFrame, StagingLayout};
 use crate::{GpuError, create_bc_texture, write_bc};
 use dxvkit_plus_core::backend::{PixelLayout, YuvMatrix};
 use dxvkit_plus_core::source::{Decoded, PixelFormat, Shading};
@@ -235,6 +235,20 @@ struct Pending {
     planes: usize,
 }
 
+/// An uploaded frame a compositor can sample as it is, skipping the conversion pass (see
+/// [`FrameRenderer::direct_view`]).
+#[derive(Clone, Copy, Debug)]
+pub struct DirectView<'a> {
+    /// The frame's block texture (BC1 / BC3 / BC7, sampled as stored RGBA).
+    pub view: &'a wgpu::TextureView,
+    /// The picture size: sample the top-left `width` x `height` texels (the texture can be a little
+    /// larger, rounded up to whole 4x4 blocks).
+    pub width: u32,
+    pub height: u32,
+    /// Treat alpha as 1 (HAP "RGB": BC1's punch-through texels would otherwise read as alpha 0).
+    pub opaque: bool,
+}
+
 struct Upload {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -264,6 +278,20 @@ impl FrameRenderer {
             mapped_at_creation: false,
         });
         FrameRenderer { converter: Converter::new(device), uploads: Vec::new(), uniform, last_uniform: None, output: None, pending: None, last_upload_bytes: 0 }
+    }
+
+    /// After [`FrameRenderer::upload`] / [`FrameRenderer::upload_staged`]: the uploaded texture
+    /// itself when the frame needs no conversion to be sampled — one RGBA block plane (LMBD
+    /// LMB7, HAP R BC7, HAP RGBA BC3, HAP RGB BC1 with `opaque`). Sampling it gives the conversion
+    /// pass's output values (exactly; for `opaque` frames, with alpha taken as 1), so a compositor
+    /// can skip [`FrameRenderer::encode_convert`] for these frames. `None` for frames that need
+    /// the pass (HAP Q's YCoCg, alpha-only, HDR, RGBA8 images) or before an upload.
+    pub fn direct_view(&self) -> Option<DirectView<'_>> {
+        let p = self.pending?;
+        let Shading::Rgba { opaque } = p.shading else { return None };
+        let up = self.uploads.first()?;
+        let block = matches!(up.format, PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc7);
+        (p.planes == 1 && block).then_some(DirectView { view: &up.view, width: p.width, height: p.height, opaque })
     }
 
     /// The output texture (`OUTPUT_FORMAT`, the clip's size) after a render.
@@ -366,15 +394,21 @@ impl FrameRenderer {
         let Decoded::Planes { width, height, shading, planes, .. } = decoded else {
             return Err(GpuError::Invalid("native frames are rendered with render_native (after the platform import)".into()));
         };
-        if planes.is_empty() || planes.len() > 2 {
-            return Err(GpuError::Invalid(format!("{} planes", planes.len())));
+        let shapes: Vec<(PixelFormat, u32, u32)> = planes.iter().map(|p| (p.format, p.width, p.height)).collect();
+        self.ensure_uploads(device, &shapes)?;
+        Ok((*shading, *width, *height))
+    }
+
+    fn ensure_uploads(&mut self, device: &wgpu::Device, shapes: &[(PixelFormat, u32, u32)]) -> Result<(), GpuError> {
+        if shapes.is_empty() || shapes.len() > 2 {
+            return Err(GpuError::Invalid(format!("{} planes", shapes.len())));
         }
-        for (i, p) in planes.iter().enumerate() {
-            let reuse = self.uploads.get(i).is_some_and(|u| u.format == p.format && u.width == p.width && u.height == p.height);
+        for (i, &(format, width, height)) in shapes.iter().enumerate() {
+            let reuse = self.uploads.get(i).is_some_and(|u| u.format == format && u.width == width && u.height == height);
             if !reuse {
-                let texture = create_bc_texture(device, p.format, p.width, p.height, "dxvkit-plus-plane")?;
+                let texture = create_bc_texture(device, format, width, height, "dxvkit-plus-plane")?;
                 let view = texture.create_view(&Default::default());
-                let up = Upload { texture, view, format: p.format, width: p.width, height: p.height };
+                let up = Upload { texture, view, format, width, height };
                 if i < self.uploads.len() {
                     if let Some(slot) = self.uploads.get_mut(i) {
                         *slot = up;
@@ -384,7 +418,32 @@ impl FrameRenderer {
                 }
             }
         }
-        Ok((*shading, *width, *height))
+        Ok(())
+    }
+
+    /// Record the copies of a frame staged with [`crate::Uploader::stage`] and filled (for example
+    /// by `FrameSource::decode_into`) into this renderer's textures. The frame must be complete.
+    /// Then [`FrameRenderer::encode_convert`] (or sample [`FrameRenderer::direct_view`]) and
+    /// [`crate::Uploader::submit`].
+    pub fn upload_from_stage(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, staged: StagedFrame) -> Result<(), GpuError> {
+        if !staged.is_complete() {
+            return Err(GpuError::Invalid("staged frame not completely written".into()));
+        }
+        let l = &staged.layout;
+        let shapes: Vec<(PixelFormat, u32, u32)> = l.planes.iter().map(|p| (p.format, p.width, p.height)).collect();
+        self.ensure_uploads(device, &shapes)?;
+        let (shading, width, height, n) = (l.shading, l.width, l.height, l.planes.len());
+        let mut bytes = 0usize;
+        // Dropping each plane's mapped view before the copy is recorded; the belt unmaps on finish.
+        for (up, p) in self.uploads.iter().zip(staged.planes) {
+            let (buffer, offset, layout) = (p.buffer.clone(), p.offset, p.layout);
+            drop(p);
+            layout.copy(encoder, &buffer, offset, &up.texture);
+            bytes = bytes.saturating_add(layout.tight_bytes());
+        }
+        self.last_upload_bytes = bytes;
+        self.pending = Some(Pending { shading, width, height, planes: n });
+        Ok(())
     }
 
     /// The second half of [`FrameRenderer::render`]: record the conversion of the last uploaded
@@ -425,6 +484,7 @@ impl FrameRenderer {
         height: u32,
     ) -> Result<&wgpu::Texture, GpuError> {
         self.last_upload_bytes = 0;
+        self.pending = None;
         self.set_uniform(queue, Uniform { mode: 0, flags: 0, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
         let target = self.ensure_output(device, width, height)?;
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-view") });
@@ -444,6 +504,7 @@ impl FrameRenderer {
             return Err(GpuError::Invalid(format!("{:?} needs {want} planes, got {}", native.layout, native.textures.len())));
         }
         self.last_upload_bytes = 0;
+        self.pending = None;
         self.set_uniform(queue, Uniform { mode, flags: 0, matrix: native.matrix.index(), full_range, size: [native.width, native.height], pad: [0; 2] });
         let target = self.ensure_output(device, native.width, native.height)?;
         let views: Vec<wgpu::TextureView> = native.textures.iter().map(|t| t.create_view(&Default::default())).collect();

@@ -20,9 +20,9 @@ mod convert;
 mod lmbd;
 mod staging;
 
-pub use convert::{CONVERT_WGSL, Converter, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
+pub use convert::{CONVERT_WGSL, Converter, DirectView, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
 pub use lmbd::LmbdTexture;
-pub use staging::Uploader;
+pub use staging::{StagedFrame, Uploader};
 
 use dxvkit_plus_core::source::PixelFormat;
 use std::fmt;

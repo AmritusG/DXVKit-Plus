@@ -504,6 +504,92 @@ pub trait FrameSource: Send {
     fn cpu_rgba(&self, decoded: &Decoded) -> Result<Vec<u8>, MediaError> {
         decoded.to_rgba()
     }
+    /// The shape of this source's decoded frames when it is fixed and known before decoding (LMBD
+    /// and HAP — except HAP HDR, whose signedness is per frame); `None` otherwise.
+    fn layout(&self) -> Option<FrameLayout> {
+        None
+    }
+    /// Decode `frame` straight into `sink` (for example mapped GPU staging memory) instead of new
+    /// buffers: each plane's tight block rows, as [`Plane::data`] would hold them. A frame that does
+    /// not have [`FrameSource::layout`]'s shape is an error. The default decodes and writes each
+    /// plane whole; LMBD streams chunk by chunk through a small reused buffer.
+    fn decode_into(&mut self, frame: u32, sink: &mut dyn PlaneSink) -> Result<(), MediaError> {
+        let d = self.decode(frame)?;
+        let Decoded::Planes { width, height, shading, planes, .. } = &d else {
+            return Err(MediaError::Unsupported("decode_into: native frames are imported, not written".into()));
+        };
+        if let Some(l) = self.layout()
+            && !l.matches(*width, *height, *shading, planes)
+        {
+            return Err(MediaError::Invalid(format!("frame {frame} does not have the clip's layout")));
+        }
+        planes.iter().enumerate().try_for_each(|(i, p)| sink.write(i, 0, &p.data))
+    }
+}
+
+/// Where [`FrameSource::decode_into`] writes a frame: `bytes` of plane `plane` (tight block rows,
+/// as [`Plane::data`]) at byte `offset`. Writes arrive in increasing offsets and cover each plane
+/// exactly once.
+pub trait PlaneSink {
+    fn write(&mut self, plane: usize, offset: usize, bytes: &[u8]) -> Result<(), MediaError>;
+}
+
+/// One plane of a [`FrameLayout`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct PlaneLayout {
+    pub format: PixelFormat,
+    /// Texture size (BC: multiples of 4).
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PlaneLayout {
+    /// Exact byte size of the plane's tight rows.
+    pub fn bytes(&self) -> Option<usize> {
+        let (ux, uy) = if self.format.is_compressed() { (self.width.div_ceil(4), self.height.div_ceil(4)) } else { (self.width, self.height) };
+        usize::try_from(u64::from(ux).checked_mul(u64::from(uy))?.checked_mul(u64::from(self.format.unit_bytes()))?).ok()
+    }
+}
+
+/// The shape every frame of a block source decodes to ([`FrameSource::layout`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct FrameLayout {
+    /// Display size.
+    pub width: u32,
+    pub height: u32,
+    pub shading: Shading,
+    pub planes: Vec<PlaneLayout>,
+}
+
+impl FrameLayout {
+    /// Whether a decoded frame has this shape.
+    pub fn matches(&self, width: u32, height: u32, shading: Shading, planes: &[Plane]) -> bool {
+        self.width == width
+            && self.height == height
+            && self.shading == shading
+            && self.planes.len() == planes.len()
+            && self
+                .planes
+                .iter()
+                .zip(planes)
+                .all(|(l, p)| l.format == p.format && l.width == p.width && l.height == p.height && l.bytes() == Some(p.data.len()))
+    }
+}
+
+/// The layout HAP frames of a track with `fourcc` decode to, at `width` x `height`.
+fn hap_layout(fourcc: &[u8], width: u32, height: u32) -> Option<FrameLayout> {
+    let (tw, th) = (width.div_ceil(4).saturating_mul(4), height.div_ceil(4).saturating_mul(4));
+    let plane = |format| PlaneLayout { format, width: tw, height: th };
+    let (shading, planes) = match fourcc {
+        b"Hap1" => (Shading::Rgba { opaque: true }, vec![plane(PixelFormat::Bc1)]),
+        b"Hap5" => (Shading::Rgba { opaque: false }, vec![plane(PixelFormat::Bc3)]),
+        b"Hap7" => (Shading::Rgba { opaque: false }, vec![plane(PixelFormat::Bc7)]),
+        b"HapY" => (Shading::HapYcocg { alpha: false }, vec![plane(PixelFormat::Bc3)]),
+        b"HapM" => (Shading::HapYcocg { alpha: true }, vec![plane(PixelFormat::Bc3), plane(PixelFormat::Bc4)]),
+        b"HapA" => (Shading::AlphaOnly, vec![plane(PixelFormat::Bc4)]),
+        _ => return None,
+    };
+    Some(FrameLayout { width, height, shading, planes })
 }
 
 /// Open a decoder for a probed source. `parallel` lets HAP decompress a frame's chunks on worker
@@ -528,7 +614,7 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
         SourceKind::Dxv => Err(MediaError::Unsupported(format!("{}: DXV decoding is on the roadmap (not in this release)", info.path))),
         SourceKind::Lmbd => {
             let file = crate::lmbd::LmbdFile::open(Path::new(&info.path))?;
-            Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), parallel }))
+            Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), chunk: Vec::new(), parallel }))
         }
     }
 }
@@ -540,6 +626,7 @@ struct LmbdSource {
     info: MediaInfo,
     file: crate::lmbd::LmbdFile,
     scratch: Vec<u8>,
+    chunk: Vec<u8>,
     parallel: bool,
 }
 
@@ -561,7 +648,28 @@ impl FrameSource for LmbdSource {
         })
     }
     fn fork(&self) -> Option<Box<dyn FrameSource>> {
-        Some(Box::new(LmbdSource { info: self.info.clone(), file: self.file.clone(), scratch: Vec::new(), parallel: self.parallel }))
+        Some(Box::new(LmbdSource { info: self.info.clone(), file: self.file.clone(), scratch: Vec::new(), chunk: Vec::new(), parallel: self.parallel }))
+    }
+    fn layout(&self) -> Option<FrameLayout> {
+        let h = self.file.header();
+        let (cw, ch) = h.coded_size();
+        Some(FrameLayout {
+            width: h.width,
+            height: h.height,
+            shading: Shading::Rgba { opaque: false },
+            planes: vec![PlaneLayout { format: PixelFormat::Bc7, width: cw, height: ch }],
+        })
+    }
+    /// Sequential decoders stream chunk by chunk; `parallel` ones decompress the chunks on worker
+    /// threads into a frame first (the default path).
+    fn decode_into(&mut self, frame: u32, sink: &mut dyn PlaneSink) -> Result<(), MediaError> {
+        if self.parallel {
+            let d = self.decode(frame)?;
+            if let Decoded::Planes { planes, .. } = &d {
+                return planes.iter().enumerate().try_for_each(|(i, p)| sink.write(i, 0, &p.data));
+            }
+        }
+        self.file.decode_frame_into(frame, &mut self.scratch, &mut self.chunk, sink)
     }
 }
 
@@ -592,6 +700,9 @@ impl FrameSource for HapSource {
             buf: Vec::new(),
             parallel: self.parallel,
         }))
+    }
+    fn layout(&self) -> Option<FrameLayout> {
+        hap_layout(&self.track.fourcc, self.track.width, self.track.height)
     }
 }
 
