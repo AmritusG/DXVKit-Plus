@@ -1,0 +1,94 @@
+{
+ "item": "W4 P1-1 carry-over: DXV alpha vs DXVKit C core and ffmpeg",
+ "date": "2026-10-11",
+ "machine": "Mac Studio M4 Max",
+ "card": {
+  "size": "512x256",
+  "bands": [
+   "red",
+   "green",
+   "blue",
+   "white",
+   "orange",
+   "teal",
+   "hue ramp",
+   "grey ramp"
+  ],
+  "alpha": "1..254 left to right, straight",
+  "encoder": "DXVKit 1.0.0 dxvtool encode --effort best (AmritusG/dxvkit 36209e0, built read-only in _src)"
+ },
+ "oracles": {
+  "dxvkit": "dxvtool dump-rgba (straight)",
+  "ffmpeg": "ffmpeg 8.1.2, external oracle only, never linked; YG10 to RGBA unavailable in ffmpeg"
+ },
+ "units": "[max RGB diff, max alpha diff] on 0..255; *_shown = max |c*a/255| difference",
+ "results": {
+  "dxt5": {
+   "cpu_vs_c": [
+    0,
+    0
+   ],
+   "gpu_vs_c": [
+    1,
+    1
+   ],
+   "cpu_vs_src": [
+    4,
+    0
+   ],
+   "c_vs_src": [
+    4,
+    0
+   ],
+   "gpu_vs_src": [
+    4,
+    1
+   ],
+   "ffmpeg_vs_src": [
+    252,
+    0
+   ],
+   "unpremul_model_exact_pct": 96.66,
+   "premultiplied_cpu_vs_ffmpeg": [
+    13,
+    0
+   ],
+   "premultiplied_cpu_vs_ffmpeg_shown": 1.9,
+   "premultiplied_cpu_vs_ffmpeg_exact_pct": 86.89,
+   "premultiplied_gpu_vs_ffmpeg": [
+    85,
+    1
+   ],
+   "premultiplied_gpu_vs_ffmpeg_shown": 2.6,
+   "premultiplied_gpu_vs_ffmpeg_exact_pct": 66.77,
+   "straight_gpu_vs_ffmpeg_shown": 63.7
+  },
+  "yg10": {
+   "cpu_vs_c": [
+    0,
+    0
+   ],
+   "gpu_vs_c": [
+    0,
+    0
+   ],
+   "cpu_vs_src": [
+    3,
+    1
+   ],
+   "c_vs_src": [
+    3,
+    1
+   ],
+   "gpu_vs_src": [
+    3,
+    1
+   ],
+   "premultiplied_cpu_vs_gpu": [
+    0,
+    0
+   ]
+  }
+ },
+ "spike_reference": "Loombda-rs docs/spikes/dxv-alpha-edges.md (its own card): cpu_vs_c 0, premultiplied GPU vs ffmpeg shown 3.0"
+}

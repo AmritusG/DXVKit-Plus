@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "dxvkit-plus-apple"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dxvkit-plus-core",
  "dxvkit-plus-wgpu",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "dxvkit-plus-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dxvkit-plus-apple",
  "dxvkit-plus-core",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "dxvkit-plus-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "png",
  "proptest",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "dxvkit-plus-lmbd-enc"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dxvkit-plus-core",
  "sha2",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "dxvkit-plus-wgpu"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "dxvkit-plus-core",

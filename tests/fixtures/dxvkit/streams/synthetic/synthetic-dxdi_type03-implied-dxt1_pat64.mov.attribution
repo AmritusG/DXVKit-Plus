@@ -1,0 +1,8 @@
+asset: tests/fixtures/dxvkit/streams/synthetic/synthetic-dxdi_type03-implied-dxt1_pat64.mov
+title: DXVKit test vector synthetic-dxdi_type03-implied-dxt1_pat64.mov (synthetic group)
+author: Amrit Rosell (DXVKit project)
+source: DXVKit 1.0.0 test_vectors/streams/synthetic/synthetic-dxdi_type03-implied-dxt1_pat64.mov (AmritusG/DXVKit @ 36209e0aa85b5049079934ec167b7d0c7c9c57df), copied with cp -p; reference SHA-256 rows in tests/fixtures/dxvkit/vectors.tsv
+license: MIT (LICENSES/DXVKit-MIT.txt)
+added: 2026-10-11
+sha256: 28c17a4407e061a13c02df067a50357692f05ec59851deae071c1cd6e89315ae
+notes: Synthetic content only (DXVKit's own generated pattern, encoded by GlEnc 1.0.0 or built by hand in DXVKit Phase A). The same 74-row subset Loombda-rs commits. The Resolume-encoder group (streams/resolume), anything derived from it, and the Arena forms are NOT copied (the full 334 rows run with DXVKIT_DIR=<a DXVKit checkout>).

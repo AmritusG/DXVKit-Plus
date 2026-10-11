@@ -122,6 +122,17 @@ pub fn premul(c: u8, a: u8) -> u8 {
     ((u32::from(c) * u32::from(a) + 127) / 255) as u8
 }
 
+/// Premultiplied -> straight, rounded to nearest and clamped: `min(255, round(c * 255 / a))`; a
+/// transparent texel (`a = 0`) keeps its colour. The GPU conversion does the same integer
+/// arithmetic, so the two agree exactly.
+pub fn unpremul(c: u8, a: u8) -> u8 {
+    if a == 0 {
+        return c;
+    }
+    let (c, a) = (u32::from(c), u32::from(a));
+    u8::try_from((c * 255 + a / 2) / a).unwrap_or(255)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -27,6 +27,8 @@ pub enum MediaError {
     Unsupported(String),
     /// An LMBD file was rejected (the message says why).
     Lmbd(String),
+    /// A DXV packet was rejected (the message says why).
+    Dxv(String),
 }
 
 impl fmt::Display for MediaError {
@@ -43,6 +45,7 @@ impl fmt::Display for MediaError {
             MediaError::Platform(m) => write!(f, "platform decoder: {m}"),
             MediaError::Unsupported(m) => write!(f, "unsupported: {m}"),
             MediaError::Lmbd(m) => write!(f, "lmbd: {m}"),
+            MediaError::Dxv(m) => write!(f, "dxv: {m}"),
         }
     }
 }
@@ -63,6 +66,7 @@ impl MediaError {
             MediaError::Platform(_) => 9,
             MediaError::Unsupported(_) => 10,
             MediaError::Lmbd(_) => 11,
+            MediaError::Dxv(_) => 12,
         }
     }
 }

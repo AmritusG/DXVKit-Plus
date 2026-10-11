@@ -2,9 +2,10 @@
 //! `DXVKIT_PLUS_REQUIRE_GPU=1`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+use dxvkit_plus_core::bc::premul;
 use dxvkit_plus_core::container::{Codec, Movie};
 use dxvkit_plus_core::hap;
-use dxvkit_plus_core::source::{self, Decoded, ImportOptions, PixelFormat, Plane, Shading, planes_to_rgba};
+use dxvkit_plus_core::source::{self, AlphaMode, Decoded, ImportOptions, PixelFormat, Plane, Shading, planes_to_rgba};
 use dxvkit_plus_core::testpattern::read_frame_id;
 use dxvkit_plus_wgpu::{FrameRenderer, Gpu, GpuError, create_bc_texture, read_texture_rgba, write_bc};
 use std::path::{Path, PathBuf};
@@ -107,6 +108,81 @@ fn hap_fixtures_gpu_match_the_cpu() {
         eprintln!("{name}: GPU vs CPU max diff {worst}");
         assert!(worst <= 1, "{name}: {worst}");
     }
+}
+
+/// The DXV files the GPU tests run on: the CC0 tile fixtures, DXVKit's committed vectors that
+/// decode, and with `DXVKIT_DIR` every DXVKit vector stream (Resolume encoders included).
+fn dxv_files() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = ["dxt1", "dxt5", "ycg6", "yg10"].iter().map(|n| fixtures().join(format!("tiles_{n}.mov"))).collect();
+    let mut dirs = vec![fixtures().join("dxvkit/streams")];
+    if let Ok(d) = std::env::var("DXVKIT_DIR") {
+        dirs.push(Path::new(&d).join("test_vectors/streams"));
+    }
+    for d in dirs {
+        for g in ["glenc", "synthetic", "resolume", "arena"] {
+            let Ok(rd) = std::fs::read_dir(d.join(g)) else { continue };
+            let mut files: Vec<PathBuf> = rd.map(|e| e.unwrap().path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some("mov")).collect();
+            files.sort();
+            v.extend(files);
+        }
+    }
+    v
+}
+
+/// DXV on the GPU against the CPU oracle (DXVKit's own conventions), both alpha modes, every frame
+/// that decodes: DXV High Quality (YCG6 / YG10, integer conversion) is exact; DXT1 / DXT5 are the
+/// GPU's own fixed-function BC1 / BC3 decode, within 2/255 of DXVKit's truncating integer
+/// convention (DXVKit spec 8.1 records the same for Arena's GPU upload). Premultiplied colour is
+/// un-premultiplied from that decode, so its step is scaled by 255 / alpha: compared as shown
+/// (premultiplied back), it stays within 2/255.
+#[test]
+fn dxv_gpu_matches_the_cpu() {
+    let Some(g) = gpu() else { return };
+    let mut r = FrameRenderer::new(&g.device);
+    let mut worst: std::collections::BTreeMap<String, (u8, u8, u32)> = Default::default();
+    let mut frames = 0;
+    for p in dxv_files() {
+        for mode in [AlphaMode::Straight, AlphaMode::Premultiplied] {
+            let opts = ImportOptions { alpha_mode: mode, ..Default::default() };
+            let Ok(info) = source::probe(p.to_str().unwrap(), &opts) else { continue };
+            if info.kind != source::SourceKind::Dxv {
+                continue;
+            }
+            let Ok(mut src) = source::open(&info, &opts, true) else { continue };
+            for f in 0..info.frames {
+                let Ok(d) = src.decode(f) else { continue };
+                let Decoded::Planes { shading, .. } = &d else { panic!() };
+                let cpu = d.to_rgba().unwrap();
+                let gpu = render(&g, &mut r, &d);
+                let raw = cpu.iter().zip(&gpu).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                // As shown: colour premultiplied by alpha.
+                let shown = cpu
+                    .chunks_exact(4)
+                    .zip(gpu.chunks_exact(4))
+                    .map(|(a, b)| (0..3).map(|i| premul(a[i], a[3]).abs_diff(premul(b[i], b[3]))).max().unwrap().max(a[3].abs_diff(b[3])))
+                    .max()
+                    .unwrap();
+                let key = match shading {
+                    Shading::DxvYcocg { .. } => format!("{shading:?}"),
+                    _ => format!("{shading:?} {:?}", info.codec),
+                };
+                let e = worst.entry(key).or_default();
+                *e = (e.0.max(raw), e.1.max(shown), e.2 + 1);
+                frames += 1;
+            }
+        }
+    }
+    for (k, (raw, shown, n)) in &worst {
+        eprintln!("DXV GPU vs CPU {k}: frames {n}, max diff {raw}, as shown {shown}");
+        if k.starts_with("DxvYcocg") {
+            assert_eq!(*raw, 0, "{k}");
+        } else if k.starts_with("RgbaPremultiplied") {
+            assert!(*shown <= 2, "{k}: {shown}");
+        } else {
+            assert!(*raw <= 2, "{k}: {raw}");
+        }
+    }
+    assert!(frames >= 200, "{frames}");
 }
 
 /// HAP R (BC7) and HAP HDR (BC6H) movies render their colours (blocks built from the public BPTC
@@ -225,10 +301,21 @@ fn staged_upload_equals_write_texture() {
     let Some(g) = gpu() else { return };
     let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
     let mut belt = wgpu::util::StagingBelt::new(g.device.clone(), 1 << 16);
-    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "tiles_hapa.mov", "tiles_hapy.mov", "tiles_hapm.mov", "synthetic_hap7.mov"]
-        .iter()
-        .map(|n| fixtures().join(n))
-        .collect();
+    let mut files: Vec<PathBuf> = [
+        "tiles_hap1.mov",
+        "tiles_hap5.mov",
+        "tiles_hapa.mov",
+        "tiles_hapy.mov",
+        "tiles_hapm.mov",
+        "synthetic_hap7.mov",
+        "tiles_dxt1.mov",
+        "tiles_dxt5.mov",
+        "tiles_ycg6.mov",
+        "tiles_yg10.mov",
+    ]
+    .iter()
+    .map(|n| fixtures().join(n))
+    .collect();
     files.extend(lmbd_vectors());
     let mut frames = 0;
     for p in files {
@@ -291,10 +378,21 @@ fn uploader_keeps_frames_in_flight_apart() {
 fn direct_view_samples_like_the_conversion() {
     let Some(g) = gpu() else { return };
     let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
-    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "synthetic_hap7.mov", "tiles_hapy.mov", "tiles_hapm.mov", "tiles_hapa.mov"]
-        .iter()
-        .map(|n| fixtures().join(n))
-        .collect();
+    let mut files: Vec<PathBuf> = [
+        "tiles_hap1.mov",
+        "tiles_hap5.mov",
+        "synthetic_hap7.mov",
+        "tiles_hapy.mov",
+        "tiles_hapm.mov",
+        "tiles_hapa.mov",
+        "tiles_dxt1.mov",
+        "tiles_dxt5.mov",
+        "tiles_ycg6.mov",
+        "tiles_yg10.mov",
+    ]
+    .iter()
+    .map(|n| fixtures().join(n))
+    .collect();
     files.extend(lmbd_vectors());
     let (mut direct, mut converted) = (0, 0);
     for p in files {
@@ -306,7 +404,7 @@ fn direct_view_samples_like_the_conversion() {
             let want = render(&g, &mut a, &d);
             b.upload(&g.device, &g.queue, &d).unwrap();
             let Some(v) = b.direct_view() else {
-                assert!(["hapy", "hapm", "hapa"].iter().any(|n| p.to_string_lossy().contains(n)), "{p:?} should sample directly");
+                assert!(["hapy", "hapm", "hapa", "ycg6", "yg10"].iter().any(|n| p.to_string_lossy().contains(n)), "{p:?} should sample directly");
                 converted += 1;
                 continue;
             };
@@ -321,7 +419,7 @@ fn direct_view_samples_like_the_conversion() {
             direct += 1;
         }
     }
-    assert!(direct >= 15 && converted >= 6, "{direct} direct, {converted} converted");
+    assert!(direct >= 21 && converted >= 12, "{direct} direct, {converted} converted");
     // After a conversion-only frame (render_view), nothing stale is exposed.
     let src_view = a.output().unwrap().create_view(&Default::default());
     let _ = b.render_view(&g.device, &g.queue, &src_view, 8, 8);
@@ -337,10 +435,21 @@ fn decode_into_staging_equals_render() {
     let Some(g) = gpu() else { return };
     let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
     let mut up = dxvkit_plus_wgpu::Uploader::new(&g.device, 1 << 16, 2);
-    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "tiles_hapa.mov", "tiles_hapy.mov", "tiles_hapm.mov", "synthetic_hap7.mov"]
-        .iter()
-        .map(|n| fixtures().join(n))
-        .collect();
+    let mut files: Vec<PathBuf> = [
+        "tiles_hap1.mov",
+        "tiles_hap5.mov",
+        "tiles_hapa.mov",
+        "tiles_hapy.mov",
+        "tiles_hapm.mov",
+        "synthetic_hap7.mov",
+        "tiles_dxt1.mov",
+        "tiles_dxt5.mov",
+        "tiles_ycg6.mov",
+        "tiles_yg10.mov",
+    ]
+    .iter()
+    .map(|n| fixtures().join(n))
+    .collect();
     files.extend(lmbd_vectors());
     let mut frames = 0;
     for p in files {

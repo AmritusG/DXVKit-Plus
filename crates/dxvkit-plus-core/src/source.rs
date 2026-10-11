@@ -3,11 +3,11 @@
 //! | Path | Decoder | Decoded as |
 //! |---|---|---|
 //! | `.mov` with a `Hap*` track | [`crate::hap`] (Vidvox spec) | BC1 / BC3 / BC7 / BC4 / BC6H block planes |
+//! | `.mov` with a `DXD3`/`DXD4`/`DXDI` track | [`crate::dxv`] (port of DXVKit) | BC1 / BC3 / BC4 + BC5 / BC5 + BC5 block planes |
 //! | `.lmbd` (LMB7) | [`crate::lmbd`] (`docs/LMBD.md`) | one BC7 block plane |
 //! | any other movie the platform reads | a [`Backend`] (macOS: `dxvkit-plus-apple`) | a platform frame, imported zero-copy |
 //! | a folder of numbered PNGs | image sequence, frame rate chosen on import | RGBA8 |
 //! | one PNG | a still | RGBA8 |
-//! | `.mov` with a `DXD3`/`DXD4`/`DXDI` track | probed; decoding is on the roadmap | — |
 //!
 //! [`Decoded::to_rgba`] turns any CPU-decoded frame (blocks or RGBA8) into straight RGBA8 on the
 //! CPU when asked — the oracle for the GPU path, and the route for tools without a GPU.
@@ -29,7 +29,7 @@ pub enum SourceKind {
     Native = 1,
     ImageSequence = 2,
     Still = 3,
-    /// A DXV movie: probed (size, frames, rate, timecode) but not decodable in this release.
+    /// A DXV movie (DXV3 or legacy DXV1/2): block streams, see [`crate::dxv`].
     Dxv = 4,
     /// An LMBD file (profile LMB7): BC7 blocks.
     Lmbd = 5,
@@ -62,23 +62,44 @@ fn ser_rate<S: serde::Serializer>(r: &FrameRate, s: S) -> Result<S::Ok, S::Error
     st.end()
 }
 
-/// Import options: the image-sequence frame rate (chosen on import) and the platform backend for
-/// native codecs (none = native codecs are `Unsupported`).
+/// How the colour of a clip with alpha is read. DXV files carry no straight / premultiplied flag
+/// (DXVKit spec 8.5), so it is a per-clip choice, like Resolume Arena's per-clip "Alpha Type". The
+/// output is always straight RGBA.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum AlphaMode {
+    /// Colour stored straight — Resolume Alley's convention: shown as stored. The default.
+    #[default]
+    Straight = 0,
+    /// Colour stored premultiplied by alpha: un-premultiplied on output
+    /// ([`crate::bc::unpremul`]: `min(255, round(c * 255 / a))`).
+    Premultiplied = 1,
+}
+
+/// Import options: the image-sequence frame rate (chosen on import), the platform backend for
+/// native codecs (none = native codecs are `Unsupported`), and how the colour of DXV clips that
+/// carry alpha (DXT5, YG10, legacy DXT5) is read.
 #[derive(Clone)]
 pub struct ImportOptions {
     pub sequence_rate: FrameRate,
     pub backend: Option<Arc<dyn Backend>>,
+    pub alpha_mode: AlphaMode,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
-        ImportOptions { sequence_rate: FrameRate::FPS_30, backend: None }
+        ImportOptions { sequence_rate: FrameRate::FPS_30, backend: None, alpha_mode: AlphaMode::Straight }
     }
 }
 
 impl std::fmt::Debug for ImportOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportOptions").field("sequence_rate", &self.sequence_rate).field("backend", &self.backend.as_ref().map(|b| b.name())).finish()
+        f.debug_struct("ImportOptions")
+            .field("sequence_rate", &self.sequence_rate)
+            .field("backend", &self.backend.as_ref().map(|b| b.name()))
+            .field("alpha_mode", &self.alpha_mode)
+            .finish()
     }
 }
 
@@ -223,7 +244,7 @@ pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> 
             let rate = track.frame_rate().unwrap_or(FrameRate::FPS_30);
             let has_alpha = match track.codec {
                 Codec::Hap => hap_alpha(&track.fourcc),
-                Codec::Dxv => true, // decided per packet
+                Codec::Dxv => dxv_first_variant(&movie, track).is_none_or(|v| v.has_alpha()),
                 Codec::Native => native_alpha(track),
             };
             let mut info = MediaInfo {
@@ -273,6 +294,14 @@ fn starts_with_lmbd_magic(p: &Path) -> bool {
     use std::io::Read;
     let mut b = [0u8; 4];
     std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).is_ok() && crate::lmbd::is_lmbd(&b)
+}
+
+/// The variant of a DXV track's first packet (the packet decides, DXVKit spec 2.2); `None` for an
+/// empty or unreadable first packet.
+fn dxv_first_variant(movie: &Movie, track: &VideoTrack) -> Option<crate::dxv::Variant> {
+    let mut packet = Vec::new();
+    movie.read_sample(track, 0, &mut packet).ok()?;
+    crate::dxv::parse_header(&packet).ok().map(|h| h.variant)
 }
 
 /// Whether a HAP FourCC can carry alpha (HAP Alpha, HAP Q Alpha, HAP Alpha-Only, HAP R).
@@ -359,6 +388,13 @@ pub enum Shading {
     AlphaOnly,
     /// HAP HDR (BC6H).
     Hdr,
+    /// RGBA stored premultiplied (DXV DXT5 read with [`AlphaMode::Premultiplied`]): shown
+    /// un-premultiplied ([`crate::bc::unpremul`]).
+    RgbaPremultiplied,
+    /// DXV High Quality (YCG6 / YG10): a Y BC4 plane (YG10: Y + A BC5) and a CoCg BC5 plane at half
+    /// size, DXVKit spec 8.4 (exact BC4 palettes, nearest chroma, midpoint 127.5, out-of-gamut
+    /// folding, round half up). `premultiplied`: YG10 read with [`AlphaMode::Premultiplied`].
+    DxvYcocg { alpha: bool, premultiplied: bool },
 }
 
 /// One plane to upload (block-compressed or RGBA8).
@@ -446,6 +482,25 @@ fn block_rgba(plane: &Plane, i: usize) -> Result<[[u8; 4]; 16], MediaError> {
 
 /// CPU decode of block / RGBA8 planes to straight RGBA8 (the oracle of the GPU conversion).
 pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u32) -> Result<Vec<u8>, MediaError> {
+    match shading {
+        Shading::DxvYcocg { alpha, premultiplied } => {
+            let variant = if alpha { crate::dxv::Variant::Yg10 } else { crate::dxv::Variant::Ycg6 };
+            let layout = crate::dxv::Layout::new(variant, width, height).map_err(dxv_error)?;
+            let plane = |i: usize| planes.get(i).map(|p| p.data.clone()).ok_or_else(|| MediaError::Invalid("DXV HQ frame needs two planes".into()));
+            let blocks = crate::dxv::Blocks { layout, planes: [plane(0)?, plane(1)?], used: 0 };
+            let mut rgba = crate::dxv::rgba::blocks_to_rgba(&blocks, false).map_err(dxv_error)?;
+            if premultiplied {
+                unpremultiply(&mut rgba);
+            }
+            return Ok(rgba);
+        }
+        Shading::RgbaPremultiplied => {
+            let mut rgba = planes_to_rgba(Shading::Rgba { opaque: false }, planes, width, height)?;
+            unpremultiply(&mut rgba);
+            return Ok(rgba);
+        }
+        _ => {}
+    }
     let (w, h) = (width as usize, height as usize);
     let first = planes.first().ok_or_else(|| MediaError::Invalid("frame without planes".into()))?;
     if first.format == PixelFormat::Rgba8 {
@@ -456,10 +511,11 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
         return Ok(v);
     }
     let mut out = vec![0u8; w.saturating_mul(h).saturating_mul(4)];
-    let bw = w.div_ceil(4);
+    // Blocks per row of the plane (its texture can be wider than the picture: DXV codes to 16).
+    let stride = (first.width as usize).div_ceil(4);
     for by in 0..h.div_ceil(4) {
-        for bx in 0..bw {
-            let block = by.saturating_mul(bw).saturating_add(bx);
+        for bx in 0..w.div_ceil(4) {
+            let block = by.saturating_mul(stride).saturating_add(bx);
             let mut px = block_rgba(first, block)?;
             match shading {
                 Shading::Rgba { opaque: true } => px.iter_mut().for_each(|p| p[3] = 255),
@@ -478,6 +534,7 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
                 }
                 Shading::AlphaOnly => px.iter_mut().for_each(|p| p[3] = 255),
                 Shading::Hdr => return Err(MediaError::Unsupported("CPU decode of HDR (BC6H) frames".into())),
+                Shading::RgbaPremultiplied | Shading::DxvYcocg { .. } => {} // handled above
             }
             for (i, p) in px.iter().enumerate() {
                 let (x, y) = (bx.saturating_mul(4).saturating_add(i % 4), by.saturating_mul(4).saturating_add(i / 4));
@@ -491,6 +548,56 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
         }
     }
     Ok(out)
+}
+
+/// Straight RGBA from premultiplied, in place ([`crate::bc::unpremul`] per colour channel).
+fn unpremultiply(rgba: &mut [u8]) {
+    for p in rgba.chunks_exact_mut(4) {
+        if let [r, g, b, a] = p {
+            (*r, *g, *b) = (crate::bc::unpremul(*r, *a), crate::bc::unpremul(*g, *a), crate::bc::unpremul(*b, *a));
+        }
+    }
+}
+
+fn dxv_error(e: crate::dxv::DxvError) -> MediaError {
+    MediaError::Dxv(e.to_string())
+}
+
+/// How a DXV variant is shaded, read with `mode`.
+fn dxv_shading(variant: crate::dxv::Variant, mode: AlphaMode) -> Shading {
+    use crate::dxv::Variant;
+    let premultiplied = mode == AlphaMode::Premultiplied;
+    match variant {
+        Variant::Dxt1 | Variant::LegacyDxt1 => Shading::Rgba { opaque: true },
+        Variant::Dxt5 | Variant::LegacyDxt5 if premultiplied => Shading::RgbaPremultiplied,
+        Variant::Dxt5 | Variant::LegacyDxt5 => Shading::Rgba { opaque: false },
+        Variant::Ycg6 => Shading::DxvYcocg { alpha: false, premultiplied: false },
+        Variant::Yg10 => Shading::DxvYcocg { alpha: true, premultiplied },
+    }
+}
+
+fn dxv_pixel_format(f: crate::dxv::BlockFormat) -> Result<PixelFormat, MediaError> {
+    use crate::dxv::BlockFormat;
+    match f {
+        BlockFormat::Bc1 => Ok(PixelFormat::Bc1),
+        BlockFormat::Bc3 => Ok(PixelFormat::Bc3),
+        BlockFormat::Bc4 => Ok(PixelFormat::Bc4),
+        BlockFormat::Bc5 => Ok(PixelFormat::Bc5),
+        BlockFormat::None => Err(MediaError::Dxv("plane without a block format".into())),
+    }
+}
+
+/// The frame layout of a DXV variant at `width` x `height`: planes at the coded size (rounded up
+/// to 16), the HQ chroma plane at half of it.
+fn dxv_layout(variant: crate::dxv::Variant, width: u32, height: u32, mode: AlphaMode) -> Result<FrameLayout, MediaError> {
+    let l = crate::dxv::Layout::new(variant, width, height).map_err(dxv_error)?;
+    let planes = (0..l.plane_count)
+        .map(|i| {
+            let format = dxv_pixel_format(l.format.get(i).copied().unwrap_or(crate::dxv::BlockFormat::None))?;
+            Ok(PlaneLayout { format, width: l.pixels_x.get(i).copied().unwrap_or(0), height: l.pixels_y.get(i).copied().unwrap_or(0) })
+        })
+        .collect::<Result<Vec<_>, MediaError>>()?;
+    Ok(FrameLayout { width, height, shading: dxv_shading(variant, mode), planes })
 }
 
 /// A decoder for one source. `fork` gives an independent decoder for a worker thread (stateless
@@ -611,7 +718,12 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
             let decoder = backend.open(Path::new(&info.path), layout_for(info.codec.as_bytes(), info.has_alpha))?;
             Ok(Box::new(NativeSource { info: info.clone(), decoder }))
         }
-        SourceKind::Dxv => Err(MediaError::Unsupported(format!("{}: DXV decoding is on the roadmap (not in this release)", info.path))),
+        SourceKind::Dxv => {
+            let movie = Movie::open(Path::new(&info.path))?;
+            let track = movie.track(Codec::Dxv).cloned().ok_or(MediaError::NoVideoTrack)?;
+            let layout = dxv_first_variant(&movie, &track).map(|v| dxv_layout(v, track.width, track.height, opts.alpha_mode)).transpose()?;
+            Ok(Box::new(DxvSource { info: info.clone(), movie, track: Arc::new(track), buf: Vec::new(), parallel, alpha_mode: opts.alpha_mode, layout }))
+        }
         SourceKind::Lmbd => {
             let file = crate::lmbd::LmbdFile::open(Path::new(&info.path))?;
             Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), chunk: Vec::new(), parallel }))
@@ -670,6 +782,56 @@ impl FrameSource for LmbdSource {
             }
         }
         self.file.decode_frame_into(frame, &mut self.scratch, &mut self.chunk, sink)
+    }
+}
+
+/// DXV: each packet decodes to its variant's block planes at the coded size (display size
+/// rounded up to 16). The variant is the packet's (DXVKit spec 2.2); [`FrameSource::layout`] is
+/// the first packet's, and a frame of another variant fails `decode_into` (never misread).
+struct DxvSource {
+    info: MediaInfo,
+    movie: Movie,
+    track: Arc<VideoTrack>,
+    buf: Vec<u8>,
+    parallel: bool,
+    alpha_mode: AlphaMode,
+    layout: Option<FrameLayout>,
+}
+
+impl FrameSource for DxvSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
+        let (w, h) = (self.track.width, self.track.height);
+        self.movie.read_sample(&self.track, frame, &mut self.buf)?;
+        let b = crate::dxv::decode_blocks(&self.buf, w, h, self.parallel).map_err(dxv_error)?;
+        let l = b.layout;
+        let planes = b
+            .planes
+            .into_iter()
+            .take(l.plane_count)
+            .enumerate()
+            .map(|(i, data)| {
+                let format = dxv_pixel_format(l.format.get(i).copied().unwrap_or(crate::dxv::BlockFormat::None))?;
+                Ok(Plane { format, width: l.pixels_x.get(i).copied().unwrap_or(0), height: l.pixels_y.get(i).copied().unwrap_or(0), data })
+            })
+            .collect::<Result<Vec<_>, MediaError>>()?;
+        Ok(Decoded::Planes { index: frame, width: w, height: h, shading: dxv_shading(l.variant, self.alpha_mode), planes })
+    }
+    fn fork(&self) -> Option<Box<dyn FrameSource>> {
+        Some(Box::new(DxvSource {
+            info: self.info.clone(),
+            movie: self.movie.clone(),
+            track: Arc::clone(&self.track),
+            buf: Vec::new(),
+            parallel: self.parallel,
+            alpha_mode: self.alpha_mode,
+            layout: self.layout.clone(),
+        }))
+    }
+    fn layout(&self) -> Option<FrameLayout> {
+        self.layout.clone()
     }
 }
 

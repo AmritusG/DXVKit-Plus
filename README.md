@@ -1,8 +1,8 @@
 # DXVKit Plus
 
-**Rust video for VJs: HAP, native OS codecs and the LMBD GPU codec, frame-exact, zero-copy into wgpu.**
+**Rust video for VJs: DXV, HAP, native OS codecs and the LMBD GPU codec, frame-exact, zero-copy into wgpu.**
 
-DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (HAP, and our own LMBD)
+DXVKit Plus plays video the way VJ software uses it: GPU-texture codecs (DXV, HAP, and our own LMBD)
 decompressed to blocks and uploaded straight into BC textures, platform codecs (H.264, HEVC, ProRes, MJPEG)
 decoded by the operating system's hardware decoder and imported into the GPU without a copy, a
 QuickTime demuxer that reads the timecode track, and a frame-exact transport (loop, bounce,
@@ -12,7 +12,11 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.3.1** (0.3.0 plus a `verify` tolerance fix): getting decoded frames onto the GPU is now fast. Block frames go up
+This is release **0.4.0**: **DXV** decodes — DXV3 Normal and High Quality, with and without alpha,
+and legacy DXV1/2 — through a safe-Rust port of DXVKit's decoder that is bit-exact on DXVKit's 334
+test vectors and against its C core; High Quality converts on the GPU bit-exactly with the CPU;
+alpha reads as straight (Resolume Alley's convention, the default) or premultiplied, per clip
+([DXV](#dxv)). 0.3.0 made getting decoded frames onto the GPU fast. Block frames go up
 through persistent staging memory instead of a new buffer per upload, a pipelined player keeps the
 GPU busy while the next frames decode (or decodes straight into GPU-visible memory), and frames
 that are plain BC (LMBD, HAP R / RGBA / RGB) can be sampled as they are, skipping the conversion
@@ -20,7 +24,6 @@ pass. 16 layers of 1080p LMBD went from 132 to 463-516 steps per second on the M
 163-202 to 692-939 ([numbers](#getting-frames-onto-the-gpu-030)). 0.2.0 added **LMBD**, our own GPU
 codec — BC7 with rate-distortion optimisation, then Zstd, in a documented container
 ([`docs/LMBD.md`](docs/LMBD.md)) — and 0.2.1 decodes its Zstd chunks with libzstd by default.
-DXV decoding is on the [roadmap](#roadmap), not in this release.
 
 ## Codec support
 
@@ -37,7 +40,11 @@ DXV decoding is on the [roadmap](#roadmap), not in this release.
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
-| DXV (`DXD3` / `DXDI`) | 🔜 probed, not decoded | — | roadmap |
+| DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit |
+| DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied |
+| DXV3 High Quality (`YCG6`) | ✅ pure Rust | Y BC4 + CoCg BC5 → RGB in WGSL, bit-exact with the CPU | FSE-coded opcode streams; the two sections decode in parallel |
+| DXV3 High Quality With Alpha (`YG10`) | ✅ pure Rust | Y + A BC5 + CoCg BC5 → RGB in WGSL | |
+| DXV1 / 2 (`DXDI`, LZF) | ✅ pure Rust | BC1 / BC3 blocks | |
 | Native codecs on Windows | 🔜 `Backend` stub | — | Media Foundation + DX12 import, designed |
 | PNG stills / sequences | ✅ | RGBA8 | |
 
@@ -48,7 +55,7 @@ every frame of every fixture), and every error is a value — hostile files neve
 
 | Crate | What |
 |---|---|
-| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
+| [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, DXV, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
 | [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
 | [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
@@ -62,9 +69,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.3.1" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.4.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -122,10 +129,11 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.3.1 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.4.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
+dxvkit-plus decode clip.mov 42 frame.png --alpha-mode premultiplied   # a DXV clip whose colour is premultiplied
 dxvkit-plus verify --tiles tests/fixtures/*.mov tests/fixtures/*.mp4
 dxvkit-plus bench clip.mov --frames 60 --layers 16 --import
 dxvkit-plus bench clip.lmbd --layers 16 --layers-only --variants per_layer,staged,pipelined2_direct,into2_direct
@@ -134,9 +142,32 @@ dxvkit-plus encode-lmbd frames/ clip.lmbd --chunks 8   # any decodable source �
 dxvkit-plus compare frames/ clip.lmbd --frame 3       # PSNR / SSIM of frame 3 against the source
 ```
 
-`verify` checks every frame: GPU vs CPU (exact for LMBD and native frames, HAP Q within 2/255,
-other HAP within 1/255), frame identity (fixtures), shuffled seeks
+`verify` checks every frame: GPU vs CPU (exact for LMBD, native frames and DXV High Quality; HAP Q
+and DXV DXT1 / DXT5 within 2/255; other HAP within 1/255), frame identity (fixtures), shuffled seeks
 vs sequential decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
+
+## DXV
+
+DXV (Resolume's codec) decodes through `dxvkit_plus_core::dxv`, a safe-Rust port of DXVKit's C
+decoder (DXVKit is Amrit's MIT, clean-room DXV library). Every variant: DXV3 Normal Quality
+(`DXT1`, BC1) and Normal Quality With Alpha (`DXT5`, BC3), High Quality (`YCG6`: Y BC4 + CoCg BC5)
+and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and the legacy DXV1 / 2
+`DXDI` packets (LZF). Frames come out as block planes like HAP's, so every 0.3.0 upload path works
+(staged, pipelined, decode-into-staging; DXT1 / DXT5 also sample directly).
+
+- **Bit-exact with DXVKit**: the 334 rows of DXVKit's test vectors (Resolume Alley and Media Encoder
+  streams included) give byte-identical block streams and RGBA, and every frame of our DXV fixtures
+  and the committed vectors equals DXVKit's C core (`dxvtool`).
+- **GPU**: High Quality converts YCoCg on the GPU with DXVKit's integer arithmetic (the blocks
+  uploaded as integer texels, palettes decoded in the shader), bit-exact with the CPU. DXT1 / DXT5
+  sample as BC textures: the GPU's own BC decode, within 2/255 of DXVKit's truncating CPU convention
+  — what Resolume Arena's GPU upload does too.
+- **Alpha**: a DXV file does not say whether its colour is straight or premultiplied. The default is
+  **straight** (Resolume Alley writes straight colour); `ImportOptions { alpha_mode:
+  AlphaMode::Premultiplied, .. }` (CLI `--alpha-mode premultiplied`) reads it as premultiplied and
+  un-premultiplies on output, per clip — the counterpart of Arena's per-clip "Alpha Type". That
+  reading is what ffmpeg assumes for DXT5; on a straight-alpha test card our premultiplied mode
+  is within 1.9/255 (CPU) / 2.6/255 (GPU) of ffmpeg's output as shown.
 
 ## LMBD
 
@@ -333,6 +364,36 @@ the absolutes are lower than on an idle machine, and the laptops (more GPU cores
 data: `docs/data/w3-layers-macstudio.jsonl` (final rounds), `w3-candidates-ab-macstudio.jsonl`
 (every candidate's A/B), `w3-upload-microbench.txt`.
 
+### DXV, 16 layers of 1080p (0.4.0)
+
+The same bench on the four DXV variants: 60-frame 1920×1080 plasma clips encoded by glenc-cli
+(`scripts/mint-bench.sh`; DXT5 and YG10 from the plasma with an alpha ramp), straight alpha, Mac
+Studio, release, two interleaved rounds (`round 1 · round 2`). DXT1 and DXT5 sample directly in
+the `+ direct` columns; DXV High Quality always runs its integer conversion pass.
+
+Steps per second:
+
+| Clip | per layer | staged | pipelined | pipelined + direct | into + direct |
+|---|---|---|---|---|---|
+| DXV DXT1 | 235 · 202 | 305 · 296 | 588 · 615 | **832 · 722** | 602 · 534 |
+| DXV DXT5 (alpha) | 128 · 107 | 186 · 179 | 331 · 290 | **358 · 279** | 277 · 239 |
+| DXV YCG6 (High Quality) | 152 · 144 | 173 · 176 | 382 · 355 | **429 · 392** | 281 · 297 |
+| DXV YG10 (High Quality, alpha) | 95 · 100 | 131 · 125 | 246 · 258 | **269 · 270** | 163 · 198 |
+
+Latency, p50 ms (decode start to textures ready; step modes: the step):
+
+| Clip | per layer | staged | pipelined | pipelined + direct | into + direct |
+|---|---|---|---|---|---|
+| DXV DXT1 | 4.24 · 4.60 | 3.27 · 3.39 | 8.57 · 9.13 | 6.22 · 7.34 | **2.67 · 3.08** |
+| DXV DXT5 | 7.75 · 8.51 | 5.37 · 5.59 | 15.5 · 17.9 | 13.3 · 17.1 | **4.27 · 6.78** |
+| DXV YCG6 | 6.52 · 6.97 | 5.74 · 5.69 | 13.4 · 14.0 | 13.1 · 13.8 | **5.97 · 5.62** |
+| DXV YG10 | 10.4 · 10.0 | 7.66 · 8.00 | 19.9 · 19.7 | 18.5 · 19.2 | **9.98 · 8.09** |
+
+GlEnc's DXV is large (48-146 MB for 60 frames: its High Quality streams use only the stored and fill
+opcode codings), so these clips are heavier to read and copy than Resolume Alley's; decode of all
+16 layers takes 1.6 ms (DXT1) per step. Resolume Arena was running (load 12-16), as in 0.3.0. Raw
+data: `docs/data/w4-dxv-layers-macstudio.jsonl`.
+
 ## Testing
 
 ```sh
@@ -346,15 +407,17 @@ cargo nextest run --workspace --no-default-features --features zstd-rust
 cargo deny --no-default-features --features zstd-rust check licenses bans sources
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8
 cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 lmbd   # the LMBD reader alone (decode_frame and decode_frame_into)
+cargo run --release -p dxvkit-plus-core --example fuzz -- 600 8 dxv    # the DXV decoder (packets and movies)
+# DXV against DXVKit itself: its full 334-row vector set and the live C-core differential
+DXVKIT_DIR=<dxvkit checkout> DXVTOOL=<dxvkit checkout>/build/dxvtool cargo nextest run -p dxvkit-plus-core --test dxv
 ```
 
 All test media are our own procedural CC0 fixtures (`tests/fixtures`, each with an `.attribution`
-sidecar). Builds and tests run on the Mac Studio; there is no remote CI yet.
+sidecar), plus the MIT subset of DXVKit's test vectors (`tests/fixtures/dxvkit`, synthetic content
+only). Builds and tests run on the Mac Studio; there is no remote CI yet.
 
 ## Roadmap
 
-- **DXV decoding** — the safe-Rust port of DXVKit's decoder (bit-exact against its 334 test vectors),
-  once the semi-transparent edge-pixel question is settled.
 - **LMBD** — a faster GPU (compute) BC7 encoder, and later profiles (reserved in the format).
 - **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
   `Backend` trait.

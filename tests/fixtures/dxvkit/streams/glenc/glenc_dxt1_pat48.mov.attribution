@@ -1,0 +1,8 @@
+asset: tests/fixtures/dxvkit/streams/glenc/glenc_dxt1_pat48.mov
+title: DXVKit test vector glenc_dxt1_pat48.mov (glenc group)
+author: Amrit Rosell (DXVKit project)
+source: DXVKit 1.0.0 test_vectors/streams/glenc/glenc_dxt1_pat48.mov (AmritusG/DXVKit @ 36209e0aa85b5049079934ec167b7d0c7c9c57df), copied with cp -p; reference SHA-256 rows in tests/fixtures/dxvkit/vectors.tsv
+license: MIT (LICENSES/DXVKit-MIT.txt)
+added: 2026-10-11
+sha256: 44bb8fa770021c3ac35d1e66f96adfb0491b03fa8acf3056362ec9cfb3b0c816
+notes: Synthetic content only (DXVKit's own generated pattern, encoded by GlEnc 1.0.0 or built by hand in DXVKit Phase A). The same 74-row subset Loombda-rs commits. The Resolume-encoder group (streams/resolume), anything derived from it, and the Arena forms are NOT copied (the full 334 rows run with DXVKIT_DIR=<a DXVKit checkout>).

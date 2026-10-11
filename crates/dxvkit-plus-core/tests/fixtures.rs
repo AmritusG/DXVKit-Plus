@@ -118,24 +118,39 @@ fn chunked_and_single_section_frames_are_identical() {
 }
 
 /// Asset hygiene: every file in `tests/fixtures` is a media file with a `.attribution` sidecar (or
-/// that sidecar), every sidecar says CC0-1.0, and its SHA-256 matches the file.
+/// that sidecar), every sidecar says CC0-1.0, and its SHA-256 matches the file. DXVKit's test
+/// vectors (`tests/fixtures/dxvkit/streams/*/`) are MIT (DXVKit's licence) and checked the same way.
 #[test]
 fn every_fixture_has_a_cc0_sidecar_with_a_matching_hash() {
+    let media = sidecars_match(&fixtures(), "license: CC0-1.0");
+    assert_eq!(media, 23);
+    let mut vectors = 0;
+    for group in ["glenc", "synthetic", "invalid"] {
+        vectors += sidecars_match(&fixtures().join("dxvkit/streams").join(group), "license: MIT (LICENSES/DXVKit-MIT.txt)");
+    }
+    assert_eq!(vectors, 34);
+}
+
+/// Media files in `dir` (not recursive), each with a sidecar carrying `license` and its SHA-256.
+fn sidecars_match(dir: &std::path::Path, license: &str) -> usize {
     use sha2::{Digest, Sha256};
     let mut media = 0;
-    for e in std::fs::read_dir(fixtures()).unwrap() {
+    for e in std::fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
+        if p.is_dir() {
+            continue;
+        }
         let name = p.file_name().unwrap().to_str().unwrap().to_string();
         if name.ends_with(".attribution") {
-            let asset = fixtures().join(name.trim_end_matches(".attribution"));
+            let asset = dir.join(name.trim_end_matches(".attribution"));
             assert!(asset.exists(), "sidecar without asset: {name}");
             continue;
         }
         media += 1;
-        let sidecar = std::fs::read_to_string(fixtures().join(format!("{name}.attribution"))).unwrap_or_else(|_| panic!("{name}: no sidecar"));
-        assert!(sidecar.lines().any(|l| l == "license: CC0-1.0"), "{name}: not CC0");
+        let sidecar = std::fs::read_to_string(dir.join(format!("{name}.attribution"))).unwrap_or_else(|_| panic!("{name}: no sidecar"));
+        assert!(sidecar.lines().any(|l| l == license), "{name}: not {license}");
         let digest: String = Sha256::digest(std::fs::read(&p).unwrap()).iter().map(|b| format!("{b:02x}")).collect();
         assert!(sidecar.lines().any(|l| l == format!("sha256: {digest}")), "{name}: sha256 mismatch");
     }
-    assert_eq!(media, 19);
+    media
 }
