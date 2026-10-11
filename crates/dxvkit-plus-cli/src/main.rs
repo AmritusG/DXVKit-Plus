@@ -10,6 +10,9 @@
 //! dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 //! ```
 //!
+//! `--alpha-mode straight|premultiplied` (any command that opens clips): how the colour of DXV clips
+//! with alpha is read (default straight, Resolume Alley's convention).
+//!
 //! Every command prints JSON (one object per line) to stdout; errors go to stderr with exit status 1.
 #![forbid(unsafe_code)]
 
@@ -19,7 +22,7 @@ mod layers;
 mod lmbd;
 mod verify;
 
-use dxvkit_plus_core::source::{self, ImportOptions, MediaInfo};
+use dxvkit_plus_core::source::{self, AlphaMode, ImportOptions, MediaInfo};
 use dxvkit_plus_core::testpattern;
 use std::path::Path;
 use std::process::ExitCode;
@@ -37,17 +40,26 @@ const USAGE: &str = "usage:
   dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
                           [--level Z] [--compressor zstd|none] [--rdo-partitions P] [--threads T]
                           [--start F] [--frames N] [--quiet]
-  dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]";
+  dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
+options for commands that open clips:
+  --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)";
+
+/// The `--alpha-mode` choice for this run (set once in `main`).
+static ALPHA_MODE: std::sync::OnceLock<AlphaMode> = std::sync::OnceLock::new();
 
 /// The import options with this platform's backend.
 pub fn options() -> ImportOptions {
     #[cfg(target_os = "macos")]
     {
-        ImportOptions { backend: Some(std::sync::Arc::new(dxvkit_plus_apple::AppleBackend)), ..ImportOptions::default() }
+        ImportOptions {
+            backend: Some(std::sync::Arc::new(dxvkit_plus_apple::AppleBackend)),
+            alpha_mode: ALPHA_MODE.get().copied().unwrap_or_default(),
+            ..ImportOptions::default()
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        ImportOptions::default()
+        ImportOptions { alpha_mode: ALPHA_MODE.get().copied().unwrap_or_default(), ..ImportOptions::default() }
     }
 }
 
@@ -102,12 +114,26 @@ fn probe(args: &Args) -> Result<(), String> {
         if info.kind == source::SourceKind::Lmbd {
             o.insert("zstd_backend".into(), serde_json::json!(ZSTD_BACKEND));
         }
+        if info.kind == source::SourceKind::Dxv {
+            o.insert("dxv_variant".into(), serde_json::json!(dxv_variant(path)));
+            o.insert("alpha_mode".into(), serde_json::json!(opts.alpha_mode));
+        }
         if let Some(tc) = &info.timecode {
             o.insert("timecode_label".into(), serde_json::json!(tc.label()));
         }
     }
     json_line(&v);
     Ok(())
+}
+
+/// The DXV variant of a file's first packet (`None` when it does not parse).
+fn dxv_variant(path: &str) -> Option<&'static str> {
+    use dxvkit_plus_core::container::{Codec, Movie};
+    let movie = Movie::open(Path::new(path)).ok()?;
+    let track = movie.track(Codec::Dxv)?;
+    let mut packet = Vec::new();
+    movie.read_sample(track, 0, &mut packet).ok()?;
+    dxvkit_plus_core::dxv::parse_header(&packet).ok().map(|h| h.variant.name())
 }
 
 pub fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
@@ -198,8 +224,20 @@ fn main() -> ExitCode {
             "start",
             "frame",
             "ref-frame",
+            "alpha-mode",
         ],
     );
+    if let Some(a) = args.value("alpha-mode") {
+        let mode = match a {
+            "straight" => AlphaMode::Straight,
+            "premultiplied" => AlphaMode::Premultiplied,
+            other => {
+                eprintln!("dxvkit-plus: --alpha-mode {other}: expected straight or premultiplied");
+                return ExitCode::FAILURE;
+            }
+        };
+        let _ = ALPHA_MODE.set(mode);
+    }
     let r = match cmd.as_str() {
         "probe" => probe(&args),
         "decode" => decode(&args),

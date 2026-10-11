@@ -6,10 +6,11 @@
               dxvkit-plus-core::source::probe ──► MediaInfo (codec, size, frames, exact rate, tmcd start)
                          │
      ┌───────────────────┼────────────────────────────┐
-     │ HAP, LMBD         │ native codecs              │ PNG stills / sequences
+     │ HAP, DXV, LMBD    │ native codecs              │ PNG stills / sequences
      │ container demux / │ Backend trait              │ png crate
      │ lmbd::LmbdFile    │  macOS: dxvkit-plus-apple  │
      │ → hap::decode,    │                            │
+     │   dxv::decode,    │                            │
      │   lmbd chunks     │                            │
      │ → BC block planes │  Windows: planned stub     │ → RGBA8 plane
      │   (Decoded::Planes)│ → Decoded::Native         │   (Decoded::Planes)
@@ -27,7 +28,7 @@
 
 | Crate | `unsafe` | GPU | What |
 |---|---|---|---|
-| `dxvkit-plus-core` | forbidden | none | demux, HAP, the LMBD container, CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
+| `dxvkit-plus-core` | forbidden | none | demux, HAP, DXV, the LMBD container, CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
 | `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoder (4-mode BC7 + RDO, Zstd); links libzstd through the `zstd` crate |
 | `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, staged uploads (`Uploader`, `StagedFrame`), the WGSL conversion and direct sampling (`DirectView`), read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
@@ -45,6 +46,24 @@ caps: 64 MB `moov`, 2^24 samples, 300 MB per sample). `hap::decode` walks the se
 8-byte headers), decompresses Snappy or the chunk table (chunks decompress in parallel when asked),
 and returns each image's raw block stream, exactly `ceil(w/4) * ceil(h/4) * block_bytes` long. The
 blocks upload unchanged (`write_bc`); the GPU decodes them. No CPU pixel work on the playback path.
+
+**DXV.** A safe-Rust port of DXVKit's C decoder (`core::dxv`, carried over from Loombda-rs, where
+it was ported line for line from DXVKit 1.0.0; DXVKit is itself written from its own
+`DXV_FORMAT.md`). The packet decides the variant, never the FourCC: DXV3 `DXT1` (BC1), `DXT5`
+(BC3), `YCG6` (Y BC4 + CoCg BC5 at half size) and `YG10` (Y + A BC5 + CoCg BC5), each through
+DXV3's block-copy layers (DXT1 / DXT5: 2-bit flags, back references, DXT5 alpha commands) or the HQ
+opcode streams (stored, fill, or FSE entropy-coded opcodes; the two sections decode on two
+threads when asked), or a stored payload; and legacy `DXDI` (DXV1 / 2: LZF DXT1 / DXT5, or stored).
+Output is the normative block streams of the whole coded texture (display size rounded up to 16).
+DXT1 / DXT5 upload as BC textures and sample as stored (`direct_view` qualifies). DXV High
+Quality uploads the same bytes as integer texels — one `Rg32Uint` / `Rgba32Uint` texel per BC4 /
+BC5 block — and its own WGSL pass (`DXV_HQ_WGSL`) decodes the BC4 palettes exactly and converts
+YCoCg with DXVKit's spec 8.4 integer arithmetic (nearest chroma, midpoint 127.5, out-of-gamut
+folding), because the fixed-function BC4 decode rounds the palette and the folding amplifies it
+(up to 5/255 on Apple silicon). Alpha: DXV carries no straight / premultiplied flag, so it is a
+per-clip `AlphaMode` (`ImportOptions::alpha_mode`): `Straight` (default, Resolume Alley's
+convention) or `Premultiplied`, which un-premultiplies on output in integers
+(`bc::unpremul`, the same arithmetic on CPU and GPU).
 
 **LMBD.** `lmbd::LmbdFile` reads and validates the 40-byte header and the tail index (every entry
 inside the file), then reads a frame's payload with one positioned read. The chunk table is checked
@@ -118,6 +137,9 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | HAP Hap1 / Hap5 / HapA (CPU) | exact to the source pattern (0/255 measured; 1/255 allowed) | `core/tests/fixtures.rs` |
 | HAP Q HapY / HapM (CPU) | ≤ 2/255 to the source (chroma is lossy by design) | same |
 | GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1); HAP Q ≤ 2/255 | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| DXV decode (CPU) vs DXVKit's test vectors | bit-exact: 334 rows (366 block streams, 287 RGBA, 47 rejects) with `DXVKIT_DIR`; the committed 74-row MIT subset always | `core/tests/dxv.rs` |
+| DXV decode vs DXVKit's C core (`dxvtool`) | bit-exact block streams, straight and premultiplied RGBA on every frame of the DXV fixtures and committed vectors (with `DXVTOOL`) | same |
+| DXV GPU vs CPU | High Quality (YCG6 / YG10) bit-exact, both alpha modes, every vector frame; DXT1 / DXT5 ≤ 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating convention, as Arena's GPU upload, DXVKit spec 8.1); premultiplied DXT5 ≤ 2/255 as shown | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | BC7 CPU decoder vs the GPU | bit-exact, 4096 random blocks per mode, all 8 modes | `wgpu/tests/gpu.rs` |
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
@@ -185,7 +207,7 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 |---|---|
 | `Box<dyn FrameSource>`, `cache::Player`, `transport::Transport`, `FrameRenderer` | opaque handles (`*mut T` created and freed by the wrapper) |
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
-| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
+| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
 | `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
 | `Uploader`, `StagedFrame` | opaque handles; `decode_into` takes a source handle + a `StagedFrame` handle (the `PlaneSink` is implemented on the Rust side — no C callback) |
 | `source::FrameLayout`, `PlaneLayout`, `DirectView` | plain-data `#[repr(C)]` mirrors (`DirectView`'s view as a borrowed handle, valid until the next upload) |
@@ -195,7 +217,9 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `PixelLayout`, `Shading` (enums with a field) | a `u32` tag + the field |
 | `Decoded::Planes` | count + per-plane (format, width, height, pointer, length) borrowed from the handle |
 | `Decoded::Native` | the platform handle (`CVPixelBufferRef` on macOS), retained for the caller |
-| `MediaError` | `MediaError::code()` (stable `u32`, pinned; `Lmbd` = 11) + the message through a separate call |
+| `MediaError` | `MediaError::code()` (stable `u32`, pinned; `Lmbd` = 11, `Dxv` = 12) + the message through a separate call |
+| `ImportOptions` | a plain-data mirror: the sequence rate, `alpha_mode` (`AlphaMode` as `u32`); the backend chosen by the wrapper |
+| `dxv::Layout`, `dxv::Header`, `dxv::Blocks` | plain-data `#[repr(C)]` mirrors (`Blocks`' planes as pointer + length borrowed from the handle) |
 | `Arc<dyn Backend>` | chosen by the wrapper per platform (no callbacks across the boundary) |
 
 Rules that keep it that way: no generics or lifetimes in the public decode / transport API, no

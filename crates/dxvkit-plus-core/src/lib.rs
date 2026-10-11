@@ -7,6 +7,9 @@
 //!
 //! - [`container`]: our own QuickTime / MP4 demuxer for video tracks, including the QuickTime
 //!   timecode track (`tmcd`).
+//! - [`dxv`]: DXV decode (DXV3 DXT1 / DXT5 / YCG6 / YG10, legacy DXV1/2 `DXDI`) to block streams —
+//!   a safe-Rust port of DXVKit's C decoder; alpha read as straight (default) or premultiplied
+//!   ([`source::AlphaMode`]).
 //! - [`hap`]: HAP decode, every variant (Hap1, Hap5, HapY, HapM, HapA, Hap7 / HAP R, HapH), Snappy
 //!   and chunked frames (chunks decompress in parallel), from the public Vidvox specification.
 //! - [`lmbd`]: our own GPU codec's container (profile LMB7: BC7 blocks in Zstd-compressed,
@@ -21,9 +24,6 @@
 //! - [`transport`]: an exact-time playhead — loop, bounce, once, random; forward, reverse, any
 //!   rational speed; frame-exact seek, step, scrub, cues; beat and timecode sync.
 //! - [`time`]: exact integer media time ([`time::Tick`]) and timecode formatting.
-//!
-//! DXV tracks are recognised by the demuxer and probe correctly; the DXV decoder itself ships in
-//! a later release (see the README roadmap).
 #![forbid(unsafe_code)]
 
 pub mod backend;
@@ -32,6 +32,7 @@ pub mod bc7;
 mod bytes;
 pub mod cache;
 pub mod container;
+pub mod dxv;
 mod error;
 pub mod hap;
 pub mod lmbd;

@@ -15,14 +15,17 @@ sponsored by Resolume or Vidvox. "DXV" and "HAP" are named only to describe file
 | Frame cache, transport, sources, test pattern | Loombda-rs (Amrit's), ported. |
 | macOS native decode (`dxvkit-plus-apple`) | Loombda-rs's island, written against Apple's AVFoundation / CoreVideo / Metal documentation through the `objc2` bindings. The `CVMetalTextureCache` route was written from Apple's CoreVideo documentation after reading how Cutlass (MIT OR Apache-2.0) does it; no Cutlass code is in this repository. |
 | WGSL conversion (`dxvkit-plus-wgpu`) | Loombda-rs; YCbCr matrices from ITU-R BT.601 / BT.709 / BT.2020. |
+| DXV decode (`core::dxv`) | Carried over (copied with `cp -p`, decoding steps unchanged) from Loombda-rs `crates/loombda-media/src/dxv/` (AmritusG/Loombda-rs @ 6795193, Amrit's own), a line-for-line safe-Rust port of DXVKit 1.0.0 (`src/packet.c`, `blockcopy.c`, `legacy.c`, `hq.c`, `pixels.c`; AmritusG/DXVKit @ 36209e0, Amrit's own MIT C library, itself a clean-room implementation of its own `docs/spec/DXV_FORMAT.md`). Verified here: bit-exact on DXVKit's 334 test vectors and against the C core built from that commit. ffmpeg was used only as an external comparison oracle for the premultiplied-alpha convention (never read, never linked). |
+| DXV High Quality GPU conversion (`DXV_HQ_WGSL`) | Written for DXVKit Plus: BC4 palettes from the public RGTC definition, YCoCg folding from DXVKit spec 8.4 (the CPU oracle's integer arithmetic). |
 | LMBD container (`core::lmbd`), `docs/LMBD.md` | Reimplemented in Rust from the frozen v1 contract of Amrit's original LMBD codec (`loomda-codec` @ c6d80e6: `lmbd_format.h`, `lmbd_write.c`, `lmbd_encode.cpp`, `lmbd_probe.cpp`). Zstd decode through libzstd 1.5.7 (BSD-3-Clause, via the `zstd` crate) by default, or `ruzstd` (MIT, pure Rust) with the `zstd-rust` feature; both are third-party libraries used unchanged, and decode identically. |
 | LMBD encoder (`dxvkit-plus-lmbd-enc`) | A line-by-line Rust port of the parts of bc7enc_rdo (Richard Geldreich, Jr.; MIT or Unlicense) the original encoder runs: `bc7enc.cpp` (4-mode BC7), `ert.cpp` (entropy reduction), the BC7 path of `rdo_bc_encoder.cpp`. Fused multiply-adds placed where Apple clang's `-ffp-contract=on` fuses them (the list taken from clang's own IR), so the output is byte-identical (checked on 1080p frames and five vectors). Not ported: bc7e.ispc (Apache-2.0, the original's optional x86-only `--allmode` path), the perceptual and reduced-entropy options. |
 | LMBD compatibility vectors | Our own CC0 patterns, encoded by the original C tools built on this machine (`scripts/mint-lmbd-vectors.sh`). No other file from loomda-codec is in this repository: its test media include third-party footage and Amrit's own clips, which stay out. |
 
-LMBD's later profile (`0x10`, reserved in the format) is not in this release either. DXV decoding
-(a safe-Rust port of DXVKit's decoder, verified against DXVKit's 334 test vectors in Loombda-rs) is
-**not in this release**: it waits for an open accuracy question on semi-transparent
-edge pixels to be settled first (see the README roadmap).
+LMBD's later profile (`0x10`, reserved in the format) is not in this release. The DXV
+semi-transparent edge question that held DXV back was closed in Loombda-rs (W3 P1-1, f57d1da) with
+no code change: the port equals DXVKit's C core, and ffmpeg's different edges come from it treating
+DXT5 colour as premultiplied. Amrit's ruling: straight is the default; premultiplied is a per-clip
+choice (`AlphaMode`).
 
 ## Encoders — one warning (HAP; LMBD encoding ships in 0.2.0)
 
@@ -49,8 +52,11 @@ specification cites — J.M.P. van Waveren & I. Castaño, "Real-Time YCoCg-DXT C
 ## Fixtures
 
 Every fixture is our own procedural footage (CC0-1.0), each with an `.attribution` sidecar holding
-its SHA-256 (checked by `cargo test`). No third-party media and none of Amrit's footage is
-committed. Benchmark clips are minted locally by `scripts/mint-bench.sh` and never committed.
+its SHA-256 (checked by `cargo test`). DXVKit's test vectors in `tests/fixtures/dxvkit/` are MIT
+(DXVKit's licence): the GlEnc, synthetic and invalid groups only (74 rows, 34 files, all synthetic
+content), the same subset Loombda-rs commits. The Resolume-encoder group, anything derived from
+it and the Arena forms are never committed; the full 334-row run points `DXVKIT_DIR` at a DXVKit
+checkout. No third-party media and none of Amrit's footage is committed. Benchmark clips are minted locally by `scripts/mint-bench.sh` and never committed.
 
 ## Licence inventory (this release)
 

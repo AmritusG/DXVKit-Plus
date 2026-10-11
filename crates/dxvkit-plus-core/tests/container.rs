@@ -80,9 +80,9 @@ fn hostile_files_are_errors_not_panics() {
 }
 
 #[test]
-fn native_and_dxv_need_their_decoders() {
-    // Without a backend a native movie is Unsupported (not a crash); a DXV track probes but does
-    // not open in this release.
+fn native_needs_a_backend_and_a_bad_dxv_packet_is_an_error() {
+    // Without a backend a native movie is Unsupported (not a crash); a DXV track whose packet is
+    // not DXV probes and opens, and decoding it is a `Dxv` error value.
     let dir = std::env::temp_dir().join(format!("dxvkit-plus-native-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let n = dir.join("n.mov");
@@ -92,6 +92,8 @@ fn native_and_dxv_need_their_decoders() {
     std::fs::write(&d, video_movie(b"DXD3", 8, 8, &[vec![0; 8]])).unwrap();
     let info = source::probe(d.to_str().unwrap(), &ImportOptions::default()).unwrap();
     assert_eq!(info.kind, SourceKind::Dxv);
-    assert!(matches!(source::open(&info, &ImportOptions::default(), false), Err(MediaError::Unsupported(_))));
+    // Eight zero bytes read as an empty legacy (DXDI) DXT1 packet, whose LZF output is short.
+    let mut src = source::open(&info, &ImportOptions::default(), false).unwrap();
+    assert!(matches!(src.decode(0), Err(MediaError::Dxv(_))));
     let _ = std::fs::remove_dir_all(&dir);
 }

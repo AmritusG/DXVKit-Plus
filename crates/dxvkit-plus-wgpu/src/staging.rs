@@ -76,7 +76,9 @@ impl StagingLayout {
                 layout: wgpu::TexelCopyBufferLayout { offset, bytes_per_row: Some(self.padded_row), rows_per_image: Some(self.rows) },
             },
             texture.as_image_copy(),
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            // The texture's own size: `width` x `height` for a BC texture, one texel per block for
+            // blocks uploaded as integer texels (the same bytes and rows either way).
+            texture.size(),
         );
     }
 }

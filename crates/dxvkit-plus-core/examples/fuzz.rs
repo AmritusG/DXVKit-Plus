@@ -1,19 +1,23 @@
-//! Mutation fuzzer for the QuickTime demuxer, the HAP decoder and the LMBD reader (container, chunk
-//! table, Zstd chunks), including the BC7 CPU decoder
+//! Mutation fuzzer for the QuickTime demuxer, the HAP decoder, the DXV decoder (DXV3 block copy,
+//! HQ opcode / FSE streams, legacy LZF) and the LMBD reader (container, chunk table, Zstd chunks),
+//! including the BC7 CPU decoder
 //! (no libFuzzer: the toolchain is stable-only; this is a seeded, multi-threaded,
 //! structure-unaware mutator with a crash and hang detector, run for a fixed wall time).
-//! Ported from Loombda-rs `crates/loombda-media/examples/fuzz_media.rs` (Amrit's), without DXV.
+//! Ported from Loombda-rs `crates/loombda-media/examples/fuzz_media.rs` (Amrit's).
 //!
 //! ```text
-//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads> [all|lmbd]
+//! cargo run --release -p dxvkit-plus-core --example fuzz -- <seconds> <threads> [all|lmbd|dxv]
 //! ```
 //!
-//! `lmbd` restricts the corpus to the LMBD vectors (the reader alone).
+//! `lmbd` restricts the corpus to the LMBD vectors (the reader alone); `dxv` to DXV packets and
+//! DXV movies. With `DXVKIT_DIR=<a DXVKit checkout>` its full vector streams join the corpus (the
+//! Resolume-encoder streams carry the entropy-coded HQ opcodes; never committed here).
 //!
 //! Corpus: every committed fixture (whole files, their HAP frames, the LMBD vectors) plus synthetic
 //! HAP R (BC7, all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
-//! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `Movie::from_source` +
+//! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `dxv::decode_blocks` (sometimes
+//! at a random size, HQ sections sometimes in parallel) + CPU RGBA straight and premultiplied, `Movie::from_source` +
 //! `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
 //! through a contract-checking sink, compared with it) + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
@@ -21,9 +25,9 @@
 
 use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::container::{Codec, MemSource, Movie};
-use dxvkit_plus_core::hap;
 use dxvkit_plus_core::lmbd::LmbdFile;
 use dxvkit_plus_core::source::{PixelFormat, Plane, PlaneSink, Shading, planes_to_rgba};
+use dxvkit_plus_core::{dxv, hap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,6 +39,7 @@ mod qt_movie;
 #[derive(Clone)]
 enum Seed {
     Hap { frame: Vec<u8>, w: u32, h: u32 },
+    Dxv { packet: Vec<u8>, w: u32, h: u32 },
     File(Vec<u8>),
     Lmbd(Vec<u8>),
 }
@@ -72,8 +77,10 @@ fn corpus(dirs: &[PathBuf]) -> Vec<Seed> {
                 if m.read_sample(&t, i, &mut pkt).is_err() {
                     continue;
                 }
-                if t.codec == Codec::Hap {
-                    seeds.push(Seed::Hap { frame: pkt, w: t.width, h: t.height });
+                match t.codec {
+                    Codec::Hap => seeds.push(Seed::Hap { frame: pkt, w: t.width, h: t.height }),
+                    Codec::Dxv => seeds.push(Seed::Dxv { packet: pkt, w: t.width, h: t.height }),
+                    Codec::Native => {}
                 }
             }
         }
@@ -193,6 +200,14 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                 let _ = hap::to_rgba(&f, w, h);
             }
         }
+        Seed::Dxv { w, h, .. } => {
+            let (w, h) = if r.below(8) == 0 { (1 + r.below(300) as u32, 1 + r.below(300) as u32) } else { (*w, *h) };
+            if let Ok(b) = dxv::decode_blocks(data, w, h, r.below(2) == 0) {
+                assert!(b.used <= data.len(), "used more than the packet");
+                let _ = dxv::rgba::blocks_to_rgba(&b, false);
+                let _ = dxv::rgba::blocks_to_rgba(&b, true);
+            }
+        }
         Seed::Lmbd(_) => {
             let src: Arc<[u8]> = Arc::from(data);
             if let Ok(f) = LmbdFile::from_source(Arc::new(MemSource(src))) {
@@ -239,6 +254,11 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                         {
                             let _ = hap::to_rgba(&f, t.width, t.height);
                         }
+                        if t.codec == Codec::Dxv
+                            && let Ok(b) = dxv::decode_blocks(&pkt, t.width, t.height, false)
+                        {
+                            let _ = dxv::rgba::blocks_to_rgba(&b, false);
+                        }
                     }
                 }
             }
@@ -251,16 +271,28 @@ fn main() {
     let seconds: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(60);
     let threads: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
-    let only_lmbd = args.get(3).map(String::as_str) == Some("lmbd");
-    let mut all = corpus(&[root]);
-    if only_lmbd {
-        all.retain(|s| matches!(s, Seed::Lmbd(_)));
+    let only = args.get(3).map(String::as_str).unwrap_or("all");
+    let mut dirs = vec![root];
+    if let Ok(d) = std::env::var("DXVKIT_DIR") {
+        dirs.push(Path::new(&d).join("test_vectors/streams"));
+    }
+    let mut all = corpus(&dirs);
+    match only {
+        "lmbd" => all.retain(|s| matches!(s, Seed::Lmbd(_))),
+        // DXV packets, and the movies that carry them (the demuxer path).
+        "dxv" => all.retain(|s| match s {
+            Seed::Dxv { .. } => true,
+            Seed::File(b) => Movie::from_source(Arc::new(MemSource(Arc::from(b.as_slice())))).is_ok_and(|m| m.track(Codec::Dxv).is_some()),
+            _ => false,
+        }),
+        _ => {}
     }
     let seeds = Arc::new(all);
-    let (n_hap, n_file, n_lmbd) = seeds.iter().fold((0, 0, 0), |a, s| match s {
-        Seed::Hap { .. } => (a.0 + 1, a.1, a.2),
-        Seed::File(_) => (a.0, a.1 + 1, a.2),
-        Seed::Lmbd(_) => (a.0, a.1, a.2 + 1),
+    let (n_hap, n_dxv, n_file, n_lmbd) = seeds.iter().fold((0, 0, 0, 0), |a, s| match s {
+        Seed::Hap { .. } => (a.0 + 1, a.1, a.2, a.3),
+        Seed::Dxv { .. } => (a.0, a.1 + 1, a.2, a.3),
+        Seed::File(_) => (a.0, a.1, a.2 + 1, a.3),
+        Seed::Lmbd(_) => (a.0, a.1, a.2, a.3 + 1),
     });
     std::panic::set_hook(Box::new(|_| {})); // crashes are counted, not printed per hit
     let execs = Arc::new(AtomicU64::new(0));
@@ -279,7 +311,7 @@ fn main() {
                 while !stop.load(Ordering::Relaxed) {
                     let seed = &seeds[r.below(seeds.len())];
                     let mut data = match seed {
-                        Seed::Hap { frame, .. } => frame.clone(),
+                        Seed::Hap { frame, .. } | Seed::Dxv { packet: frame, .. } => frame.clone(),
                         Seed::File(b) | Seed::Lmbd(b) => b.clone(),
                     };
                     mutate(&mut data, &mut r);
@@ -309,7 +341,7 @@ fn main() {
     let secs = start.elapsed().as_secs_f64();
     let (e, c, h) = (execs.load(Ordering::Relaxed), crashes.load(Ordering::Relaxed), hangs.load(Ordering::Relaxed));
     println!(
-        "fuzz: {secs:.0} s, {threads} threads, corpus {} (hap frames {n_hap}, files {n_file}, lmbd {n_lmbd}), execs {e} ({:.0}/s), crashes {c}, hangs {h}, slowest input {:.1} ms",
+        "fuzz: {secs:.0} s, {threads} threads, corpus {} (hap frames {n_hap}, dxv packets {n_dxv}, files {n_file}, lmbd {n_lmbd}), execs {e} ({:.0}/s), crashes {c}, hangs {h}, slowest input {:.1} ms",
         seeds.len(),
         e as f64 / secs,
         slowest_us.load(Ordering::Relaxed) as f64 / 1000.0

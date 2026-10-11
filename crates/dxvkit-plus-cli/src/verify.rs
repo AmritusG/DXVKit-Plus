@@ -1,9 +1,11 @@
 //! `dxvkit-plus verify`: per file, every frame through the CPU and the GPU paths —
 //!
-//! - CPU vs GPU: block codecs within 1/255 (the BC conventions allow a GPU to differ by 1), HAP Q
-//!   within 2/255 (the YCoCg conversion after a BC3 decode may round differently twice), LMBD
-//!   (BC7) and BGRA native frames exactly (BC7 decode is exact integer arithmetic; Apple's own
-//!   conversion vs our zero-copy import);
+//! - CPU vs GPU: HAP block codecs within 1/255 (the BC conventions allow a GPU to differ by 1),
+//!   HAP Q within 2/255 (the YCoCg conversion after a BC3 decode may round differently twice), DXV
+//!   DXT1 / DXT5 within 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating integer
+//!   convention, DXVKit spec 8.1; premultiplied colour compared as shown, premultiplied back), DXV
+//!   High Quality, LMBD (BC7) and BGRA native frames exactly (integer decode in the shader; BC7
+//!   decode is exact integer arithmetic; Apple's own conversion vs our zero-copy import);
 //! - `--tiles`: frame identity (the frame index the fixture pattern carries) on every frame, and,
 //!   with `--source-tolerance N`, every frame against the source pattern within N/255;
 //! - seek: the frames decoded in a shuffled order are identical to the sequential pass (frame-exact
@@ -36,14 +38,30 @@ fn max_diff(a: &[u8], b: &[u8]) -> (u8, u8) {
     (c, al)
 }
 
-/// Allowed CPU-vs-GPU channel difference, per source kind and frame shading: native (BGRA) and LMBD
-/// (BC7) exact, HAP Q (HapY, HapM) 2/255, the other block codecs 1/255.
+/// Allowed CPU-vs-GPU channel difference, per source kind and frame shading: native (BGRA), LMBD
+/// (BC7) and DXV High Quality exact, HAP Q (HapY, HapM) and DXV DXT1 / DXT5 2/255, the other block
+/// codecs 1/255.
 fn cpu_tolerance(kind: SourceKind, shading: Option<Shading>) -> u8 {
     match (kind, shading) {
-        (SourceKind::Native | SourceKind::Lmbd, _) => 0,
-        (_, Some(Shading::HapYcocg { .. })) => 2,
+        (SourceKind::Native | SourceKind::Lmbd, _) | (_, Some(Shading::DxvYcocg { .. })) => 0,
+        (_, Some(Shading::HapYcocg { .. })) | (SourceKind::Dxv, _) => 2,
         _ => 1,
     }
+}
+
+/// [`max_diff`] of colour as shown — premultiplied by alpha — for frames whose colour is
+/// un-premultiplied on output (a BC step there is scaled by 255 / alpha).
+fn max_diff_shown(a: &[u8], b: &[u8]) -> (u8, u8) {
+    use dxvkit_plus_core::bc::premul;
+    let pm = |v: &[u8]| {
+        v.chunks_exact(4)
+            .flat_map(|p| match p {
+                [r, g, b, a] => [premul(*r, *a), premul(*g, *a), premul(*b, *a), *a],
+                _ => [0; 4],
+            })
+            .collect::<Vec<u8>>()
+    };
+    max_diff(&pm(a), &pm(b))
 }
 
 pub fn run(args: &Args) -> Result<(), String> {
@@ -115,7 +133,7 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
         cpu_tol = cpu_tol.max(cpu_tolerance(info.kind, shading));
         let hdr = shading == Some(Shading::Hdr);
         if !hdr && let Ok(c) = src.cpu_rgba(&d) {
-            let (dc, da) = max_diff(&g, &c);
+            let (dc, da) = if shading == Some(Shading::RgbaPremultiplied) { max_diff_shown(&g, &c) } else { max_diff(&g, &c) };
             worst_c = worst_c.max(dc);
             worst_a = worst_a.max(da);
             cpu_checked = cpu_checked.saturating_add(1);
@@ -195,7 +213,8 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
 mod tests {
     use super::*;
 
-    /// Pins the CPU-vs-GPU tolerances: HAP Q 2/255, other HAP 1/255, LMBD and native exact.
+    /// Pins the CPU-vs-GPU tolerances: HAP Q and DXV DXT1 / DXT5 2/255, other HAP 1/255, LMBD,
+    /// native and DXV High Quality exact.
     #[test]
     fn cpu_tolerance_per_shading() {
         let planes = |s| cpu_tolerance(SourceKind::Hap, Some(s));
@@ -205,6 +224,12 @@ mod tests {
         assert_eq!(planes(Shading::Rgba { opaque: true }), 1);
         assert_eq!(planes(Shading::AlphaOnly), 1);
         assert_eq!(cpu_tolerance(SourceKind::Lmbd, Some(Shading::Rgba { opaque: false })), 0);
+        let dxv = |s| cpu_tolerance(SourceKind::Dxv, Some(s));
+        assert_eq!(dxv(Shading::DxvYcocg { alpha: true, premultiplied: true }), 0);
+        assert_eq!(dxv(Shading::DxvYcocg { alpha: false, premultiplied: false }), 0);
+        assert_eq!(dxv(Shading::Rgba { opaque: true }), 2);
+        assert_eq!(dxv(Shading::Rgba { opaque: false }), 2);
+        assert_eq!(dxv(Shading::RgbaPremultiplied), 2);
         assert_eq!(cpu_tolerance(SourceKind::Native, None), 0);
     }
 }

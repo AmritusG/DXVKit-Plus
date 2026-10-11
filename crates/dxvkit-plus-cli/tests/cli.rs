@@ -26,7 +26,7 @@ fn run(cmd: &mut Command) -> Vec<serde_json::Value> {
 #[test]
 fn every_command_works_on_every_fixture() {
     let files = fixtures();
-    assert_eq!(files.len(), 14);
+    assert_eq!(files.len(), 18);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     for f in &files {
@@ -69,7 +69,20 @@ fn every_command_works_on_every_fixture() {
     let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
     let v = run(bin().args(["verify", "--tiles", "--source-tolerance", "255"]).args(&tile_files));
     let v2 = run(bin().arg("verify").args(&synthetic));
-    assert_eq!((v.len(), v2.len()), (12, 2));
+    assert_eq!((v.len(), v2.len()), (16, 2));
+    // DXV: probe names the variant; both alpha modes verify.
+    let dxv: Vec<&PathBuf> =
+        tile_files.iter().copied().filter(|f| f.to_str().unwrap().contains("tiles_dxt") || f.to_str().unwrap().contains("tiles_y")).collect();
+    assert_eq!(dxv.len(), 4);
+    for f in &dxv {
+        let p = &run(bin().arg("probe").arg(f).args(["--alpha-mode", "premultiplied"]))[0];
+        assert_eq!((p["kind"].as_str(), p["alpha_mode"].as_str()), (Some("dxv"), Some("premultiplied")));
+        assert!(["DXT1", "DXT5", "YCG6", "YG10"].contains(&p["dxv_variant"].as_str().unwrap()), "{p}");
+    }
+    let vp = run(bin().args(["verify", "--tiles", "--alpha-mode", "premultiplied"]).args(&dxv));
+    assert!(vp.iter().all(|x| x["pass"] == true), "{vp:#?}");
+    let bad = bin().args(["probe", "--alpha-mode", "sideways"]).arg(dxv[0]).output().unwrap();
+    assert!(!bad.status.success());
     assert!(v.iter().chain(&v2).all(|x| x["pass"] == true), "{v:#?} {v2:#?}");
     let b = run(bin().args(["bench", "--frames", "3"]).arg(&files[0]));
     assert!(b.iter().any(|x| x["measure"] == "end_to_end"));

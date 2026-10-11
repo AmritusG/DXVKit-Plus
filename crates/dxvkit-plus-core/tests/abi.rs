@@ -7,7 +7,7 @@ use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::backend::YuvMatrix;
 use dxvkit_plus_core::container::Codec;
 use dxvkit_plus_core::hap::HapTexture;
-use dxvkit_plus_core::source::{PixelFormat, SourceKind};
+use dxvkit_plus_core::source::{AlphaMode, PixelFormat, SourceKind};
 use dxvkit_plus_core::transport::{Direction, PlayMode, SyncMode};
 
 #[test]
@@ -25,6 +25,9 @@ fn enum_values_are_pinned() {
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(|v| v as u32), [0, 1, 2]);
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(YuvMatrix::index), [0, 1, 2]);
     assert_eq!([Codec::Dxv, Codec::Hap, Codec::Native].map(|v| v as u32), [0, 1, 2]);
+    assert_eq!([AlphaMode::Straight, AlphaMode::Premultiplied].map(|v| v as u32), [0, 1]);
+    use dxvkit_plus_core::dxv::Variant as V;
+    assert_eq!([V::Dxt1, V::Dxt5, V::Ycg6, V::Yg10, V::LegacyDxt1, V::LegacyDxt5].map(|v| v as u32), [0, 1, 2, 3, 4, 5]);
     use HapTexture as H;
     assert_eq!([H::Bc1Rgb, H::Bc3Rgba, H::Bc3YCoCg, H::Bc7Rgba, H::Bc4Alpha, H::Bc6hUfloat, H::Bc6hSfloat].map(|v| v as u32), [0, 1, 2, 3, 4, 5, 6]);
     assert_eq!(PlayMode::ALL.map(|v| v as u32), [0, 1, 2, 3, 4]);
@@ -48,6 +51,7 @@ fn error_codes_are_pinned_and_distinct() {
         MediaError::Platform(String::new()),
         MediaError::Unsupported(String::new()),
         MediaError::Lmbd(String::new()),
+        MediaError::Dxv(String::new()),
     ];
-    assert_eq!(all.map(|e| e.code()), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert_eq!(all.map(|e| e.code()), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 }

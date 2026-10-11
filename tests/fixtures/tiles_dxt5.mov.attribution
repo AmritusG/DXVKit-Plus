@@ -1,0 +1,8 @@
+asset: tests/fixtures/tiles_dxt5.mov
+title: DXV3 DXT5 128x72
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern::tiles (carried over from Loombda-rs loombda_media::testpattern)
+source: Minted in Loombda-rs (crates/loombda-media/examples/mint_fixtures.rs) (128x72, 24 frames, 30 fps); encoded with DXVKit 1.0.0 dxvtool encode --effort best (MIT, Amrit's own encoder)
+license: CC0-1.0
+added: 2026-10-11
+sha256: 16d13d2b5220403879a005882d0cf335d724cb6a45459b288b6bcbd9ddc5ba5d
+notes: Our own footage, no third-party content. Tiles are RGB565-exact and alpha is flat per 8x8 tile so BC encoders can reproduce the source; the top tile row encodes the frame index. Copied unchanged (cp -p) from Loombda-rs tests/fixtures/media @ 9ec3dea.

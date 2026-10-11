@@ -37,6 +37,27 @@ pub(crate) fn byte(b: &[u8], at: usize) -> Option<u8> {
     b.get(at).copied()
 }
 
+/// Copy `len` bytes inside `buf` from `src` to `dst` (ranges may overlap, like `memmove`).
+/// `None` if either range leaves the buffer.
+#[inline]
+pub(crate) fn copy_within(buf: &mut [u8], src: usize, dst: usize, len: usize) -> Option<()> {
+    let src_end = src.checked_add(len)?;
+    let dst_end = dst.checked_add(len)?;
+    if src_end > buf.len() || dst_end > buf.len() {
+        return None;
+    }
+    buf.copy_within(src..src_end, dst);
+    Some(())
+}
+
+/// Copy `src` into `dst[at..at + src.len()]`. `None` if it does not fit.
+#[inline]
+pub(crate) fn put(dst: &mut [u8], at: usize, src: &[u8]) -> Option<()> {
+    let end = at.checked_add(src.len())?;
+    dst.get_mut(at..end)?.copy_from_slice(src);
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
