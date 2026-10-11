@@ -206,3 +206,51 @@ fn lmbd_gpu_decode_is_bit_exact_with_the_cpu() {
     // Negative control: the sRGB view really converts (mid grey is not stored grey).
     assert!((srgb_to_linear(128) - 128.0).abs() > 50.0);
 }
+
+/// Render one frame through the persistent staging path (belt + buffer copy, one submission).
+fn render_staged(g: &Gpu, r: &mut FrameRenderer, belt: &mut wgpu::util::StagingBelt, d: &Decoded) -> Vec<u8> {
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    r.upload_staged(&g.device, &mut enc, belt, d).unwrap();
+    let out = r.encode_convert(&g.device, &g.queue, &mut enc, None).unwrap().clone();
+    belt.finish();
+    g.queue.submit([enc.finish()]);
+    belt.recall();
+    read_texture_rgba(&g.device, &g.queue, &out).unwrap()
+}
+
+/// The staged upload produces exactly the pixels of the `write_texture` upload, on every HAP fixture
+/// and LMBD vector frame (BC1 / BC3 / BC4 / BC7, one and two planes, padded and tight rows).
+#[test]
+fn staged_upload_equals_write_texture() {
+    let Some(g) = gpu() else { return };
+    let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
+    let mut belt = wgpu::util::StagingBelt::new(g.device.clone(), 1 << 16);
+    let mut files: Vec<PathBuf> = ["tiles_hap1.mov", "tiles_hap5.mov", "tiles_hapa.mov", "tiles_hapy.mov", "tiles_hapm.mov", "synthetic_hap7.mov"]
+        .iter()
+        .map(|n| fixtures().join(n))
+        .collect();
+    files.extend(lmbd_vectors());
+    let mut frames = 0;
+    for p in files {
+        let opts = ImportOptions::default();
+        let info = source::probe(p.to_str().unwrap(), &opts).unwrap();
+        let mut src = source::open(&info, &opts, true).unwrap();
+        for f in 0..info.frames.min(4) {
+            let d = src.decode(f).unwrap();
+            assert_eq!(render(&g, &mut a, &d), render_staged(&g, &mut b, &mut belt, &d), "{p:?} frame {f}");
+            assert_eq!(b.last_upload_bytes, d.cpu_bytes());
+            frames += 1;
+        }
+    }
+    assert!(frames >= 20, "{frames}");
+    // Negative control: a plane of the wrong size is refused, not staged.
+    let bad = Decoded::Planes {
+        index: 0,
+        width: 8,
+        height: 8,
+        shading: Shading::Rgba { opaque: false },
+        planes: vec![Plane { format: PixelFormat::Bc1, width: 8, height: 8, data: vec![0; 31] }],
+    };
+    let mut enc = g.device.create_command_encoder(&Default::default());
+    assert!(matches!(b.upload_staged(&g.device, &mut enc, &mut belt, &bad), Err(GpuError::Invalid(_))));
+}

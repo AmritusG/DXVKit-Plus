@@ -1,5 +1,6 @@
 //! Upload + WGSL conversion of decoded frames into straight-alpha RGBA8 at the clip size.
 
+use crate::staging::{STAGING_ALIGNMENT, StagingLayout};
 use crate::{GpuError, create_bc_texture, write_bc};
 use dxvkit_plus_core::backend::{PixelLayout, YuvMatrix};
 use dxvkit_plus_core::source::{Decoded, PixelFormat, Shading};
@@ -194,6 +195,7 @@ impl Converter {
         t1: Option<&wgpu::TextureView>,
         uniform: &wgpu::Buffer,
         target: &wgpu::TextureView,
+        timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dxvkit-plus-convert"),
@@ -214,7 +216,7 @@ impl Converter {
                 ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: None,
-            timestamp_writes: None,
+            timestamp_writes,
             occlusion_query_set: None,
             multiview_mask: None,
         });
@@ -222,6 +224,15 @@ impl Converter {
         rp.set_bind_group(0, &bind, &[]);
         rp.draw(0..3, 0..1);
     }
+}
+
+/// What [`FrameRenderer::upload`] left for [`FrameRenderer::encode_convert`].
+#[derive(Clone, Copy)]
+struct Pending {
+    shading: Shading,
+    width: u32,
+    height: u32,
+    planes: usize,
 }
 
 struct Upload {
@@ -239,6 +250,7 @@ pub struct FrameRenderer {
     uniform: wgpu::Buffer,
     last_uniform: Option<Uniform>,
     output: Option<(wgpu::Texture, wgpu::TextureView)>,
+    pending: Option<Pending>,
     /// Bytes written with `write_texture` for the last frame (0 for native frames: zero-copy).
     pub last_upload_bytes: usize,
 }
@@ -251,7 +263,7 @@ impl FrameRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        FrameRenderer { converter: Converter::new(device), uploads: Vec::new(), uniform, last_uniform: None, output: None, last_upload_bytes: 0 }
+        FrameRenderer { converter: Converter::new(device), uploads: Vec::new(), uniform, last_uniform: None, output: None, pending: None, last_upload_bytes: 0 }
     }
 
     /// The output texture (`OUTPUT_FORMAT`, the clip's size) after a render.
@@ -290,14 +302,73 @@ impl FrameRenderer {
 
     /// Upload a CPU-decoded frame's planes and convert it; returns the output texture. Submits.
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, decoded: &Decoded) -> Result<&wgpu::Texture, GpuError> {
+        self.upload(device, queue, decoded)?;
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render") });
+        self.encode_convert(device, queue, &mut enc, None)?;
+        queue.submit([enc.finish()]);
+        self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
+    }
+
+    /// The first half of [`FrameRenderer::render`]: upload a CPU-decoded frame's planes into this
+    /// renderer's textures (`Queue::write_texture`; wgpu stages the bytes and copies them before
+    /// the next submission). Follow with [`FrameRenderer::encode_convert`].
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, decoded: &Decoded) -> Result<(), GpuError> {
+        let (shading, width, height) = self.prepare_planes(device, decoded)?;
+        let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
+        let mut bytes = 0usize;
+        for (up, p) in self.uploads.iter().zip(planes) {
+            write_bc(queue, &up.texture, p.format, p.width, p.height, &p.data)?;
+            bytes = bytes.saturating_add(p.data.len());
+        }
+        self.last_upload_bytes = bytes;
+        self.pending = Some(Pending { shading, width, height, planes: planes.len() });
+        Ok(())
+    }
+
+    /// [`FrameRenderer::upload`] through persistent staging memory: copies the planes into
+    /// `belt` (mapped buffers reused across frames, instead of a new staging buffer per
+    /// `write_texture`) and records the buffer-to-texture copies into `encoder`. Then
+    /// [`FrameRenderer::encode_convert`], `belt.finish()`,
+    /// submit, `belt.recall()`.
+    pub fn upload_staged(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        belt: &mut wgpu::util::StagingBelt,
+        decoded: &Decoded,
+    ) -> Result<(), GpuError> {
+        let (shading, width, height) = self.prepare_planes(device, decoded)?;
+        let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
+        let mut bytes = 0usize;
+        for (up, p) in self.uploads.iter().zip(planes) {
+            let l = StagingLayout::of(p.format, p.width, p.height)?;
+            if p.data.len() != l.tight_bytes() {
+                return Err(GpuError::Invalid(format!("{:?} {}x{} needs {} bytes, got {}", p.format, p.width, p.height, l.tight_bytes(), p.data.len())));
+            }
+            let (buffer, offset) = {
+                let slice = belt.allocate(l.size()?, STAGING_ALIGNMENT);
+                let (buffer, offset) = (slice.buffer().clone(), slice.offset());
+                let mut view = slice.get_mapped_range_mut().map_err(|e| GpuError::Device(e.to_string()))?;
+                l.write(view.slice(..), &p.data);
+                (buffer, offset)
+            };
+            l.copy(encoder, &buffer, offset, &up.texture);
+            bytes = bytes.saturating_add(p.data.len());
+        }
+        self.last_upload_bytes = bytes;
+        self.pending = Some(Pending { shading, width, height, planes: planes.len() });
+        Ok(())
+    }
+
+    /// Check a frame's planes and make sure this renderer has a texture of the right format and
+    /// size for each (reused across frames).
+    fn prepare_planes(&mut self, device: &wgpu::Device, decoded: &Decoded) -> Result<(Shading, u32, u32), GpuError> {
         let Decoded::Planes { width, height, shading, planes, .. } = decoded else {
             return Err(GpuError::Invalid("native frames are rendered with render_native (after the platform import)".into()));
         };
-        let (width, height, shading) = (*width, *height, *shading);
         if planes.is_empty() || planes.len() > 2 {
             return Err(GpuError::Invalid(format!("{} planes", planes.len())));
         }
-        let mut bytes = 0usize;
         for (i, p) in planes.iter().enumerate() {
             let reuse = self.uploads.get(i).is_some_and(|u| u.format == p.format && u.width == p.width && u.height == p.height);
             if !reuse {
@@ -312,11 +383,22 @@ impl FrameRenderer {
                     self.uploads.push(up);
                 }
             }
-            let up = self.uploads.get(i).ok_or_else(|| GpuError::Invalid("upload slot".into()))?;
-            write_bc(queue, &up.texture, p.format, p.width, p.height, &p.data)?;
-            bytes = bytes.saturating_add(p.data.len());
         }
-        self.last_upload_bytes = bytes;
+        Ok((*shading, *width, *height))
+    }
+
+    /// The second half of [`FrameRenderer::render`]: record the conversion of the last uploaded
+    /// frame into `encoder` (no submit, so many renderers can share one submission). `timestamps`
+    /// brackets the conversion pass (needs a `TIMESTAMP_QUERY` device). Returns the output
+    /// texture, valid once `encoder` is submitted.
+    pub fn encode_convert(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) -> Result<&wgpu::Texture, GpuError> {
+        let Pending { shading, width, height, planes } = self.pending.ok_or_else(|| GpuError::Invalid("encode_convert before upload".into()))?;
         let (mode, flags) = match shading {
             Shading::Rgba { opaque } => (0, u32::from(opaque)),
             Shading::HapYcocg { alpha } => (2, if alpha { 2 } else { 0 }),
@@ -325,11 +407,9 @@ impl FrameRenderer {
         };
         self.set_uniform(queue, Uniform { mode, flags, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
         let target = self.ensure_output(device, width, height)?;
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render") });
         let t0 = &self.uploads.first().ok_or_else(|| GpuError::Invalid("no plane".into()))?.view;
-        let t1 = if planes.len() == 2 { self.uploads.get(1).map(|u| &u.view) } else { None };
-        self.converter.pass(device, &mut enc, t0, t1, &self.uniform, &target);
-        queue.submit([enc.finish()]);
+        let t1 = if planes == 2 { self.uploads.get(1).map(|u| &u.view) } else { None };
+        self.converter.pass(device, encoder, t0, t1, &self.uniform, &target, timestamps);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }
 
@@ -348,7 +428,7 @@ impl FrameRenderer {
         self.set_uniform(queue, Uniform { mode: 0, flags: 0, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
         let target = self.ensure_output(device, width, height)?;
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-view") });
-        self.converter.pass(device, &mut enc, view, None, &self.uniform, &target);
+        self.converter.pass(device, &mut enc, view, None, &self.uniform, &target, None);
         queue.submit([enc.finish()]);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }
@@ -369,7 +449,7 @@ impl FrameRenderer {
         let views: Vec<wgpu::TextureView> = native.textures.iter().map(|t| t.create_view(&Default::default())).collect();
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-native") });
         let t0 = views.first().ok_or_else(|| GpuError::Invalid("no plane".into()))?;
-        self.converter.pass(device, &mut enc, t0, views.get(1), &self.uniform, &target);
+        self.converter.pass(device, &mut enc, t0, views.get(1), &self.uniform, &target, None);
         queue.submit([enc.finish()]);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }

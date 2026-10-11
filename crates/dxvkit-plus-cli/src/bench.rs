@@ -32,6 +32,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     }
     let frames = args.num("frames", 60)?.max(1);
     let layers = args.num("layers", 0)?;
+    let variants: Vec<crate::layers::Variant> =
+        args.value("variants").unwrap_or("per_layer").split(',').map(crate::layers::Variant::parse).collect::<Result<_, _>>()?;
     for path in &args.positional {
         let (info, mut src) = probe_open(path)?;
         let n = frames.min(info.frames.max(1));
@@ -47,6 +49,13 @@ pub fn run(args: &Args) -> Result<(), String> {
                 src.decode(f).map_err(|e| e.to_string())?;
                 cpu.push(ms(t));
             }
+        }
+        if args.has("layers-only") && layers > 0 {
+            let gpu = Session::new().map_err(|e| e.to_string())?;
+            for &v in &variants {
+                crate::layers::run(path, &info, layers, n, &gpu.gpu, v)?;
+            }
+            continue;
         }
         let mut row = base.clone();
         if let Some(o) = row.as_object_mut() {
@@ -122,52 +131,10 @@ pub fn run(args: &Args) -> Result<(), String> {
             gpu.set_route(ImportRoute::TextureCache)?;
         }
         if layers > 0 {
-            layers_bench(path, &info, layers, n, &mut gpu)?;
-        }
-    }
-    Ok(())
-}
-
-/// `layers` independent decoders of the same file (as a VJ stacks clips): each step decodes frame
-/// `f` on every layer in parallel (one thread per layer), then uploads + converts all layers on one
-/// device and waits. Wall time per step.
-fn layers_bench(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &mut Session) -> Result<(), String> {
-    let opts = crate::options();
-    let mut srcs = Vec::new();
-    for _ in 0..layers {
-        srcs.push(source::open(info, &opts, false).map_err(|e| e.to_string())?);
-    }
-    let mut renderers: Vec<dxvkit_plus_wgpu::FrameRenderer> = (0..layers).map(|_| dxvkit_plus_wgpu::FrameRenderer::new(&gpu.gpu.device)).collect();
-    let (mut decode_ms, mut step_ms) = (Vec::new(), Vec::new());
-    for pass in 0..2 {
-        for f in 0..n {
-            let t = Instant::now();
-            let decoded: Vec<Result<Decoded, String>> = std::thread::scope(|s| {
-                let hs: Vec<_> = srcs.iter_mut().map(|src| s.spawn(move || src.decode(f).map_err(|e| e.to_string()))).collect();
-                hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err("decode thread panicked".into()))).collect()
-            });
-            let td = ms(t);
-            for (r, d) in renderers.iter_mut().zip(decoded) {
-                let d = d?;
-                match &d {
-                    Decoded::Planes { .. } => {
-                        r.render(&gpu.gpu.device, &gpu.gpu.queue, &d).map_err(|e| e.to_string())?;
-                    }
-                    Decoded::Native(_) => return Err("the layer benchmark runs block codecs (HAP) only".into()),
-                }
-            }
-            dxvkit_plus_wgpu::wait_idle(&gpu.gpu.device).map_err(|e| e.to_string())?;
-            if pass > 0 {
-                decode_ms.push(td);
-                step_ms.push(ms(t));
+            for &v in &variants {
+                crate::layers::run(path, &info, layers, n, &gpu.gpu, v)?;
             }
         }
     }
-    let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
-        "decode_all_layers": stats(decode_ms), "step_decode_upload_convert": stats(step_ms)});
-    if let (SourceKind::Lmbd, Some(o)) = (info.kind, row.as_object_mut()) {
-        o.insert("zstd_backend".into(), json!(crate::ZSTD_BACKEND));
-    }
-    json_line(&row);
     Ok(())
 }

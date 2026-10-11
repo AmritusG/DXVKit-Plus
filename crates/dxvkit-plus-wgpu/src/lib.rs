@@ -18,6 +18,7 @@
 
 mod convert;
 mod lmbd;
+mod staging;
 
 pub use convert::{CONVERT_WGSL, Converter, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
 pub use lmbd::LmbdTexture;
@@ -77,9 +78,10 @@ impl Gpu {
         Self::with_adapter(instance, adapter)
     }
 
-    /// A device on a chosen adapter.
+    /// A device on a chosen adapter. Requests `TEXTURE_COMPRESSION_BC` and `TIMESTAMP_QUERY` where
+    /// the adapter has them.
     pub fn with_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<Gpu, GpuError> {
-        let required_features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
+        let required_features = adapter.features() & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::TIMESTAMP_QUERY);
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("dxvkit-plus"), required_features, ..Default::default() }))
                 .map_err(|e| GpuError::Device(e.to_string()))?;
@@ -114,7 +116,7 @@ pub fn frame_bytes(format: PixelFormat, width: u32, height: u32) -> Option<usize
     usize::try_from(u64::from(units_x).checked_mul(u64::from(units_y))?.checked_mul(u64::from(format.unit_bytes()))?).ok()
 }
 
-fn check_size(format: PixelFormat, width: u32, height: u32) -> Result<usize, GpuError> {
+pub(crate) fn check_size(format: PixelFormat, width: u32, height: u32) -> Result<usize, GpuError> {
     let aligned = !format.is_compressed() || (width.is_multiple_of(4) && height.is_multiple_of(4));
     if width == 0 || height == 0 || !aligned || width > MAX_EDGE || height > MAX_EDGE {
         return Err(GpuError::Invalid(format!("{format:?} frame {width}x{height} must be non-zero (multiples of 4 for BC) up to {MAX_EDGE}")));
