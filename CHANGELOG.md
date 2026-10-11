@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-10-11
+
+- `dxvkit-plus verify`: the HAP Q (HapY, HapM) CPU-vs-GPU tolerance is 2/255, the project's stated
+  HAP Q tolerance (it was 1, so the 1080p HAP Q plasma clip, CPU vs GPU 2/255, failed). Other HAP
+  stays 1/255; LMBD and native frames stay exact. Pinned by a unit test.
+
 ## 0.3.0 — 2026-10-11
 
 Getting decoded frames onto the GPU is fast. API additions only; nothing removed or changed.

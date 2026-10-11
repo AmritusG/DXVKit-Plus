@@ -117,7 +117,7 @@ Both routes produce identical pixels (tested on every native fixture frame).
 |---|---|---|
 | HAP Hap1 / Hap5 / HapA (CPU) | exact to the source pattern (0/255 measured; 1/255 allowed) | `core/tests/fixtures.rs` |
 | HAP Q HapY / HapM (CPU) | ≤ 2/255 to the source (chroma is lossy by design) | same |
-| GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1); HAP Q ≤ 2/255 | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | BC7 CPU decoder vs the GPU | bit-exact, 4096 random blocks per mode, all 8 modes | `wgpu/tests/gpu.rs` |
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
