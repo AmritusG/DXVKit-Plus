@@ -254,3 +254,32 @@ fn staged_upload_equals_write_texture() {
     let mut enc = g.device.create_command_encoder(&Default::default());
     assert!(matches!(b.upload_staged(&g.device, &mut enc, &mut belt, &bad), Err(GpuError::Invalid(_))));
 }
+
+/// Frames staged through an `Uploader` while earlier ones are still in flight keep their own
+/// pixels: three LMBD frames go up back to back (depth 2, so the third waits only for the first),
+/// each into its own renderer, and every output equals the one-frame-at-a-time render.
+#[test]
+fn uploader_keeps_frames_in_flight_apart() {
+    let Some(g) = gpu() else { return };
+    let opts = ImportOptions::default();
+    let path = lmbd_vectors().into_iter().find(|p| p.to_string_lossy().contains("plasma_l1_c1")).unwrap();
+    let info = source::probe(path.to_str().unwrap(), &opts).unwrap();
+    let mut src = source::open(&info, &opts, true).unwrap();
+    let frames: Vec<Decoded> = (0..3).map(|f| src.decode(f).unwrap()).collect();
+    let mut one = FrameRenderer::new(&g.device);
+    let want: Vec<Vec<u8>> = frames.iter().map(|d| render(&g, &mut one, d)).collect();
+    assert_ne!(want[0], want[1], "the test needs distinct frames");
+    let mut up = dxvkit_plus_wgpu::Uploader::new(&g.device, 1 << 16, 2);
+    let mut rs: Vec<FrameRenderer> = (0..3).map(|_| FrameRenderer::new(&g.device)).collect();
+    let mut outs = Vec::new();
+    for (r, d) in rs.iter_mut().zip(&frames) {
+        let mut enc = g.device.create_command_encoder(&Default::default());
+        r.upload_staged(&g.device, &mut enc, up.belt(), d).unwrap();
+        outs.push(r.encode_convert(&g.device, &g.queue, &mut enc, None).unwrap().clone());
+        up.submit(&g.device, &g.queue, enc).unwrap();
+        assert!(up.in_flight() <= 2);
+    }
+    for (o, w) in outs.iter().zip(&want) {
+        assert_eq!(&read_texture_rgba(&g.device, &g.queue, o).unwrap(), w);
+    }
+}

@@ -78,6 +78,63 @@ impl StagingLayout {
     }
 }
 
+/// Persistent staging memory plus a bound on GPU work in flight: the upload side of a pipelined
+/// player. Stage frames with [`crate::FrameRenderer::upload_staged`] into [`Uploader::belt`], record
+/// the conversions, then [`Uploader::submit`]: it finishes the belt, submits, recycles the staging
+/// chunks once the GPU is done with them, and blocks only while more than `depth` submissions are
+/// still running — never a whole-device wait, so decoding the next frame overlaps the GPU's work
+/// on this one.
+pub struct Uploader {
+    belt: wgpu::util::StagingBelt,
+    in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
+    depth: usize,
+}
+
+impl Uploader {
+    /// `chunk_bytes`: staging chunk size (about one step's frames: every layer's planes);
+    /// `depth`: submissions allowed in flight (2 = double buffered, 3 = triple).
+    pub fn new(device: &wgpu::Device, chunk_bytes: u64, depth: usize) -> Uploader {
+        let chunk = chunk_bytes.max(STAGING_ALIGNMENT.get()).next_multiple_of(STAGING_ALIGNMENT.get());
+        Uploader { belt: wgpu::util::StagingBelt::new(device.clone(), chunk), in_flight: Default::default(), depth: depth.max(1) }
+    }
+
+    /// The staging belt to pass to [`crate::FrameRenderer::upload_staged`].
+    pub fn belt(&mut self) -> &mut wgpu::util::StagingBelt {
+        &mut self.belt
+    }
+
+    /// Submit `encoder` (after its uploads and conversions) and return its submission index (to
+    /// wait for with [`Uploader::wait_for`] or `Device::poll`). Waits for the oldest submission
+    /// first when `depth` are already in flight (bounded: 10 s).
+    pub fn submit(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: wgpu::CommandEncoder) -> Result<wgpu::SubmissionIndex, GpuError> {
+        while self.in_flight.len() >= self.depth {
+            if let Some(oldest) = self.in_flight.pop_front() {
+                Uploader::wait_for(device, oldest)?;
+            }
+        }
+        self.belt.finish();
+        let index = queue.submit([encoder.finish()]);
+        self.belt.recall();
+        // Hand finished chunks back to the belt without blocking.
+        device.poll(wgpu::PollType::Poll).map_err(|e| GpuError::Device(e.to_string()))?;
+        self.in_flight.push_back(index.clone());
+        Ok(index)
+    }
+
+    /// Block until `index` (and everything submitted before it) has finished (bounded: 10 s).
+    pub fn wait_for(device: &wgpu::Device, index: wgpu::SubmissionIndex) -> Result<(), GpuError> {
+        device
+            .poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: Some(std::time::Duration::from_secs(10)) })
+            .map(|_| ())
+            .map_err(|e| GpuError::Device(e.to_string()))
+    }
+
+    /// Submissions not yet known to be finished.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
