@@ -1,0 +1,16 @@
+LMBX tile size A/B (W5, 2026-10-11, Mac Studio, Arena running): 1920x1080 plasma (our CC0 pattern),
+20 frames, quality 16, both layouts with one rANS stream per plane per tile and the integer IDCT as
+straight-line WGSL. Same encoder decisions per 8x8 block, so the pictures are identical (frame 5).
+
+layout     chroma   bytes/frame  PSNR RGB  SSIM      verify GPU==CPU
+32x32      422halo  1013590      46.5222   0.988915  0
+64x64      422halo   979170      46.5222   0.988915  0
+32x32      444      1089872      46.7276   0.988811  0
+64x64      444      1055445      46.7276   0.988811  0
+
+dxvkit-plus bench --layers 16 --layers-only --variants per_layer, step p50 ms, three interleaved rounds:
+round 1  t32 422halo 13.097  t32 444 16.555  t64 422halo 24.860  t64 444 34.545
+round 2  t32 422halo 12.051  t32 444 15.017  t64 422halo 28.026  t64 444 34.699
+round 3  t32 422halo 11.518  t32 444 15.322  t64 422halo 28.078  t64 444 34.378
+
+Decision: 32x32 tiles — +3.5% bytes for 2.2-2.4x faster GPU decode.

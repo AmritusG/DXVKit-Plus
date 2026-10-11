@@ -403,7 +403,10 @@ pub struct FrameRenderer {
     last_uniform: Option<Uniform>,
     output: Option<(wgpu::Texture, wgpu::TextureView)>,
     pending: Option<Pending>,
-    /// Bytes written with `write_texture` for the last frame (0 for native frames: zero-copy).
+    /// LMBX's compute decoder (created on the first LMBX frame).
+    lmbx: Option<crate::lmbx::LmbxDecoder>,
+    /// Bytes written with `write_texture` for the last frame (0 for native frames: zero-copy;
+    /// for LMBX the bitstream).
     pub last_upload_bytes: usize,
 }
 
@@ -415,7 +418,16 @@ impl FrameRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        FrameRenderer { converter: Converter::new(device), uploads: Vec::new(), uniform, last_uniform: None, output: None, pending: None, last_upload_bytes: 0 }
+        FrameRenderer {
+            converter: Converter::new(device),
+            uploads: Vec::new(),
+            uniform,
+            last_uniform: None,
+            output: None,
+            pending: None,
+            lmbx: None,
+            last_upload_bytes: 0,
+        }
     }
 
     /// After [`FrameRenderer::upload`] / [`FrameRenderer::upload_staged`]: the uploaded texture
@@ -481,6 +493,11 @@ impl FrameRenderer {
     /// renderer's textures (`Queue::write_texture`; wgpu stages the bytes and copies them before
     /// the next submission). Follow with [`FrameRenderer::encode_convert`].
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, decoded: &Decoded) -> Result<(), GpuError> {
+        if let Some((blob, width, height)) = lmbx_frame(decoded) {
+            let dec = self.prepare_lmbx(device, blob, width, height)?;
+            dec.write(queue, blob)?;
+            return Ok(());
+        }
         let (shading, width, height) = self.prepare_planes(device, decoded)?;
         let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
         let mut bytes = 0usize;
@@ -509,6 +526,23 @@ impl FrameRenderer {
         belt: &mut wgpu::util::StagingBelt,
         decoded: &Decoded,
     ) -> Result<(), GpuError> {
+        if let Some((blob, width, height)) = lmbx_frame(decoded) {
+            let dec = self.prepare_lmbx(device, blob, width, height)?;
+            let bits = dec.bits.as_ref().ok_or_else(|| GpuError::Invalid("LMBX buffers not prepared".into()))?;
+            let size = (blob.len() as u64).div_ceil(4).max(1) * 4;
+            let slice_size = wgpu::BufferSize::new(size).ok_or_else(|| GpuError::Invalid("empty LMBX frame".into()))?;
+            let (buffer, offset) = {
+                let slice = belt.allocate(slice_size, STAGING_ALIGNMENT);
+                let (buffer, offset) = (slice.buffer().clone(), slice.offset());
+                let mut view = slice.get_mapped_range_mut().map_err(|e| GpuError::Device(e.to_string()))?;
+                let mut padded = blob.to_vec();
+                padded.resize(size as usize, 0);
+                view.slice(..).copy_from_slice(&padded);
+                (buffer, offset)
+            };
+            encoder.copy_buffer_to_buffer(&buffer, offset, bits, 0, size);
+            return Ok(());
+        }
         let (shading, width, height) = self.prepare_planes(device, decoded)?;
         let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
         let mut bytes = 0usize;
@@ -530,6 +564,17 @@ impl FrameRenderer {
         self.last_upload_bytes = bytes;
         self.pending = Some(Pending { shading, width, height, planes: planes.len() });
         Ok(())
+    }
+
+    /// Validate an LMBX frame's header (CPU, headers only), size the decoder's buffers and make
+    /// the frame pending.
+    fn prepare_lmbx(&mut self, device: &wgpu::Device, blob: &[u8], width: u32, height: u32) -> Result<&crate::lmbx::LmbxDecoder, GpuError> {
+        let shape = crate::lmbx::shape(blob, width, height)?;
+        let dec = self.lmbx.get_or_insert_with(|| crate::lmbx::LmbxDecoder::new(device, OUTPUT_FORMAT));
+        dec.prepare(device, shape);
+        self.last_upload_bytes = blob.len();
+        self.pending = Some(Pending { shading: Shading::Lmbx, width, height, planes: 1 });
+        Ok(dec)
     }
 
     /// Check a frame's planes and make sure this renderer has a texture of the right format and
@@ -606,6 +651,12 @@ impl FrameRenderer {
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> Result<&wgpu::Texture, GpuError> {
         let Pending { shading, width, height, planes } = self.pending.ok_or_else(|| GpuError::Invalid("encode_convert before upload".into()))?;
+        if shading == Shading::Lmbx {
+            let target = self.ensure_output(device, width, height)?;
+            let dec = self.lmbx.as_ref().ok_or_else(|| GpuError::Invalid("LMBX decode before upload".into()))?;
+            dec.encode(device, queue, encoder, &target, timestamps)?;
+            return self.output().ok_or_else(|| GpuError::Invalid("no output".into()));
+        }
         let (mode, flags) = match shading {
             Shading::Rgba { opaque } => (0, u32::from(opaque)),
             Shading::HapYcocg { alpha } => (2, if alpha { 2 } else { 0 }),
@@ -613,6 +664,7 @@ impl FrameRenderer {
             Shading::Hdr => (4, 0),
             Shading::RgbaPremultiplied => (0, 4),
             Shading::DxvYcocg { alpha, premultiplied } => (1, (u32::from(alpha) << 1) | (u32::from(premultiplied) << 2)),
+            Shading::Lmbx => (0, 0), // decoded above
         };
         let raw = raw_blocks(shading);
         self.set_uniform(queue, Uniform { mode, flags, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
@@ -702,4 +754,12 @@ fn write_raw(queue: &wgpu::Queue, texture: &wgpu::Texture, format: PixelFormat, 
         wgpu::Extent3d { width: width / 4, height: height / 4, depth_or_array_layers: 1 },
     );
     Ok(())
+}
+
+/// An LMBX frame's bitstream and picture size, if `decoded` is one.
+fn lmbx_frame(decoded: &Decoded) -> Option<(&[u8], u32, u32)> {
+    match decoded {
+        Decoded::Planes { shading: Shading::Lmbx, planes, width, height, .. } => planes.first().map(|p| (p.data.as_slice(), *width, *height)),
+        _ => None,
+    }
 }

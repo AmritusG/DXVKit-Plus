@@ -23,6 +23,7 @@
 mod bc7dec;
 pub mod bc7enc;
 pub mod ert;
+pub mod lmbx;
 pub mod rdo;
 mod tables;
 

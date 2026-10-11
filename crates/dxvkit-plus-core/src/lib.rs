@@ -36,6 +36,7 @@ pub mod dxv;
 mod error;
 pub mod hap;
 pub mod lmbd;
+pub mod lmbx;
 pub mod source;
 pub mod testpattern;
 pub mod time;

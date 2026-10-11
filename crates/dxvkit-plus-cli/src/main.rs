@@ -7,6 +7,7 @@
 //! dxvkit-plus verify <file>... [--tiles] [--source-tolerance N]
 //! dxvkit-plus gen-pattern <dir> [--frames N] [--width W] [--height H] [--plasma [--alpha]]
 //! dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D] ...
+//! dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 422halo|444] [--quality Q | --frame-bytes N]
 //! dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 //! ```
 //!
@@ -40,6 +41,8 @@ const USAGE: &str = "usage:
   dxvkit-plus encode-lmbd <source> <out.lmbd> [--lambda L] [--lookback N] [--chunks K] [--fps N/D]
                           [--level Z] [--compressor zstd|none] [--rdo-partitions P] [--threads T]
                           [--start F] [--frames N] [--quiet]
+  dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 422halo|444]
+                          [--quality Q | --frame-bytes N] [--start F] [--frames N] [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:
   --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)";
@@ -225,6 +228,10 @@ fn main() -> ExitCode {
             "frame",
             "ref-frame",
             "alpha-mode",
+            "profile",
+            "chroma",
+            "quality",
+            "frame-bytes",
         ],
     );
     if let Some(a) = args.value("alpha-mode") {

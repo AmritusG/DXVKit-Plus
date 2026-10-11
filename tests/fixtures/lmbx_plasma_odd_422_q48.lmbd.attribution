@@ -1,0 +1,11 @@
+asset: tests/fixtures/lmbx_plasma_odd_422_q48.lmbd
+title: LMBX conformance vector (422halo, quality 48) — plasma (testpattern::plasma) 97x61, 2 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 422halo --quality 48 --threads 1 (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-11
+sha256: b443afbac1eead90c2894f32b252cb594bddf0922ae3812ec5b99ab0bb2b8e45
+params: pattern=plasma_odd chroma=422halo quality=48
+decoded_rgba_q_sha256 frame 0: 6ba585259f30aaff5227b7b9663ca43941ce590e8876811036860f712bb52652
+decoded_rgba_q_sha256 frame 1: 64faccc7d9991b993131a31d04be39588456eee96987d2366998f3f5a9e8f75c
+notes: An LMBX (profile 0x10, bitstream v1) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own footage, no third-party content.

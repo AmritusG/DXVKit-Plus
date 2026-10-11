@@ -1,0 +1,11 @@
+asset: tests/fixtures/lmbx_plasma_alpha_422_q16.lmbd
+title: LMBX conformance vector (422halo, quality 16) — plasma with alpha (testpattern::plasma) 333x141, 2 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 422halo --quality 16 --threads 1 (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-11
+sha256: cc0258ebe7f276ad5c5af6078d1c6bc6503ff784440de60400d32307367988bf
+params: pattern=plasma_a chroma=422halo quality=16
+decoded_rgba_q_sha256 frame 0: 1b5879e8ccfa36a6b616e5705d164d70fd8c11481f3679c03e41b4cad04c4f1b
+decoded_rgba_q_sha256 frame 1: ebf65e6cea74453b1ea1c9b317b317c6464f7978d5c97b8e2e65f7ef132c53dd
+notes: An LMBX (profile 0x10, bitstream v1) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own footage, no third-party content.

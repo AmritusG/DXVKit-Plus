@@ -22,6 +22,11 @@ fn parse_fps(s: &str) -> Result<(u32, u32), String> {
 }
 
 pub fn encode(args: &Args) -> Result<(), String> {
+    match args.value("profile").unwrap_or("lmb7") {
+        "lmb7" => {}
+        "lmbx" => return encode_lmbx(args),
+        other => return Err(format!("--profile: lmb7 or lmbx, got {other}")),
+    }
     let [input, out] = args.positional.as_slice() else { return Err(crate::USAGE.into()) };
     let (info, mut src) = probe_open(input)?;
     let start = args.num("start", 0)?;
@@ -80,6 +85,67 @@ pub fn encode(args: &Args) -> Result<(), String> {
         "rdo_partitions": p.rdo.partitions, "chunks": p.chunks, "compressor": p.compressor, "zstd_level": p.zstd_level,
         "payload_bytes": total_bytes, "file_bytes": size,
         "bytes_per_frame": total_bytes.checked_div(h.frame_count as usize).unwrap_or(0), "seconds": (t.elapsed().as_secs_f64() * 100.0).round() / 100.0,
+    }));
+    Ok(())
+}
+
+/// `encode-lmbd --profile lmbx`: every frame through the LMBX encoder, one stored chunk per frame
+/// (the bitstream is entropy-coded already). `--chroma 422halo|444` (default 422halo),
+/// `--quality Q` (base quantiser, default 16), or `--frame-bytes N` (rate control: the best
+/// quality that fits N bytes per frame).
+fn encode_lmbx(args: &Args) -> Result<(), String> {
+    use dxvkit_plus_core::lmbd::{ChunkData, Writer, frame_payload};
+    use dxvkit_plus_core::lmbx::Chroma;
+    use dxvkit_plus_lmbd_enc::lmbx::{LmbxParams, encode_frame, encode_frame_to_size};
+    let [input, out] = args.positional.as_slice() else { return Err(crate::USAGE.into()) };
+    let (info, mut src) = probe_open(input)?;
+    let start = args.num("start", 0)?;
+    let available = info.frames.saturating_sub(start);
+    let count = args.num("frames", available)?.min(available);
+    if count == 0 {
+        return Err(format!("{input}: no frames to encode from frame {start}"));
+    }
+    let (fps_num, fps_den) = match args.value("fps") {
+        Some(s) => parse_fps(s)?,
+        None => (u32::try_from(info.rate.num).unwrap_or(30), u32::try_from(info.rate.den).unwrap_or(1)),
+    };
+    let chroma = match args.value("chroma").unwrap_or("422halo") {
+        "422halo" | "422" => Chroma::Halo422,
+        "444" => Chroma::Full444,
+        other => return Err(format!("--chroma: 422halo or 444, got {other}")),
+    };
+    let quality: f64 = args.value("quality").map(|v| v.parse().map_err(|_| format!("--quality: not a number: {v}"))).transpose()?.unwrap_or(16.0);
+    let budget = args.value("frame-bytes").map(|v| v.parse::<usize>().map_err(|_| format!("--frame-bytes: not a number: {v}"))).transpose()?;
+    let threads = args.num("threads", std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(4))?.max(1) as usize;
+    let p = LmbxParams { chroma, quality, threads, ..LmbxParams::default() };
+    let header = Header::new_lmbx(info.width, info.height, fps_num, fps_den);
+    let file = std::fs::File::create(out).map_err(|e| format!("{out}: {e}"))?;
+    let mut w = Writer::new(std::io::BufWriter::new(file), header.clone()).map_err(|e| e.to_string())?;
+    let t = Instant::now();
+    let (mut total, mut qualities) = (0usize, Vec::new());
+    for i in 0..count {
+        let f = start.saturating_add(i);
+        let rgba = src.decode(f).and_then(|d| src.cpu_rgba(&d)).map_err(|e| format!("{input} frame {f}: {e}"))?;
+        let (blob, q) = match budget {
+            Some(b) => encode_frame_to_size(&rgba, info.width, info.height, &p, b, 600.0).map_err(|e| e.to_string())?,
+            None => (encode_frame(&rgba, info.width, info.height, &p).map_err(|e| e.to_string())?, quality),
+        };
+        let raw = u32::try_from(blob.len()).map_err(|_| "frame over 4 GiB".to_string())?;
+        let payload = frame_payload(&header, &[ChunkData { compressor: Compressor::None, raw_size: raw, data: &blob }]).map_err(|e| e.to_string())?;
+        w.push_payload(&payload).map_err(|e| e.to_string())?;
+        total = total.saturating_add(payload.len());
+        qualities.push(q);
+        if !args.has("quiet") {
+            eprintln!("encode-lmbd lmbx: frame {}/{count} {} B quality {q} ({:.1} s)", i.saturating_add(1), payload.len(), t.elapsed().as_secs_f64());
+        }
+    }
+    let (_, h) = w.finish().map_err(|e| e.to_string())?;
+    let size = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+    json_line(&json!({
+        "encoded": input, "lmbd": out, "profile": "lmbx", "chroma": chroma, "frames": h.frame_count, "width": h.width, "height": h.height,
+        "fps": format!("{}/{}", h.fps_num, h.fps_den), "quality": if budget.is_some() { json!(qualities) } else { json!(quality) }, "frame_bytes_budget": budget,
+        "payload_bytes": total, "file_bytes": size, "bytes_per_frame": total.checked_div(count as usize).unwrap_or(0),
+        "seconds": (t.elapsed().as_secs_f64() * 100.0).round() / 100.0,
     }));
     Ok(())
 }
@@ -181,13 +247,24 @@ pub fn compare(args: &Args) -> Result<(), String> {
         Ok((info, rgba, size))
     };
     let (_, a, (rw, rh)) = decode(reference, ref_frame)?;
-    let (info, b, (w, h)) = decode(file, frame)?;
+    let (info, mut b, (w, h)) = decode(file, frame)?;
+    // `--float`: an LMBX frame decoded with the floating-point inverse transform instead (the
+    // prototypes' decoder; not conforming) — what the integer transform costs (LMBX-D1).
+    if args.has("float") {
+        if info.codec != "LMBX" {
+            return Err("--float: only for LMBX files".into());
+        }
+        let f = LmbdFile::open(Path::new(file)).map_err(|e| e.to_string())?;
+        let (mut scratch, mut blob) = (Vec::new(), Vec::new());
+        f.decode_frame(frame, &mut scratch, &mut blob, true).map_err(|e| e.to_string())?;
+        b = dxvkit_plus_lmbd_enc::lmbx::float_reference_rgba8(&blob, w, h).map_err(|e| e.to_string())?;
+    }
     if (rw, rh) != (w, h) {
         return Err(format!("size mismatch: reference {rw}x{rh}, {file} {w}x{h}"));
     }
     let m = metrics(&a, &b, w as usize, h as usize);
     json_line(&json!({
-        "reference": reference, "ref_frame": ref_frame, "file": file, "frame": frame, "codec": info.codec,
+        "reference": reference, "ref_frame": ref_frame, "file": file, "frame": frame, "codec": info.codec, "float_reference": args.has("float"),
         "width": w, "height": h, "frame_bytes": frame_bytes(&info, frame),
         "psnr_rgb": num(m.psnr_rgb), "psnr": {"r": num(m.psnr[0]), "g": num(m.psnr[1]), "b": num(m.psnr[2]), "a": num(m.psnr[3])},
         "ssim": (m.ssim * 1_000_000.0).round() / 1_000_000.0, "ssim_windows": m.windows,

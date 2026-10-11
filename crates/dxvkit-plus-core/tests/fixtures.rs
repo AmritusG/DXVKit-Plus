@@ -123,7 +123,7 @@ fn chunked_and_single_section_frames_are_identical() {
 #[test]
 fn every_fixture_has_a_cc0_sidecar_with_a_matching_hash() {
     let media = sidecars_match(&fixtures(), "license: CC0-1.0");
-    assert_eq!(media, 23);
+    assert_eq!(media, 28);
     let mut vectors = 0;
     for group in ["glenc", "synthetic", "invalid"] {
         vectors += sidecars_match(&fixtures().join("dxvkit/streams").join(group), "license: MIT (LICENSES/DXVKit-MIT.txt)");
