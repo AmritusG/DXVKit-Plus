@@ -1,0 +1,12 @@
+asset: tests/fixtures/lmbx_tiles_422_q4.lmbd
+title: LMBX conformance vector (422halo, quality 4) — tile pattern (testpattern::tiles) 200x130 (not a multiple of 32), 3 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 422halo --quality 4 --threads 1 (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-11
+sha256: b94ba37d891950fbcfba615af53e68d1eb19d3267575213e5111d19c78b36f2f
+params: pattern=tiles chroma=422halo quality=4
+decoded_rgba_q_sha256 frame 0: f747b004cba0c30394b31637682363dae192f98b280f5c79cf2dfd7b8b4f1892
+decoded_rgba_q_sha256 frame 1: 585e093dad590046e3addd42437eef432847b96e4e48ffa865411528b8d94e9e
+decoded_rgba_q_sha256 frame 2: 83e779f347c79aa32cafe5b70461e29bafd78c862bef9ebc490aee35e5c59019
+notes: An LMBX (profile 0x10, bitstream v1) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own footage, no third-party content.

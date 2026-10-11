@@ -206,7 +206,7 @@ pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> 
         return Ok(MediaInfo {
             path: path.into(),
             kind: SourceKind::Lmbd,
-            codec: "LMB7".into(),
+            codec: if h.profile == crate::lmbd::Profile::Lmbx { "LMBX".into() } else { "LMB7".into() },
             width: h.width,
             height: h.height,
             frames: h.frame_count,
@@ -360,17 +360,22 @@ pub enum PixelFormat {
     Bc7 = 6,
     /// Uncompressed straight RGBA8.
     Rgba8 = 7,
+    /// An LMBX frame bitstream (`crate::lmbx`), variable size, decoded by a compute pass (or on
+    /// the CPU): not a texture. `Plane::width` / `height` are the coded size.
+    LmbxBitstream = 8,
 }
 
 impl PixelFormat {
+    /// Block-compressed texture data (BC1..BC7).
     pub fn is_compressed(self) -> bool {
-        self != PixelFormat::Rgba8
+        !matches!(self, PixelFormat::Rgba8 | PixelFormat::LmbxBitstream)
     }
-    /// Bytes per 4x4 block (BC) or per pixel (RGBA8).
+    /// Bytes per 4x4 block (BC), per pixel (RGBA8), or 1 (a byte stream).
     pub fn unit_bytes(self) -> u32 {
         match self {
             PixelFormat::Bc1 | PixelFormat::Bc4 => 8,
             PixelFormat::Rgba8 => 4,
+            PixelFormat::LmbxBitstream => 1,
             _ => 16,
         }
     }
@@ -391,6 +396,8 @@ pub enum Shading {
     /// RGBA stored premultiplied (DXV DXT5 read with [`AlphaMode::Premultiplied`]): shown
     /// un-premultiplied ([`crate::bc::unpremul`]).
     RgbaPremultiplied,
+    /// LMBX: one [`PixelFormat::LmbxBitstream`] plane, decoded per tile (`crate::lmbx`).
+    Lmbx,
     /// DXV High Quality (YCG6 / YG10): a Y BC4 plane (YG10: Y + A BC5) and a CoCg BC5 plane at half
     /// size, DXVKit spec 8.4 (exact BC4 palettes, nearest chroma, midpoint 127.5, out-of-gamut
     /// folding, round half up). `premultiplied`: YG10 read with [`AlphaMode::Premultiplied`].
@@ -499,6 +506,10 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
             unpremultiply(&mut rgba);
             return Ok(rgba);
         }
+        Shading::Lmbx => {
+            let p = planes.first().ok_or_else(|| MediaError::Invalid("LMBX frame without its bitstream".into()))?;
+            return crate::lmbx::decode_rgba8(&p.data, width, height, true);
+        }
         _ => {}
     }
     let (w, h) = (width as usize, height as usize);
@@ -534,7 +545,7 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
                 }
                 Shading::AlphaOnly => px.iter_mut().for_each(|p| p[3] = 255),
                 Shading::Hdr => return Err(MediaError::Unsupported("CPU decode of HDR (BC6H) frames".into())),
-                Shading::RgbaPremultiplied | Shading::DxvYcocg { .. } => {} // handled above
+                Shading::RgbaPremultiplied | Shading::DxvYcocg { .. } | Shading::Lmbx => {} // handled above
             }
             for (i, p) in px.iter().enumerate() {
                 let (x, y) = (bx.saturating_mul(4).saturating_add(i % 4), by.saturating_mul(4).saturating_add(i / 4));
@@ -726,6 +737,9 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
         }
         SourceKind::Lmbd => {
             let file = crate::lmbd::LmbdFile::open(Path::new(&info.path))?;
+            if file.header().profile == crate::lmbd::Profile::Lmbx {
+                return Ok(Box::new(LmbxSource { info: info.clone(), file, scratch: Vec::new(), parallel }));
+            }
             Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), chunk: Vec::new(), parallel }))
         }
     }
@@ -832,6 +846,41 @@ impl FrameSource for DxvSource {
     }
     fn layout(&self) -> Option<FrameLayout> {
         self.layout.clone()
+    }
+}
+
+/// LMBX: each frame is its bitstream (the chunks reassembled), shaded by decoding it — on the
+/// GPU by `dxvkit-plus-wgpu`'s compute pass (only these bytes are uploaded), on the CPU by
+/// [`crate::lmbx`]. Frames vary in size, so there is no fixed [`FrameSource::layout`].
+struct LmbxSource {
+    info: MediaInfo,
+    file: crate::lmbd::LmbdFile,
+    scratch: Vec<u8>,
+    parallel: bool,
+}
+
+impl FrameSource for LmbxSource {
+    fn info(&self) -> &MediaInfo {
+        &self.info
+    }
+    fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
+        let mut data = Vec::new();
+        self.file.decode_frame(frame, &mut self.scratch, &mut data, self.parallel)?;
+        let h = self.file.header();
+        // Validate the bitstream's header, tables and tile directory here, so a GPU decoder only
+        // ever sees well-formed frames.
+        let f = crate::lmbx::Frame::parse(&data, h.width, h.height)?;
+        let (cw, ch) = f.header.coded_size();
+        Ok(Decoded::Planes {
+            index: frame,
+            width: h.width,
+            height: h.height,
+            shading: Shading::Lmbx,
+            planes: vec![Plane { format: PixelFormat::LmbxBitstream, width: cw, height: ch, data }],
+        })
+    }
+    fn fork(&self) -> Option<Box<dyn FrameSource>> {
+        Some(Box::new(LmbxSource { info: self.info.clone(), file: self.file.clone(), scratch: Vec::new(), parallel: self.parallel }))
     }
 }
 

@@ -185,6 +185,79 @@ fn dxv_gpu_matches_the_cpu() {
     assert!(frames >= 200, "{frames}");
 }
 
+fn lmbx_vectors() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(fixtures())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbx_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
+        .collect();
+    v.sort();
+    v
+}
+
+/// LMBX's compute decode is bit-exact with the CPU reference decoder on every conformance-vector
+/// frame (both chroma modes, alpha, odd sizes), through `write_buffer` and through the staging
+/// belt — and on hostile frames: the same headers with every tile's bytes replaced (random,
+/// truncated to nothing, or swapped between tiles), which exercise the zero-fill past a tile's end,
+/// the bounded renormalisation and the wrapping state arithmetic.
+#[test]
+fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
+    let Some(g) = gpu() else { return };
+    let (mut a, mut b) = (FrameRenderer::new(&g.device), FrameRenderer::new(&g.device));
+    let mut belt = wgpu::util::StagingBelt::new(g.device.clone(), 1 << 16);
+    let (mut frames, mut hostile) = (0, 0);
+    for p in lmbx_vectors() {
+        let info = source::probe(p.to_str().unwrap(), &ImportOptions::default()).unwrap();
+        let mut src = source::open(&info, &ImportOptions::default(), true).unwrap();
+        for f in 0..info.frames {
+            let d = src.decode(f).unwrap();
+            let cpu = d.to_rgba().unwrap();
+            let gpu = render(&g, &mut a, &d);
+            assert_eq!(gpu, cpu, "{p:?} frame {f}");
+            assert_eq!(render_staged(&g, &mut b, &mut belt, &d), cpu, "{p:?} frame {f} staged");
+            assert_eq!(a.last_upload_bytes, d.cpu_bytes(), "only the bitstream is uploaded");
+            frames += 1;
+            let Decoded::Planes { planes, width, height, .. } = &d else { panic!() };
+            let blob = &planes[0].data;
+            let fr = dxvkit_plus_core::lmbx::Frame::parse(blob, *width, *height).unwrap();
+            let data = fr.sections.data;
+            let mut variants: Vec<Vec<u8>> = Vec::new();
+            let mut rnd = blob.clone();
+            let mut state = 0x9E37_79B9u64 + u64::from(f);
+            for x in rnd[data..].iter_mut() {
+                *x = (rng(&mut state) >> 56) as u8;
+            }
+            variants.push(rnd);
+            let mut empty = blob[..data].to_vec();
+            for t in 0..fr.offsets.len() {
+                let at = fr.sections.directory + 4 + t * 4;
+                empty[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+            }
+            variants.push(empty);
+            let mut reversed = blob.clone();
+            reversed[data..].reverse();
+            variants.push(reversed);
+            for v in variants {
+                let planes = vec![Plane { format: PixelFormat::LmbxBitstream, width: planes[0].width, height: planes[0].height, data: v }];
+                let h = Decoded::Planes { index: f, width: *width, height: *height, shading: Shading::Lmbx, planes };
+                assert_eq!(render(&g, &mut a, &h), h.to_rgba().unwrap(), "{p:?} frame {f}, hostile variant");
+                hostile += 1;
+            }
+        }
+    }
+    eprintln!("LMBX GPU == CPU: {frames} vector frames, {hostile} hostile frames");
+    assert!(frames >= 12 && hostile >= 36, "{frames} / {hostile}");
+    // Negative control: a malformed header is refused before anything reaches the GPU.
+    let bad = Decoded::Planes {
+        index: 0,
+        width: 64,
+        height: 64,
+        shading: Shading::Lmbx,
+        planes: vec![Plane { format: PixelFormat::LmbxBitstream, width: 64, height: 64, data: b"LMXS-not-a-frame".to_vec() }],
+    };
+    assert!(matches!(a.upload(&g.device, &g.queue, &bad), Err(GpuError::Invalid(_))));
+}
+
 /// HAP R (BC7) and HAP HDR (BC6H) movies render their colours (blocks built from the public BPTC
 /// definition; no encoder we may use writes these variants).
 #[test]

@@ -23,10 +23,12 @@
 
 mod convert;
 mod lmbd;
+mod lmbx;
 mod staging;
 
 pub use convert::{CONVERT_WGSL, Converter, DirectView, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
 pub use lmbd::LmbdTexture;
+pub use lmbx::{LMBX_OUT_WGSL, LMBX_WGSL};
 pub use staging::{StagedFrame, Uploader};
 
 use dxvkit_plus_core::source::PixelFormat;
@@ -126,6 +128,8 @@ pub fn texture_format(f: PixelFormat) -> wgpu::TextureFormat {
         PixelFormat::Bc6hSfloat => wgpu::TextureFormat::Bc6hRgbFloat,
         PixelFormat::Bc7 => wgpu::TextureFormat::Bc7RgbaUnorm,
         PixelFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+        // Not a texture (an LMBX bitstream, decoded by compute passes); never created as one.
+        PixelFormat::LmbxBitstream => wgpu::TextureFormat::R8Uint,
     }
 }
 
@@ -136,6 +140,9 @@ pub fn frame_bytes(format: PixelFormat, width: u32, height: u32) -> Option<usize
 }
 
 pub(crate) fn check_size(format: PixelFormat, width: u32, height: u32) -> Result<usize, GpuError> {
+    if format == PixelFormat::LmbxBitstream {
+        return Err(GpuError::Invalid("an LMBX bitstream is not a texture (FrameRenderer decodes it)".into()));
+    }
     let aligned = !format.is_compressed() || (width.is_multiple_of(4) && height.is_multiple_of(4));
     if width == 0 || height == 0 || !aligned || width > MAX_EDGE || height > MAX_EDGE {
         return Err(GpuError::Invalid(format!("{format:?} frame {width}x{height} must be non-zero (multiples of 4 for BC) up to {MAX_EDGE}")));

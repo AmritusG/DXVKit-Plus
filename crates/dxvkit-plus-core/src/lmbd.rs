@@ -47,7 +47,7 @@ pub const BLOCK_BYTES: u64 = 16;
 /// Profile byte reserved for `LMB7-YCC` (YCoCg-R in BC7); not defined yet, refused on read.
 pub const PROFILE_RESERVED_LMB7_YCC: u8 = 0x02;
 /// Profile byte reserved for `LMBX`, a later profile; refused on read.
-pub const PROFILE_RESERVED_LMBX: u8 = 0x10;
+pub const PROFILE_LMBX: u8 = 0x10;
 /// Compressor byte reserved for LZ4; refused on read.
 pub const COMPRESSOR_RESERVED_LZ4: u8 = 0x02;
 /// Most frames a file may index (the same bound as a movie's sample table).
@@ -60,6 +60,8 @@ pub const MAX_FRAMES: u32 = crate::container::MAX_SAMPLES;
 pub enum Profile {
     /// BC7 RGBA blocks.
     Lmb7 = 0x01,
+    /// LMBX: variable-rate YCoCg + integer DCT + rANS, per-tile independent (`crate::lmbx`).
+    Lmbx = 0x10,
 }
 
 /// The texture-format byte (header offset 7).
@@ -69,7 +71,13 @@ pub enum Profile {
 pub enum TexFormat {
     /// BC7 RGBA, 16 bytes per 4x4 block.
     Bc7Rgba = 0x01,
+    /// LMBX frame bitstream version 1 (`crate::lmbx`). `0x10` was the never-frozen prototype
+    /// (LMXS) and is refused.
+    LmbxV1 = 0x11,
 }
+
+/// The texture-format byte of the LMBX prototype (LMXS, never frozen), refused as `Unsupported`.
+pub const TEX_FORMAT_LMBX_PROTOTYPE: u8 = 0x10;
 
 /// The per-chunk second-stage compressor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -153,7 +161,17 @@ impl Header {
     pub fn coded_size(&self) -> (u32, u32) {
         (self.blocks_x().saturating_mul(4), self.blocks_y().saturating_mul(4))
     }
-    /// Exact BC7 bytes of one frame, `ceil(W/4) * ceil(H/4) * 16`.
+    /// A header for a new LMBX file.
+    pub fn new_lmbx(width: u32, height: u32, fps_num: u32, fps_den: u32) -> Header {
+        Header { profile: Profile::Lmbx, tex_format: TexFormat::LmbxV1, ..Header::new(width, height, fps_num, fps_den) }
+    }
+    /// The largest frame bitstream an LMBX frame may declare (its chunks' raw sizes): 16 bytes per
+    /// pixel of the coded size plus 1 MiB — far above any real stream, bounding allocation.
+    pub fn max_lmbx_frame_bytes(&self) -> u64 {
+        let (cw, ch) = (u64::from(self.width.div_ceil(64)) * 64, u64::from(self.height.div_ceil(64)) * 64);
+        cw.saturating_mul(ch).saturating_mul(16).saturating_add(1 << 20)
+    }
+    /// Exact BC7 bytes of one LMB7 frame, `ceil(W/4) * ceil(H/4) * 16`.
     pub fn frame_bytes(&self) -> u64 {
         u64::from(self.blocks_x()).saturating_mul(u64::from(self.blocks_y())).saturating_mul(BLOCK_BYTES)
     }
@@ -175,13 +193,19 @@ impl Header {
         }
         let profile = match byte(b, 6).ok_or_else(short)? {
             0x01 => Profile::Lmb7,
+            PROFILE_LMBX => Profile::Lmbx,
             PROFILE_RESERVED_LMB7_YCC => return Err(MediaError::Unsupported("LMBD profile 0x02 (LMB7-YCC) is reserved".into())),
-            PROFILE_RESERVED_LMBX => return Err(MediaError::Unsupported("LMBD profile 0x10 (LMBX) is reserved for a later release".into())),
             other => return Err(MediaError::Lmbd(format!("unknown profile 0x{other:02X}"))),
         };
-        let tex_format = match byte(b, 7).ok_or_else(short)? {
-            0x01 => TexFormat::Bc7Rgba,
-            other => return Err(MediaError::Lmbd(format!("unknown texture format 0x{other:02X}"))),
+        let tex_format = match (profile, byte(b, 7).ok_or_else(short)?) {
+            (Profile::Lmb7, 0x01) => TexFormat::Bc7Rgba,
+            (Profile::Lmbx, 0x11) => TexFormat::LmbxV1,
+            (Profile::Lmbx, TEX_FORMAT_LMBX_PROTOTYPE) => {
+                return Err(MediaError::Unsupported(
+                    "LMBX prototype file (texture format 0x10, never frozen): re-encode with `dxvkit-plus encode-lmbd --profile lmbx`".into(),
+                ));
+            }
+            (p, other) => return Err(MediaError::Lmbd(format!("texture format 0x{other:02X} is not valid for profile {p:?}"))),
         };
         let (width, height) = (le32(b, 8).ok_or_else(short)?, le32(b, 12).ok_or_else(short)?);
         if width == 0 || height == 0 || width > crate::MAX_DIMENSION || height > crate::MAX_DIMENSION {
@@ -279,7 +303,7 @@ pub fn parse_chunks(payload: &[u8], header: &Header) -> Result<Vec<ChunkEntry>, 
         let field = |o: usize| le32(payload, at.saturating_add(o)).ok_or_else(truncated);
         let compressor = Compressor::from_byte(byte(payload, at).ok_or_else(truncated)?)?;
         let (raw_size, packed_size, offset) = (field(1)?, field(5)?, field(9)?);
-        if u64::from(raw_size) % BLOCK_BYTES != 0 {
+        if header.profile == Profile::Lmb7 && u64::from(raw_size) % BLOCK_BYTES != 0 {
             return Err(MediaError::Lmbd(format!("chunk {i}: raw size {raw_size} is not a whole number of 16-byte blocks")));
         }
         if compressor == Compressor::None && packed_size != raw_size {
@@ -293,7 +317,11 @@ pub fn parse_chunks(payload: &[u8], header: &Header) -> Result<Vec<ChunkEntry>, 
         raw_total = raw_total.saturating_add(u64::from(raw_size));
         chunks.push(ChunkEntry { compressor, raw_size, packed_size, offset });
     }
-    if raw_total != header.frame_bytes() {
+    if header.profile == Profile::Lmbx {
+        if raw_total == 0 || raw_total > header.max_lmbx_frame_bytes() {
+            return Err(MediaError::Lmbd(format!("LMBX frame of {raw_total} bytes (1..={})", header.max_lmbx_frame_bytes())));
+        }
+    } else if raw_total != header.frame_bytes() {
         return Err(MediaError::Lmbd(format!(
             "chunks hold {raw_total} bytes, a {}x{} frame is {} bytes of BC7",
             header.width,
@@ -342,11 +370,12 @@ fn zstd_decompress(data: &[u8], out: &mut [u8]) -> Result<usize, MediaError> {
     ruzstd::decoding::FrameDecoder::new().decode_all(data, out).map_err(|e| MediaError::Lmbd(format!("zstd: {e}")))
 }
 
-/// Decode a frame payload into its BC7 block stream (`out` is resized to one frame). `parallel`
-/// decompresses the chunks on worker threads.
+/// Decode a frame payload into its raw stream — LMB7: the BC7 block stream; LMBX: the frame
+/// bitstream (`out` is resized to the chunks' total). `parallel` decompresses the chunks on
+/// worker threads.
 pub fn decode_payload(payload: &[u8], header: &Header, parallel: bool, out: &mut Vec<u8>) -> Result<(), MediaError> {
     let chunks = parse_chunks(payload, header)?;
-    let total = usize::try_from(header.frame_bytes()).map_err(|_| MediaError::Lmbd("frame too large".into()))?;
+    let total = usize::try_from(chunks.iter().map(|c| u64::from(c.raw_size)).sum::<u64>()).map_err(|_| MediaError::Lmbd("frame too large".into()))?;
     out.clear();
     out.resize(total, 0);
     // Disjoint output slices in table order (the chunks cover the frame exactly, checked above).
@@ -511,7 +540,11 @@ pub fn frame_payload(header: &Header, chunks: &[ChunkData<'_>]) -> Result<Vec<u8
         return Err(MediaError::Invalid("a frame needs at least one chunk".into()));
     }
     let raw: u64 = chunks.iter().map(|c| u64::from(c.raw_size)).sum();
-    if raw != header.frame_bytes() || chunks.iter().any(|c| u64::from(c.raw_size) % BLOCK_BYTES != 0) {
+    if header.profile == Profile::Lmbx {
+        if raw == 0 || raw > header.max_lmbx_frame_bytes() {
+            return Err(MediaError::Invalid(format!("LMBX frame of {raw} bytes (1..={})", header.max_lmbx_frame_bytes())));
+        }
+    } else if raw != header.frame_bytes() || chunks.iter().any(|c| u64::from(c.raw_size) % BLOCK_BYTES != 0) {
         return Err(MediaError::Invalid(format!("chunks hold {raw} bytes in whole blocks, the frame is {}", header.frame_bytes())));
     }
     let table = FRAME_HEADER_SIZE.saturating_add(CHUNK_ENTRY_SIZE.saturating_mul(chunks.len()));
