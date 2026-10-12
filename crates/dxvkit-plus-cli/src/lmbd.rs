@@ -127,9 +127,16 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
         "zstd" => Some(i32::try_from(args.num("level", 19)?).map_err(|_| "--level out of range".to_string())?),
         other => return Err(format!("--compressor: none or zstd, got {other}")),
     };
+    // The colour-accuracy guard, in 8-bit code values (default 1.0; `off` = no guard).
+    let colour_tol = match args.value("colour-tol") {
+        None => LmbxParams::default().colour_tol,
+        Some("off") => None,
+        Some(v) => Some(v.parse::<f64>().ok().filter(|t| t.is_finite() && *t > 0.0).ok_or_else(|| format!("--colour-tol: a positive number or off, got {v}"))?),
+    };
     let p = LmbxParams {
         chroma,
         quality,
+        colour_tol,
         threads,
         zstd,
         flat: modes.contains(&"flat"),

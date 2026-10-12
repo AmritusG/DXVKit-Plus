@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.6.1 — 2026-10-12
+
+Regression fix (W6b): LMBX shifted colours on the flat-graphics eye clips where LMB7 did not.
+Encoder only — the bitstream stays v2, the decoder (CPU and GPU) is unchanged, and every v1 and v2
+vector decodes bit-exact as before. Diagnosis, per-colour tables and A/B in
+`docs/data/w6b-lmbx-colour.txt`.
+
+- Proven causes (each with a falsifying measurement; the writer, the container and the decoder
+  were ruled out — our decode, the eye .mov read back through AVFoundation and Arena's own preview
+  agree to the code value):
+  - **Forward YCoCg-R scale.** The encoder lifted in code values and scaled by 4; the decoder
+    inverts in quarter units, where the floors do not scale. Every colour with odd `R - B` and odd
+    `G - t` — 4,194,304 of 16,777,216, a quarter — decoded 1 low in R and B at any quality. The
+    encoder now uses the decoder's own quarter-unit forward: 0 of 16,777,216 wrong.
+  - **DC lattice at coarse steps.** A block's DC is a residual from the previous reconstructed DC at
+    step `dc_step(q)`, so a flat block lands on a lattice of `q / 8` code values. The 0.5.0 (v1) eye
+    arm, starved at its rate floor (q 96, chroma 154), moved flat fields by up to 12 code values;
+    the lattice predicts every flat colour's decoded value exactly (9 of 9).
+  - **v2 mode decision.** The rate-distortion choice coded a gradient's 32x32 tiles as flat tiles:
+    32-row stripes, rows off by up to 7 code values in R, at a good PSNR. On the small card the
+    lossy palettes also pulled white 1.7 low (Lloyd centroids dragged by anti-aliased edges).
+- `dxvkit-plus-lmbd-enc::lmbx`: the exact forward transform; a **colour guard**
+  (`LmbxParams::colour_tol`, default 1 code value, LMB7's own worst on the card being 1.02): smooth
+  DCT blocks take a finer step only where their DC would decode off their colour (exact integer
+  check, in stream order with every plane's DC chain); flat and lossy-palette tiles that move a
+  region (a colour filling at least 16 uniform 2x2 cells) beyond the tolerance are not candidates;
+  lossy palettes seed with the regions, move a region-holding centroid to the regions' mean only,
+  and are offered for tiles of at most 16 colours too. CLI `encode-lmbd --colour-tol T|off`.
+- Measured at LMB7's bytes per frame (Mac Studio): graphics card 45.35 dB (0.6.0 38.41, LMB7
+  45.50), every flat region within 0.02 code values (0.6.0 1.81, LMB7 1.00); with alpha 43.77 dB
+  shown (0.6.0 35.92, LMB7 46.66); the 1080p graphics eye clip 60.0 dB mean over 60 frames (0.6.0
+  51.2, LMB7 49.7), flat regions exact. Natural content equal or better: glow 43.06 (43.00), real
+  alpha 48.66 / 55.35 / 50.39 (48.63 / 55.34 / 50.38), synthetic alpha +0.8, grain +1.5 (the
+  transform fix), detail equal; 4:2:2 likewise.
+- Tests: the DCT path reproduces flat colours exactly at quality 1 (both chroma modes); the colour
+  guard keeps every flat region of the graphics card within 1 code value at a coarse quality (v2,
+  both chroma modes, with and without alpha; DCT-only per flat block, its control without the guard
+  off by more than 3). The committed vectors stay (decoder conformance); the identity test pins the
+  0.6.1 encoder's re-encodings (`reencoded_sha256` in the sidecars) at 1, 3 and 8 threads.
+- `scripts/mint-lmbx-vectors.sh` built only its example, not the CLI it runs (cargo builds just the
+  example when `--example` is given): fixed.
+
 ## 0.6.0 — 2026-10-12
 
 LMBX bitstream v2 (`docs/LMBD.md` §11, decision LMBX-D3): fixes the two weak spots 0.5.0 left — real

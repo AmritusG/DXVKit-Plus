@@ -88,7 +88,9 @@ tile: the integer inverse DCT as generated straight-line WGSL), then a fragment 
 CPU agree bit for bit on every frame, hostile ones included. LMBX frames vary in size, so they have
 no fixed `FrameSource::layout` (no decode-into-staging, no direct view). The encoder is
 `lmbd_enc::lmbx` (B1d's RDOQ, with rate control; v2 adds a rate-distortion choice per tile between
-the DCT and flat or palette coding, lossy palettes included).
+the DCT and flat or palette coding, lossy palettes included; 0.6.1 adds the exact forward YCoCg-R
+and a colour guard that holds flat regions within a tolerance — encoder only, `docs/LMBD.md`
+§11.11).
 
 *Zstd backend.* One private function, `lmbd::zstd_decompress(data, out) -> bytes written`, sits
 behind two core features. `zstd-c` (default) calls libzstd's `ZSTD_decompressDCtx` through the
@@ -163,7 +165,8 @@ Both routes produce identical pixels (tested on every native fixture frame).
 | LMBD encoder vs the original encoder | byte-identical files (five vectors; 1080p frames checked by hand) | `lmbd-enc/tests/encoder_identity.rs` |
 | LMBX reference decoder vs the conformance vectors | every frame's normative output hashes to its sidecar (bitstreams v1 and v2, every tile mode, both chroma modes, alpha, odd sizes) | `core/tests/lmbx.rs` |
 | LMBX GPU vs CPU | bit-exact: every vector frame (`write_buffer` and staged uploads) and hostile frames (random, empty, swapped streams; v2: random tile modes) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
-| LMBX encoder | deterministic: the vectors re-encode byte for byte at 1, 3 and 8 threads | `lmbd-enc/tests/lmbx_identity.rs` |
+| LMBX encoder | deterministic: the vectors' patterns re-encode identically at 1, 3 and 8 threads, pinned by `reencoded_sha256` | `lmbd-enc/tests/lmbx_identity.rs` |
+| LMBX encoder colour accuracy | flat colours exact through the DCT path at quality 1; every flat region of the graphics card within 1 code value at a coarse quality (v2, both chroma modes, alpha) | `lmbd-enc/src/lmbx.rs` tests |
 | Native BGRA (ProRes 4444) zero-copy vs Apple's own CPU read-back | bit-exact | `apple/tests/native.rs` |
 | Native 4:2:0 WGSL conversion vs Apple's conversion | tile interiors mean ≤ 1/255; whole frame no further from the source than Apple's | same |
 | Frame identity + seek | every frame carries its index; shuffled seeks equal sequential decodes | `apple/tests/native.rs`, `dxvkit-plus verify` |
