@@ -60,6 +60,12 @@ pub struct LmbxParams {
     /// With `palette`: also lossy palettes (the most frequent 2..16 colours, refined) for tiles
     /// with more colours.
     pub palette_lossy: bool,
+    /// Colour-accuracy guard (W6b), in 8-bit code values; `None` = off (0.6.0's behaviour). A
+    /// region of one source colour must decode to a mean within this of its colour, not only score
+    /// a good PSNR: a smooth DCT block gets a finer step where its DC would otherwise land off its
+    /// colour (`dc_guard`), and a flat or lossy-palette tile is not a candidate if it moves any
+    /// region's colour ([`GUARD_CELLS`]) by more than this. Default 1.0: LMB7's own worst flat-region error on the graphics card (1.02).
+    pub colour_tol: Option<f64>,
 }
 
 impl Default for LmbxParams {
@@ -77,8 +83,137 @@ impl Default for LmbxParams {
             flat: true,
             palette: true,
             palette_lossy: true,
+            colour_tol: Some(1.0),
         }
     }
+}
+
+/// The colour guard's region size: a colour that fills at least this many uniform 2x2 cells of a
+/// tile (an area, not an anti-aliased edge line, which has none) is a region whose colour must
+/// stay within [`LmbxParams::colour_tol`].
+pub const GUARD_CELLS: usize = 16;
+
+/// The colours of a tile's regions ([`GUARD_CELLS`]).
+fn regions(px: &[[u8; 4]]) -> Vec<[u8; 4]> {
+    let t = TILE as usize;
+    let mut cells: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
+    for y in 0..t - 1 {
+        for x in 0..t - 1 {
+            let c = px[y * t + x];
+            if px[y * t + x + 1] == c && px[(y + 1) * t + x] == c && px[(y + 1) * t + x + 1] == c {
+                *cells.entry(c).or_default() += 1;
+            }
+        }
+    }
+    let mut r: Vec<[u8; 4]> = cells.into_iter().filter(|c| c.1 >= GUARD_CELLS).map(|c| c.0).collect();
+    r.sort_unstable();
+    r
+}
+
+/// A block is smooth when its luma AC energy is below this (the RMS deviation from the block mean
+/// is then under about 3 code values: no texture masks a shift of its mean).
+const SMOOTH_AC: f64 = 23.0;
+
+/// The colour guard on DCT tiles (W6b): a block's DC is a residual from the previous block's
+/// reconstructed DC at step `dc_step(q)`, so a flat block can only land on that lattice — at a
+/// coarse step a flat region's colour moves by up to `q / 16` code values per plane (12 at the
+/// rate floor's q 96 and chroma 154: the measured v1 shift). For each smooth block, in stream
+/// order with every plane's DC chain, keep the block's step if its mean (DC) decodes within `tol`
+/// of the source in R, G, B and A, else take the coarsest step that does. Only blocks where a
+/// region's colour changes need a finer step: after one exact DC the run repeats it for nothing.
+fn dc_guard(s: &Source, t: u32, mut qi: Vec<usize>, tol: f64) -> Vec<usize> {
+    use dxvkit_plus_core::lmbx::{DEQUANT_MAX, dc_step};
+    let h = &s.header;
+    let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+    // DC coefficient (8 x the block mean, code values) of a plane's block.
+    let dc_of = |pl: &Plane, x0: u32, y0: u32, shift: i32| pl.block(x0, y0, shift).iter().sum::<f64>() / 8.0;
+    let ac_of = |pl: &Plane, x0: u32, y0: u32, shift: i32| {
+        let b = pl.block(x0, y0, shift);
+        let mean = b.iter().sum::<f64>() / 64.0;
+        b.iter().map(|v| (v - mean).powi(2)).sum::<f64>().sqrt()
+    };
+    // Reconstructed DC after one block: the decoder's chain (the encoder rounds the residual).
+    let step = |dc: i32, c0: f64, q: u32| -> i32 {
+        let l0 = ((c0 - f64::from(dc)) / f64::from(q)).round().clamp(-f64::from(LEVEL_OFFSET), f64::from(LEVEL_OFFSET)) as i32;
+        (dc + l0 * q as i32).clamp(-DEQUANT_MAX, DEQUANT_MAX)
+    };
+    let half = h.chroma == Chroma::Halo422;
+    let mut chain = [0i32; 4];
+    // The DC-only chroma samples of the current 4:2:2 chroma block (an odd luma block shares them).
+    let mut chain_c = [0i32; 2];
+    for by in 0..TB {
+        for bx in 0..TB {
+            let (x0, y0) = (tx * TILE + bx * 8, ty * TILE + by * 8);
+            // In 4:2:2 the chroma block of an even luma block (the one that carries its step).
+            let chroma = (!half || bx % 2 == 0).then(|| (if half { tx * TILE / 2 + bx / 2 * 8 } else { x0 }, y0));
+            let b = (by * TB + bx) as usize;
+            let c = [
+                Some(dc_of(&s.y, x0, y0, 512)),
+                chroma.map(|(cx, cy)| dc_of(&s.co, cx, cy, 0)),
+                chroma.map(|(cx, cy)| dc_of(&s.cg, cx, cy, 0)),
+                s.a.as_ref().map(|a| dc_of(a, x0, y0, 512)),
+            ];
+            let next = |q: u32| -> [i32; 4] {
+                std::array::from_fn(|k| match c[k] {
+                    Some(c0) => step(chain[k], c0, dc_step(if k == 1 || k == 2 { h.chroma_q(q) } else { q }, k == 1 || k == 2)),
+                    None => chain[k],
+                })
+            };
+            // The block's mean source RGBA (8-bit) and the exact decoded colour of a DC-only block
+            // (the normative integer IDCT and inverse YCoCg-R; 4:2:2's odd-column interpolation
+            // aside), within `tol` per shown channel.
+            let target: [f64; 4] = {
+                let mut acc = [0f64; 4];
+                for i in 0..8u32 {
+                    for j in 0..8u32 {
+                        let yi = ((y0 + i) * s.y.w + x0 + j) as usize;
+                        let ci = ((y0 + i) * s.co.w + if half { (x0 + j) / 2 } else { x0 + j }) as usize;
+                        let (yy, co, cg) = (s.y.v[yi], s.co.v[ci], s.cg.v[ci]);
+                        let t = yy - (cg >> 1);
+                        let (g, b) = (cg + t, t - (co >> 1));
+                        let a = s.a.as_ref().map_or(1020, |a| a.v[yi]);
+                        for (k, v) in [b + co, g, b, a].into_iter().enumerate() {
+                            acc[k] += f64::from(v) / 4.0 / 64.0;
+                        }
+                    }
+                }
+                acc
+            };
+            let flat = |d: i32, off: i32| {
+                let mut blk = [0i32; 64];
+                blk[0] = d;
+                let mut out = [0i32; 64];
+                dxvkit_plus_core::lmbx::idct(&blk, off, &mut out);
+                out[0]
+            };
+            let fits = |n: &[i32; 4]| {
+                let yy = flat(n[0], 512);
+                let (co, cg) = if chroma.is_some() { (flat(n[1], 0), flat(n[2], 0)) } else { (chain_c[0], chain_c[1]) };
+                let t = yy - (cg >> 1);
+                let (g, b) = (cg + t, t - (co >> 1));
+                let a = if s.a.is_some() { flat(n[3], 512) } else { 1020 };
+                let rec = [b + co, g, b, a].map(|v| f64::from(dxvkit_plus_core::lmbx::to_8bit(v.clamp(0, 1020) as u16)));
+                // Shown channels (RGB times alpha) and alpha, as `within`.
+                (0..3).all(|k| (rec[k] * rec[3] - target[k] * target[3]).abs() / 255.0 <= tol) && (rec[3] - target[3]).abs() <= tol
+            };
+            if ac_of(&s.y, x0, y0, 512) < SMOOTH_AC && !fits(&next(u32::from(QT[qi[b]]))) {
+                // No step fits (e.g. a 4:2:2 odd block, whose chroma its even neighbour carries): keep it.
+                qi[b] = (0..qi[b]).rev().find(|&i| fits(&next(u32::from(QT[i])))).unwrap_or(qi[b]);
+            }
+            chain = next(u32::from(QT[qi[b]]));
+            if chroma.is_some() {
+                let flat = |d: i32| {
+                    let mut blk = [0i32; 64];
+                    blk[0] = d;
+                    let mut out = [0i32; 64];
+                    dxvkit_plus_core::lmbx::idct(&blk, 0, &mut out);
+                    out[0]
+                };
+                chain_c = [flat(chain[1]), flat(chain[2])];
+            }
+        }
+    }
+    qi
 }
 
 /// The stored size of a frame bitstream: Zstandard at `zstd` when that is smaller.
@@ -145,18 +280,19 @@ fn idct_f(m: &[[f64; 8]; 8], d: &[f64; 64]) -> [f64; 64] {
     out
 }
 
-/// A plane of integer samples (code values, YCoCg-R) at the coded size.
+/// A plane of integer samples (quarter code values, YCoCg-R) at the coded size.
 struct Plane {
     w: u32,
     v: Vec<i32>,
 }
 
 impl Plane {
+    /// An 8x8 block in code values (`(v - shift) / 4`; `shift` in quarter units).
     fn block(&self, x0: u32, y0: u32, shift: i32) -> [f64; 64] {
         let mut b = [0f64; 64];
         for i in 0..8 {
             for j in 0..8 {
-                b[i * 8 + j] = f64::from(self.v[((y0 + i as u32) * self.w + x0 + j as u32) as usize] - shift);
+                b[i * 8 + j] = f64::from(self.v[((y0 + i as u32) * self.w + x0 + j as u32) as usize] - shift) / 4.0;
             }
         }
         b
@@ -171,8 +307,12 @@ struct Source {
     a: Option<Plane>,
 }
 
-/// RGBA8 → YCoCg-R planes at the coded size (edge-replicated), chroma subsampled for 4:2:2
-/// (`(a + b + 1) >> 1` of each column pair).
+/// RGBA8 → YCoCg-R planes in quarter units at the coded size (edge-replicated), chroma
+/// subsampled for 4:2:2 (`(a + b + 1) >> 1` of each column pair): the decoder's own forward
+/// definition (`Co = 4R - 4B`, `t = 4B + (Co >> 1)`, `Cg = 4G - t`, `Y = t + (Cg >> 1)`, `A = 4A`),
+/// which its inverse undoes exactly. (0.6.0 lifted in code values and scaled by 4 afterwards: the
+/// floors do not scale, so every colour with odd `R - B` and odd `G - t` — a quarter of all
+/// colours — decoded 1 lower in R and B, at any quality. W6b.)
 fn prepare(rgba: &[u8], width: u32, height: u32, chroma: Chroma, chroma_ratio: u16) -> Result<Source, MediaError> {
     if width == 0 || height == 0 || width > dxvkit_plus_core::MAX_DIMENSION || height > dxvkit_plus_core::MAX_DIMENSION {
         return Err(MediaError::Invalid(format!("frame size {width}x{height}")));
@@ -188,7 +328,7 @@ fn prepare(rgba: &[u8], width: u32, height: u32, chroma: Chroma, chroma_ratio: u
     for py in 0..ch {
         for px in 0..cw {
             let s = ((py.min(height - 1) * width + px.min(width - 1)) * 4) as usize;
-            let (r, g, b) = (i32::from(rgba[s]), i32::from(rgba[s + 1]), i32::from(rgba[s + 2]));
+            let (r, g, b) = (i32::from(rgba[s]) * 4, i32::from(rgba[s + 1]) * 4, i32::from(rgba[s + 2]) * 4);
             let o = r - b;
             let t = b + (o >> 1);
             let gg = g - t;
@@ -196,7 +336,7 @@ fn prepare(rgba: &[u8], width: u32, height: u32, chroma: Chroma, chroma_ratio: u
             co[i] = o;
             cg[i] = gg;
             y[i] = t + (gg >> 1);
-            a[i] = i32::from(rgba[s + 3]);
+            a[i] = i32::from(rgba[s + 3]) * 4;
         }
     }
     let (co, cg) = match chroma {
@@ -219,7 +359,7 @@ const AC_REF: f64 = 380.0;
 
 /// B1d's per-block quantiser: the step nearest `base * clamp(AC energy / 380, 0.16, 2.6)`.
 fn pick_qidx(m: &[[f64; 8]; 8], y: &Plane, x0: u32, y0: u32, base: f64) -> usize {
-    let c = fdct(m, &y.block(x0, y0, 128));
+    let c = fdct(m, &y.block(x0, y0, 512));
     let ac = c.iter().skip(1).map(|v| v * v).sum::<f64>().sqrt();
     let qy = (base * (ac / AC_REF).clamp(0.16, 2.6)).round().clamp(1.0, 96.0);
     QT.iter().enumerate().min_by(|a, b| (f64::from(*a.1) - qy).abs().total_cmp(&(f64::from(*b.1) - qy).abs())).map_or(0, |(i, _)| i)
@@ -334,7 +474,7 @@ fn tile_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64]
                     for bx in 0..TB {
                         let (x0, y0) = (tx * TILE + bx * 8, ty * TILE + by * 8);
                         let wgt = if kind == PlaneKind::Y { 3.0 } else { 1.0 };
-                        sse += wgt * block(plane, x0, y0, 128, q_of(by, bx), false, &mut dc, &mut syms);
+                        sse += wgt * block(plane, x0, y0, 512, q_of(by, bx), false, &mut dc, &mut syms);
                     }
                 }
             }
@@ -450,10 +590,20 @@ struct Palette {
     dist: f64,
 }
 
+/// Whether coding source colour `src` as `rec` keeps it within the colour tolerance: each shown
+/// channel (RGB times alpha) and alpha within `tol` code values.
+fn within(src: [u8; 4], rec: [u8; 4], tol: f64) -> bool {
+    let shown = |p: [u8; 4], c: usize| f64::from(p[c]) * f64::from(p[3]) / 255.0;
+    (0..3).all(|c| (shown(src, c) - shown(rec, c)).abs() <= tol) && (f64::from(src[3]) - f64::from(rec[3])).abs() <= tol
+}
+
 /// Palette candidates of a tile: the exact palette when it has at most 16 colours; with
 /// `palette_lossy` also the most frequent 2, 4, 8 and 16 colours refined
 /// by two Lloyd iterations, each pixel mapped to the nearest colour (RGBA squared distance).
-fn palette_candidates(px: &[[u8; 4]], p: &LmbxParams) -> Vec<Palette> {
+/// Under the colour guard (`regions` non-empty only then) the tile's regions seed first, a
+/// centroid holding regions moves to their mean only, and a lossy palette that moves any region
+/// beyond the tolerance is not a candidate.
+fn palette_candidates(px: &[[u8; 4]], p: &LmbxParams, regions: &[[u8; 4]]) -> Vec<Palette> {
     let max = dxvkit_plus_core::lmbx::PALETTE_SYMBOLS;
     if !p.palette {
         return Vec::new();
@@ -493,26 +643,52 @@ fn palette_candidates(px: &[[u8; 4]], p: &LmbxParams) -> Vec<Palette> {
     let mut out = Vec::new();
     if count.len() <= max {
         out.push(build(count.iter().map(|c| c.0).collect()));
-        return out;
+        // Without the guard an exact palette is the only one; with it, smaller palettes that keep
+        // every region within the tolerance too (a gradient's bands merge in pairs instead of the
+        // whole tile going flat).
+        if p.colour_tol.is_none() {
+            return out;
+        }
     }
     if !p.palette_lossy {
         return out;
     }
-    for k in [2usize, 4, 8, 16] {
-        let mut cols: Vec<[u8; 4]> = count.iter().take(k).map(|c| c.0).collect();
+    // Seeds: the tile's regions first, then by frequency.
+    let seeds: Vec<[u8; 4]> = count.iter().filter(|c| regions.contains(&c.0)).chain(count.iter().filter(|c| !regions.contains(&c.0))).map(|c| c.0).collect();
+    for k in [2usize, 4, 8, 16].into_iter().filter(|&k| k < count.len()) {
+        let mut cols: Vec<[u8; 4]> = seeds.iter().take(k).copied().collect();
         for _ in 0..2 {
-            let mut acc = vec![([0f64; 4], 0f64); k];
+            // Per centroid: the sum and count of all its pixels, and of its region pixels; under
+            // the colour guard a centroid with regions moves to their mean only, so a region's
+            // colour is not pulled by its anti-aliased edge pixels (near-equal regions, such as a
+            // gradient's bands, still merge at their mean).
+            let mut acc = vec![([0f64; 4], 0f64, [0f64; 4], 0f64); k];
             for &(q, n) in &count {
                 let i = (0..k).min_by(|&a, &b| d2(q, cols[a]).total_cmp(&d2(q, cols[b]))).unwrap_or(0);
-                for (a, &v) in acc[i].0.iter_mut().zip(&q) {
-                    *a += f64::from(v) * n as f64;
+                let region = regions.contains(&q);
+                for (c, &v) in q.iter().enumerate() {
+                    acc[i].0[c] += f64::from(v) * n as f64;
+                    if region {
+                        acc[i].2[c] += f64::from(v) * n as f64;
+                    }
                 }
                 acc[i].1 += n as f64;
+                if region {
+                    acc[i].3 += n as f64;
+                }
             }
-            for (col, (sum, n)) in cols.iter_mut().zip(&acc) {
-                if *n > 0.0 {
+            for (col, (sum, n, rsum, rn)) in cols.iter_mut().zip(&acc) {
+                if *rn > 0.0 {
+                    *col = rsum.map(|v| (v / rn).round() as u8);
+                } else if *n > 0.0 {
                     *col = sum.map(|v| (v / n).round() as u8);
                 }
+            }
+        }
+        if let Some(tol) = p.colour_tol {
+            let nearest = |q: [u8; 4]| cols[(0..k).min_by(|&a, &b| d2(q, cols[a]).total_cmp(&d2(q, cols[b]))).unwrap_or(0)];
+            if regions.iter().any(|&c| !within(c, nearest(c), tol)) {
+                continue;
             }
         }
         out.push(build(cols));
@@ -554,7 +730,10 @@ fn direct_candidates(rgba: &[u8], width: u32, height: u32, h: &FrameHeader, t: u
             .sum();
         (d, mean)
     });
-    let palette = palette_candidates(&px, p);
+    // The colour guard: a flat tile must keep every region's colour.
+    let regions = if p.colour_tol.is_some() { regions(&px) } else { Vec::new() };
+    let flat = flat.filter(|&(_, mean)| p.colour_tol.is_none_or(|tol| regions.iter().all(|&c| within(c, mean, tol))));
+    let palette = palette_candidates(&px, p, &regions);
     Direct { flat, palette, palette_pick: std::cell::Cell::new(0) }
 }
 
@@ -579,6 +758,10 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
             (0..TB * TB).map(|b| pick_qidx(&m, &s.y, tx * TILE + (b % TB) * 8, ty * TILE + (b / TB) * 8, p.quality)).collect()
         })
         .collect();
+    let qidx: Vec<Vec<usize>> = match p.colour_tol {
+        Some(tol) => qidx.into_iter().enumerate().map(|(t, qi)| dc_guard(&s, t as u32, qi, tol)).collect(),
+        None => qidx,
+    };
     // Bootstrap (deadzone only) -> rate model -> RDOQ passes.
     let mut rate = vec![0f64; COEF_SYMBOLS];
     let (mut syms, mut sse) = all_symbols(&m, &s, &qidx, &rate, p, false);
@@ -865,6 +1048,100 @@ mod tests {
             assert!(psnr(&src, &out) > 40.0, "{chroma:?}: {:.1} dB", psnr(&src, &out));
             let v1 = encode_frame(&src, w, h, &LmbxParams { chroma, flat: false, palette: false, ..Default::default() }).unwrap();
             assert_eq!(Frame::parse(&v1, w, h).unwrap().header.version, dxvkit_plus_core::lmbx::VERSION);
+        }
+    }
+    /// The worst region-mean colour error (W6b): over every source colour with at least 64 pixels
+    /// whose 5x5 neighbourhood is that colour (`block`: whose whole aligned block of that width x 8
+    /// is — a chroma block's footprint), |mean
+    /// decoded - source| of each shown channel (RGB times alpha) and of alpha, in code values; with
+    /// the colour.
+    fn worst_region_error(src: &[u8], out: &[u8], w: u32, h: u32, block: Option<i32>) -> (f64, [u8; 4]) {
+        let at = |x: i32, y: i32| {
+            let i = ((y.clamp(0, h as i32 - 1) as u32 * w + x.clamp(0, w as i32 - 1) as u32) * 4) as usize;
+            [src[i], src[i + 1], src[i + 2], src[i + 3]]
+        };
+        let mut acc: std::collections::HashMap<[u8; 4], ([f64; 4], usize)> = std::collections::HashMap::new();
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let c = at(x, y);
+                let inside = match block {
+                    // (4:2:2: plus the next chroma sample, which its odd last column interpolates.)
+                    Some(bw) => (0..8).all(|j| (0..bw + if bw == 16 { 2 } else { 0 }).all(|i| at(x - x % bw + i, y - y % 8 + j) == c)),
+                    None => (-2..=2).all(|dy| (-2..=2).all(|dx| at(x + dx, y + dy) == c)),
+                };
+                if inside {
+                    let i = ((y as u32 * w + x as u32) * 4) as usize;
+                    let e = acc.entry(c).or_default();
+                    (0..4).for_each(|k| e.0[k] += f64::from(out[i + k]));
+                    e.1 += 1;
+                }
+            }
+        }
+        let shown = |p: [f64; 4], c: usize| p[c] * p[3] / 255.0;
+        acc.into_iter()
+            .filter(|(_, (_, n))| *n >= 64)
+            .map(|(c, (sum, n))| {
+                let m = sum.map(|v| v / n as f64);
+                let s = c.map(f64::from);
+                let e = (0..3).map(|k| (shown(m, k) - shown(s, k)).abs()).fold((m[3] - s[3]).abs(), f64::max);
+                (e, c)
+            })
+            .fold((0.0, [0; 4]), |a, b| if b.0 > a.0 { b } else { a })
+    }
+
+    /// The forward YCoCg-R is the decoder's own, in quarter units, so it inverts exactly: flat
+    /// fields of colours with odd `R - B` and odd `G - t` (0.6.0 decoded those 1 low in R and B at
+    /// any quality) come back exactly through the DCT path at quality 1.
+    #[test]
+    fn dct_path_reproduces_flat_colours_exactly() {
+        let mut cols = vec![[80u8, 140, 255, 255], [255, 120, 0, 255], [18, 20, 32, 255], [1, 2, 4, 255], [254, 3, 129, 255]];
+        let mut r = 12345u32;
+        while cols.len() < 40 {
+            r = r.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            cols.push([(r >> 8) as u8, (r >> 16) as u8, (r >> 24) as u8, 255]);
+        }
+        let (w, h) = (32 * 8, 32 * 5);
+        let src: Vec<u8> = (0..w * h).flat_map(|i| cols[((i / w / 32) * 8 + (i % w) / 32) as usize]).collect();
+        for chroma in [Chroma::Halo422, Chroma::Full444] {
+            let p = LmbxParams { chroma, quality: 1.0, flat: false, palette: false, colour_tol: None, ..Default::default() };
+            let out = decode_rgba8(&encode_frame(&src, w, h, &p).unwrap(), w, h, false).unwrap();
+            // 4:2:2 shares chroma across a field edge's column pair; compare away from edges.
+            let bad = (0..(w * h) as usize)
+                .filter(|i| chroma == Chroma::Full444 || (2..30).contains(&(i % w as usize % 32)))
+                .find(|&i| out[i * 4..i * 4 + 4] != src[i * 4..i * 4 + 4]);
+            assert!(bad.is_none(), "{chroma:?}: pixel {bad:?} {:?} != {:?}", bad.map(|i| &out[i * 4..i * 4 + 4]), bad.map(|i| &src[i * 4..i * 4 + 4]));
+        }
+    }
+
+    /// The colour guard: on the graphics card at a coarse quality, every flat region decodes to a
+    /// mean within the tolerance (1 code value; LMB7's own worst on this card is 1.02) with tile
+    /// modes (v2, the default), both chroma modes, with and without alpha; DCT-only (v1) coding
+    /// keeps it on every flat block (8x8; 16x8 in 4:2:2, a chroma block) — its edge blocks are the
+    /// transform's. Without the guard the
+    /// DCT-only frame misses by several code values (its DC lattice at the coarse step).
+    #[test]
+    fn colour_guard_keeps_flat_regions() {
+        let (w, h) = (333u32, 185u32);
+        for alpha in [false, true] {
+            let src = dxvkit_plus_core::testpattern::graphics(1, w, h, alpha);
+            for chroma in [Chroma::Halo422, Chroma::Full444] {
+                for v2 in [false, true] {
+                    let p = LmbxParams { chroma, quality: 400.0, flat: v2, palette: v2, palette_lossy: v2, ..Default::default() };
+                    let out = decode_rgba8(&encode_frame(&src, w, h, &p).unwrap(), w, h, true).unwrap();
+                    let block = (!v2).then_some(if chroma == Chroma::Halo422 { 16 } else { 8 });
+                    let (e, c) = worst_region_error(&src, &out, w, h, block);
+                    // DCT-only 4:2:2: an odd luma block's chroma is its even neighbour's, and an odd
+                    // column interpolates the next chroma block's sample — the per-block guard
+                    // cannot steer either (measured 1.06).
+                    let tol = if !v2 && chroma == Chroma::Halo422 { 1.25 } else { 1.0 };
+                    assert!(e <= tol, "alpha {alpha} {chroma:?} v2 {v2}: region {c:?} off by {e:.2}");
+                    if !v2 && !alpha {
+                        let off = decode_rgba8(&encode_frame(&src, w, h, &LmbxParams { colour_tol: None, ..p }).unwrap(), w, h, true).unwrap();
+                        let (e, _) = worst_region_error(&src, &off, w, h, block);
+                        assert!(e > 3.0, "{chroma:?}: without the guard the DC lattice shows ({e:.2})");
+                    }
+                }
+            }
         }
     }
 }

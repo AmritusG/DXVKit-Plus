@@ -9,4 +9,5 @@ params: pattern=tiles chroma=422halo quality=4
 decoded_rgba_q_sha256 frame 0: 6da4157aac67bda504b683a2f6a0f5715ba6bb01d7655b84d9b02e8f44646d88
 decoded_rgba_q_sha256 frame 1: c2394ea5d02c4d6261783da9e9b19f80b25025030959ee6e6c4a996c56a1e66f
 decoded_rgba_q_sha256 frame 2: fab13ff946245ff3678a34a89ad52066b320bcbdc823544336a0a3ff728df3ae
+reencoded_sha256: 1990aa8a958a1ba843dc213ecc5505f06b614d5946ca9cbbfc7f9b70be4886f4 (the 0.6.1 encoder, W6b, re-encoding this pattern with these params; the committed file above is the earlier encoder's)
 notes: An LMBX (profile 0x10, bitstream v1) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own footage, no third-party content.

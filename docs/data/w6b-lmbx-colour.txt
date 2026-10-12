@@ -1,0 +1,219 @@
+# W6b — LMBX colour shift on the flat-graphics eye clips (Mac Studio, 2026-10-12)
+# Report (Amrit, after Arena layer "LMBX Eye Test", MoveEhr): "LMBX differs in colors from source on
+# C12-16. LMB7 looks like the same colors as source." C12-16 = the graphics row of the W6 eye clips:
+# source, LMB7, LMBX v1 4:4:4 (0.5.0 encoder, at its 88.8 KB rate floor: it cannot reach LMB7's
+# 10.9 KB), LMBX v2 4:4:4, LMBX v2 4:2:2-halo (0.6.0 encoder, at LMB7's bytes).
+# Content: dxvkit-plus gen-pattern --graphics, 1920x1080, 60 frames (CC0) = the eye clip; the
+# 960x540 card (frame 1) = the W6 A/B "gfx" row. Arms re-encoded with the 0.6.0 binary (identical
+# sizes to the W6 arms). "Flat region" = a source colour with >= 2000 pixels whose 7x7 neighbourhood
+# is that colour; error = mean decoded minus source, per channel, 8-bit code values.
+
+## Step 1 — codec or clip writer? Frame 30: our CPU decode vs the eye .mov read back through
+## AVFoundation (AVAssetReader, 32BGRA) vs Arena's own preview of the clips.
+# Signed mean error per flat colour (R G B). our_* = dxvkit-plus decode --cpu; mov_* = the W6 eye
+# .mov files. The writer adds the same <= 1.0 to every arm (ProRes rounding, also on the source
+# clip); the v1 shift is already in our decode; v2's flat colours are exact in both.
+colour(src RGB)   px                     our_v1              our_v2_444              our_v2_422                  mov_v1              mov_v2_444              mov_v2_422                mov_lmb7
+( 18, 20, 32) 1140930       -6.93 +0.00 -2.08       -0.00 +0.00 +0.00       +0.00 +0.00 +0.00       -6.87 +0.13 -1.95       +0.06 +0.13 +0.19       +0.06 +0.13 +0.19       +0.06 +0.12 +0.19
+( 28, 32, 52)  186324       -4.88 -0.21 -9.54       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       -4.76 -0.09 -9.35       +0.18 +0.13 +0.25       +0.18 +0.13 +0.25       +0.13 +0.19 -0.75
+( 40, 44, 70)  159360       -5.01 -9.37 +2.46       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       -4.83 -9.19 +2.77       +0.19 +0.19 +0.31       +0.19 +0.19 +0.31       +0.19 +0.19 +0.31
+( 60,200, 90)   36618       +3.33 -1.04+11.03       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +3.59 -0.23+11.47       +0.25 +0.81 +0.37       +0.25 +0.81 +0.37       +0.25 +0.81 +0.37
+( 80,140,255)   36618       -4.98 +3.11 -5.95       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       -4.67 +3.73 -5.03       +0.37 +0.56 +0.00       +0.37 +0.56 +0.00       +0.37 -0.44 -0.00
+(230, 60, 60)   36618       -0.65 +5.79 -4.03       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.28 +6.11 -3.78       +0.94 +0.25 +0.31       +0.94 +0.25 +0.31       +0.94 +0.25 +0.31
+(250,200, 40)   36618       +2.89 +5.01 +1.96       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +3.87 +5.82 +2.15       +1.00 +0.81 +0.19       +1.00 +0.81 +0.19       +1.00 +0.81 +0.19
+(255,255,255)   29685       -0.66 -0.66 -0.66       -0.07 -0.08 -0.08       -0.07 -0.08 -0.08       -0.61 -0.61 -0.61       -0.06 -0.06 -0.06       -0.06 -0.06 -0.06       +0.00 +0.00 -0.00
+(255,120,  0)   13954       -1.98 +8.46 +3.26       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       -1.01 +8.97 +3.33       +0.00 +0.50 +0.06       +0.00 +0.50 +0.06       -0.00 +0.50 +0.06
+(235,235,235)    3368       -5.85 -5.85 -5.85       +0.17 +0.17 +0.17       +0.17 +0.17 +0.17       -4.96 -4.96 -4.96       +1.13 +1.14 +1.17       +1.13 +1.14 +1.17       +0.98 +0.95 +0.98
+max |mean error| per arm (code values): our_v1 11.03  our_v2_444 0.17  our_v2_422 0.17  mov_v1 11.47  mov_v2_444 1.17  mov_v2_422 1.17  mov_lmb7 1.00
+
+Arena preview thumbnails (Arena's own decode of the W6 eye clips; ~/Library/Application Support/Resolume Arena/previews), sampled RGB
+source           bg (32, 33, 44)  panel (40, 43, 61)  red (216, 67, 67)  green (66, 188, 92)  yellow (232, 188, 47)  blue (84, 136, 238)  orange (237, 119, 14)
+lmb7             bg (32, 33, 44)  panel (40, 43, 60)  red (216, 67, 67)  green (66, 188, 92)  yellow (232, 188, 47)  blue (84, 135, 237)  orange (237, 119, 14)
+lmbx_v1_444      bg (25, 33, 42)  panel (36, 43, 53)  red (215, 72, 63)  green (68, 187, 103)  yellow (234, 192, 49)  blue (79, 139, 232)  orange (236, 126, 16)
+lmbx_v2_444      bg (32, 33, 44)  panel (40, 43, 61)  red (216, 67, 67)  green (66, 188, 92)  yellow (232, 188, 47)  blue (84, 136, 238)  orange (237, 119, 14)
+lmbx_v2_422halo  bg (32, 33, 44)  panel (40, 43, 61)  red (216, 67, 67)  green (66, 188, 92)  yellow (232, 188, 47)  blue (84, 136, 238)  orange (237, 119, 14)
+# (Arena's thumbnails pass through its display transform, so absolute values differ from the card;
+# source, LMB7 and both v2 arms agree to 1, the v1 arm is off by up to 11.) No .mov carries a colour
+# atom (Cowork); every arm's buffer reports the same guessed Rec.709 tags; LMB7's alone is flagged
+# StraightAlpha (its decode has alpha 254 in places), the others AlphaChannelIsOpaque — the same as
+# the source clip, so not the difference.
+# Verdict: the writer and the container are not at fault; the shift is in the codec's output.
+
+## Step 2 — the shift, per colour (all 60 eye frames; our decodes)
+lmb7           worst flat mean err 1.00 at (0, (28, 32, 52), array([ 0.,  0., -1.])); whole-frame mean err [-0.058  0.037 -0.081]
+v1_060         worst flat mean err 11.03 at (0, (60, 200, 90), array([ 3.33, -1.04, 11.03])); whole-frame mean err [-4.693 -0.277 -1.748]
+v2_060_444     worst flat mean err 0.51 at (47, (235, 235, 235), array([0.51, 0.51, 0.51])); whole-frame mean err [-0.018 -0.005 -0.02 ]
+v2_060_422     worst flat mean err 0.53 at (47, (235, 235, 235), array([0.46, 0.49, 0.53])); whole-frame mean err [-0.026 -0.011 -0.025]
+# Gradient bar (y 764-986, x 680-1816; rows of one colour, 14 colours per 32-row tile), worst row-mean
+# error, frames 0 / 30 / 59 (R G B):
+f0   lmb7         mean err [-0.34  0.23  0.23]  max|row mean| [3. 2. 2.]  rms [0.99 0.49 0.49]
+f0   v2_060       mean err [-0.57 -0.26 -0.58]  max|row mean| [4. 2. 3.]  rms [1.43 0.9  1.18]
+f30   lmb7         mean err [-0.34  0.23  0.23]  max|row mean| [3. 2. 2.]  rms [0.99 0.49 0.49]
+f30   v2_060       mean err [0.26 0.04 0.04]  max|row mean| [7. 2. 2.]  rms [3.83 0.86 0.86]
+f59   lmb7         mean err [-0.33  0.23  0.23]  max|row mean| [3. 2. 2.]  rms [0.99 0.49 0.49]
+f59   v2_060       mean err [0.26 0.04 0.04]  max|row mean| [7. 2. 2.]  rms [3.83 0.86 0.86]
+# The visible v2 defect: the 0.6.0 encoder coded the bar's tiles as FLAT tiles (14 colours -> 1 per
+# 32x32 tile: 32-row stripes, rows +-7 in R) — mean exact, so neither PSNR nor a field mean saw it.
+
+## Step 3 — every candidate in the shared path, one at a time, each with a falsifying measurement
+1. Forward/inverse YCoCg-R rounding — CAUSE (shared, encoder). Exhaustive over all 16,777,216 RGB:
+   encoder forward in code values, x4, decoder inverse in quarter units, (v+2)>>2: 4,194,304 colours
+   (25.0%) wrong, all with odd Co and odd Cg, R and B exactly 1 low, G never. The decoder's own
+   quarter-unit forward (core::lmbx write_direct): 0 wrong. Present at any quality: v1 at quality 1
+   (87 KB, card) decodes (80,140,255) -0.98 / -0.01 / -0.98 and (255,120,0) -0.99 R.
+2. 10-bit quarter-code output and (v+2)>>2 — not a cause: with the exact forward the full chain is
+   lossless over all 16.7M colours (item 1, 0 wrong).
+3. Clamping of out-of-gamut YCoCg — not a cause: the shift hits unsaturated colours as hard as
+   saturated ones (background (18,20,32): -6.9 R); the lattice prediction (item 4, clamping
+   included) matches every flat colour, and none of them clamps.
+4. DC step floors (2 Y/A, 4 Co/Cg) and DC prediction — CAUSE, but not the floors: the DC step grows
+   with q (dc_step = max(q, floor)), and a block's DC is a residual from the previous reconstructed
+   DC (0 before the first), so a flat block can only land on k * qdc: q/8 code values. v1's eye arm
+   at its rate floor uses q 96 (Y, 12 code values) and chroma_q 154 (19 in Co/Cg). Predicting each
+   flat colour from that lattice alone with the normative integer IDCT and inverse YCoCg-R:
+   card: qdc Y 96 chroma 154
+   card: src (18, 20, 32) predicted (11, 20, 30) decoded(mode) (11, 20, 30) share 0.92 MATCH
+   card: src (28, 32, 52) predicted (23, 32, 42) decoded(mode) (23, 32, 42) share 0.77 MATCH
+   card: src (40, 44, 70) predicted (35, 35, 73) decoded(mode) (35, 35, 73) share 0.93 MATCH
+   card: src (60, 200, 90) predicted (63, 198, 102) decoded(mode) (63, 198, 102) share 0.85 MATCH
+   card: src (80, 140, 255) predicted (75, 143, 249) decoded(mode) (75, 143, 249) share 0.85 MATCH
+   card: src (230, 60, 60) predicted (229, 66, 56) decoded(mode) (229, 66, 56) share 0.85 MATCH
+   card: src (250, 200, 40) predicted (253, 205, 42) decoded(mode) (253, 205, 42) share 0.85 MATCH
+   card: src (255, 255, 255) predicted (255, 255, 255) decoded(mode) (255, 255, 255) share 0.73 MATCH
+   card: src (255, 120, 0) predicted (253, 128, 3) decoded(mode) (253, 128, 3) share 0.70 MATCH
+   card: src (235, 235, 235) predicted (236, 236, 236) decoded(mode) (255, 255, 255) share 0.19 DIFF
+   card: matches 9
+   eye f30: qdc Y 96 chroma 154
+   eye f30: src (18, 20, 32) predicted (11, 20, 30) decoded(mode) (11, 20, 30) share 0.95 MATCH
+   eye f30: src (28, 32, 52) predicted (23, 32, 42) decoded(mode) (23, 32, 42) share 0.92 MATCH
+   eye f30: src (40, 44, 70) predicted (35, 35, 73) decoded(mode) (35, 35, 73) share 0.93 MATCH
+   eye f30: src (60, 200, 90) predicted (63, 198, 102) decoded(mode) (63, 198, 102) share 0.86 MATCH
+   eye f30: src (80, 140, 255) predicted (75, 143, 249) decoded(mode) (75, 143, 249) share 0.93 MATCH
+   eye f30: src (230, 60, 60) predicted (229, 66, 56) decoded(mode) (229, 66, 56) share 0.93 MATCH
+   eye f30: src (250, 200, 40) predicted (253, 205, 42) decoded(mode) (253, 205, 42) share 0.93 MATCH
+   eye f30: src (255, 255, 255) predicted (255, 255, 255) decoded(mode) (255, 255, 255) share 0.84 MATCH
+   eye f30: src (255, 120, 0) predicted (253, 128, 3) decoded(mode) (253, 128, 3) share 0.87 MATCH
+   eye f30: src (235, 235, 235) predicted (236, 236, 236) decoded(mode) (213, 213, 213) share 0.07 DIFF
+   eye f30: matches 9
+   (235,235,235) is the 5x7 text, never a flat block.) The floors are inactive at q >= 4.
+5. Chroma minimum step 2 — not a cause: inactive at chroma_q 154.
+6. 4:2:2 halo on hard colour edges — not a cause: v2 4:4:4 and 4:2:2 flat means agree to 0.01 on
+   every colour (step 2), interiors only.
+7. v2 only — lossy-palette Lloyd centroids: CAUSE (small): on the card at LMB7's bytes white
+   (255,255,255) decodes -1.68 / -1.81 / -1.50 in palette tiles (centroid dragged by anti-aliased
+   edge pixels). Flat-tile colour selection + the RDO decision accepting it: CAUSE (the visible v2
+   shift): the gradient bar's 252 tiles flat (D ~1e5 per tile vs lambda * bits of an exact
+   14-colour palette at lambda 0.25 q^2).
+
+## Step 4 — the fix (encoder only; bitstream v2 unchanged) and the after-tables
+# Exact forward (quarter units); colour guard, tolerance 1.0 code value (= LMB7's worst flat-region
+# error on the card, 1.00-1.02): DC guard on smooth blocks (exact integer check of the decoded DC
+# colour, shown RGB and alpha, in stream order with every plane's chain); region guard on flat and
+# lossy-palette tiles (region = >= 16 uniform 2x2 cells); region-seeded lossy palettes whose
+# region-holding centroids move to the regions' mean only; lossy palettes also for <= 16-colour tiles.
+
+# Card (960x540, frame 1) at LMB7's bytes, signed mean error per flat colour (R G B), all arms:
+colour(src RGB)   px                       LMB7                  v1-060                  v1-061                  v2-060              v2-060-422                  v2-061              v2-061-422
+( 18, 20, 32)  271346       +0.00 +0.00 +0.00       -6.89 +0.01 -2.09       +0.76 +0.86 +0.74       +0.14 -0.30 -0.11       -0.06 -0.19 -0.19       +0.00 +0.00 +0.00       +0.02 +0.02 +0.02
+( 28, 32, 52)   41688       +0.00 +0.00 +0.00       -5.10 -0.76 -9.40       -1.65 -0.24 -0.51       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 40, 44, 70)   38400       +0.00 +0.00 +0.00       -5.00 -9.00 +3.00       +1.00 +1.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 60,200, 90)    8496       +0.00 +0.00 +0.00       +3.10 -1.83+11.99       +1.02 -0.72 +0.07       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 80,140,255)    8496       -0.25 -0.50 -1.00       -4.90 +3.14 -5.92       -0.85 -0.64 -0.07       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(230, 60, 60)    8496       +0.00 +0.00 +0.00       -0.37 +5.71 -4.37       +1.24 +0.92 -0.75       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(250,200, 40)    8496       +0.37 +0.37 +0.37       +3.05 +5.14 +1.84       -0.47 +0.96 -0.95       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(255,255,255)    4917       -0.12 -0.12 -0.12       -1.35 -1.35 -1.35       -0.73 -1.28 -0.99       -1.68 -1.81 -1.50       -1.68 -1.98 -1.71       -0.00 -0.00 -0.00       -0.00 -0.00 -0.00
+(255,120,  0)    2954       -1.00 +0.02 +0.12       -3.35 +7.27 +2.86       -1.39 +0.56 +0.40       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+max |mean error| per arm (code values): LMB7 1.00  v1-060 11.99  v1-061 1.65  v2-060 1.81  v2-060-422 1.98  v2-061 0.00  v2-061-422 0.02
+
+YCoCg signed error (Y, Co, Cg; float, 8-bit code units)
+( 18, 20, 32)               +0.00 +0.00 +0.00       -2.24 -4.79 +4.51       +0.80 +0.03 +0.11       -0.15 +0.26 -0.32       -0.16 +0.13 -0.06       +0.00 -0.00 +0.00       +0.02 +0.00 +0.00
+( 28, 32, 52)               +0.00 +0.00 +0.00       -4.01 +4.30 +6.49       -0.66 -1.15 +0.84       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 40, 44, 70)               +0.00 +0.00 +0.00       -5.00 -8.00 -8.00       +0.75 +1.00 +0.50       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 60,200, 90)               +0.00 +0.00 +0.00       +2.86 -8.89 -9.37       -0.09 +0.95 -1.27       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+( 80,140,255)               -0.56 +0.75 +0.12       -1.13 +1.03 +8.55       -0.55 -0.78 -0.17       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(230, 60, 60)               +0.00 +0.00 +0.00       +1.67 +4.00 +8.08       +0.58 +1.99 +0.67       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(250,200, 40)               +0.37 +0.00 +0.00       +3.79 +1.21 +2.69       +0.13 +0.48 +1.67       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+(255,255,255)               -0.12 +0.00 +0.00       -1.35 +0.00 +0.00       -1.07 +0.26 -0.43       -1.70 -0.18 -0.22       -1.84 +0.03 -0.28       -0.00 +0.00 +0.00       -0.00 +0.00 +0.00
+(255,120,  0)               -0.21 -1.12 +0.46       +3.51 -6.21 +7.51       +0.03 -1.79 +1.06       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00       +0.00 +0.00 +0.00
+# (v1-061 = DCT-only with the guard, still at v1's rate floor (27 KB, 5x LMB7's bytes): its flat
+# blocks are within 1; the 1.65 is the mean over edge blocks inside the region mask.)
+
+# Eye clip, all 60 frames, our decodes (worst flat-region mean error; whole-frame mean error):
+lmb7           worst flat mean err 1.00 at (0, (28, 32, 52), array([ 0.,  0., -1.])); whole-frame mean err [-0.058  0.037 -0.081]
+v1_060         worst flat mean err 11.03 at (0, (60, 200, 90), array([ 3.33, -1.04, 11.03])); whole-frame mean err [-4.693 -0.277 -1.748]
+v2_060_444     worst flat mean err 0.51 at (47, (235, 235, 235), array([0.51, 0.51, 0.51])); whole-frame mean err [-0.018 -0.005 -0.02 ]
+v2_060_422     worst flat mean err 0.53 at (47, (235, 235, 235), array([0.46, 0.49, 0.53])); whole-frame mean err [-0.026 -0.011 -0.025]
+v2_061_444     worst flat mean err 0.00 at None; whole-frame mean err [ 0. -0. -0.]
+v2_061_422     worst flat mean err 0.00 at None; whole-frame mean err [0.011 0.005 0.006]
+# Gradient bar, worst row-mean error (R G B), frames 0 / 30 / 59:
+f0   v2_061       mean err [-0.01  0.    0.  ]  max|row mean| [1. 0. 0.]  rms [0.09 0.   0.  ]
+f0   v2_061_422   mean err [0.04 0.01 0.04]  max|row mean| [1. 1. 1.]  rms [0.26 0.12 0.19]
+f30   v2_061       mean err [-0.01  0.    0.  ]  max|row mean| [1. 0. 0.]  rms [0.09 0.   0.  ]
+f30   v2_061_422   mean err [0.04 0.01 0.04]  max|row mean| [1. 1. 1.]  rms [0.26 0.12 0.19]
+f59   v2_061       mean err [-0.01  0.    0.  ]  max|row mean| [1. 0. 0.]  rms [0.09 0.   0.  ]
+f59   v2_061_422   mean err [0.04 0.01 0.04]  max|row mean| [1. 1. 1.]  rms [0.26 0.12 0.19]
+# Eye clip PSNR, 60 frames, at LMB7's bytes (10,796 B budget; LMB7 10,856 B average, 49.6-49.7 dB):
+#   0.6.0 v2 4:4:4 51.17 dB mean (47.6 min), 4:2:2 51.17 (47.5) — sampled every 6th frame
+#   0.6.1 v2 4:4:4 59.98 mean (58.56 min, 61.49 max), 10,779 B; 4:2:2 58.72 (56.62-60.06), 10,784 B
+
+# The v3 eye clips (ProRes 4444 XQ) read back through AVFoundation, all 60 frames:
+mov_source     worst flat mean err 1.00 at (0, (250, 200, 40), array([1.  , 0.81, 0.19])); whole-frame mean err [0.176 0.189 0.251]
+mov_lmb7       worst flat mean err 1.00 at (1, (250, 200, 40), array([1.  , 0.81, 0.19])); whole-frame mean err [0.124 0.235 0.194]
+mov_v2_444     worst flat mean err 1.00 at (0, (250, 200, 40), array([1.  , 0.81, 0.19])); whole-frame mean err [0.176 0.188 0.25 ]
+mov_v2_422     worst flat mean err 1.00 at (0, (250, 200, 40), array([1.  , 0.81, 0.19])); whole-frame mean err [0.188 0.194 0.256]
+# (The <= 1.00 is the ProRes writer's own rounding, identical on the source clip.)
+
+## Step 5 — W6 A/B rows re-run (one frame, source frame 1, rate control to LMB7's bytes - 60)
+# Columns: content arm budget bytes RGB shown A colour(worst flat mean, graphics cards only).
+# v2-060 = 0.6.0 defaults; v2-061 = 0.6.1 defaults; -422 = 4:2:2 halo. shroom_* = Amrit's footage
+# (local only, never committed; shroom_alpha is a 4K centre crop of frame 150 — the W6 rows used a
+# different crop, so its LMB7 budget differs).
+alpha         LMB7       budget        - bytes   175434 RGB   46.643 shown   47.268 A  45.5392
+alpha         v2-060-422 budget   175434 bytes   146723 RGB   49.286 shown   52.427 A  55.7326 colour     -
+alpha         v2-060     budget   175434 bytes   138270 RGB   52.565 shown   54.333 A  53.4046 colour     -
+detail        LMB7       budget        - bytes   353406 RGB   16.990 shown   16.990 A  78.8134
+detail        v2-060-422 budget   353406 bytes   352616 RGB   14.715 shown   14.715 A inf      colour     -
+detail        v2-060     budget   353406 bytes   346621 RGB   21.313 shown   21.313 A inf      colour     -
+film_grain    LMB7       budget        - bytes   321197 RGB   44.760 shown   44.739 A  52.8098
+film_grain    v2-060-422 budget   321197 bytes   320883 RGB   52.507 shown   52.507 A inf      colour     -
+film_grain    v2-060     budget   321197 bytes   318301 RGB   52.299 shown   52.299 A inf      colour     -
+gfx           LMB7       budget        - bytes     5807 RGB   45.505 shown   45.336 A  48.7147
+gfx LMB7 colour 1.00
+gfx           v2-060     budget     5807 bytes     5668 RGB   38.407 shown   38.407 A inf      colour  1.81
+gfx           v2-060-422 budget     5807 bytes     5528 RGB   37.888 shown   37.888 A inf      colour  1.98
+gfx_a         LMB7       budget        - bytes     5204 RGB   49.648 shown   46.660 A  46.8503
+gfx_a LMB7 colour 1.00
+gfx_a         v2-060     budget     5204 bytes     5748 RGB   42.609 shown   35.919 A  36.6928 colour  0.45
+gfx_a         v2-060-422 budget     5204 bytes     5716 RGB   42.239 shown   35.861 A  36.5773 colour  0.46
+shroom_alpha  LMB7       budget        - bytes   354494 RGB   46.821 shown   52.680 A  44.6289
+shroom_alpha  v2-060     budget   354494 bytes   332489 RGB   48.634 shown   55.338 A  50.3826 colour     -
+shroom_alpha  v2-060-422 budget   354494 bytes   343108 RGB   47.448 shown   54.571 A  50.4577 colour     -
+shroom_glow   LMB7       budget        - bytes   752814 RGB   41.397 shown   41.365 A  54.0842
+shroom_glow   v2-060     budget   752814 bytes   752270 RGB   43.003 shown   43.003 A inf      colour     -
+shroom_glow   v2-060-422 budget   752814 bytes   609382 RGB   40.355 shown   40.355 A inf      colour     -
+alpha         v2-061-422 budget   175434 bytes   143479 RGB   49.606 shown   52.375 A  55.7016 colour     -
+alpha         v2-061     budget   175434 bytes   174898 RGB   53.380 shown   55.226 A  55.6727 colour     -
+detail        v2-061-422 budget   353406 bytes   352602 RGB   14.716 shown   14.716 A inf      colour     -
+detail        v2-061     budget   353406 bytes   346159 RGB   21.310 shown   21.310 A inf      colour     -
+film_grain    v2-061-422 budget   321197 bytes   320932 RGB   54.217 shown   54.217 A inf      colour     -
+film_grain    v2-061     budget   321197 bytes   318288 RGB   53.841 shown   53.841 A inf      colour     -
+gfx           v2-061-422 budget     5807 bytes     5741 RGB   45.594 shown   45.594 A inf      colour  0.02
+gfx           v2-061     budget     5807 bytes     5747 RGB   45.355 shown   45.355 A inf      colour  0.00
+gfx_a         v2-061-422 budget     5204 bytes     5149 RGB   52.672 shown   43.785 A  44.1085 colour  0.00
+gfx_a         v2-061     budget     5204 bytes     5159 RGB   52.552 shown   43.769 A  44.1085 colour  0.00
+shroom_alpha  v2-061-422 budget   354494 bytes   342272 RGB   47.474 shown   54.584 A  50.4647 colour     -
+shroom_alpha  v2-061     budget   354494 bytes   331851 RGB   48.662 shown   55.345 A  50.3869 colour     -
+shroom_glow   v2-061-422 budget   752814 bytes   613634 RGB   40.439 shown   40.439 A inf      colour     -
+shroom_glow   v2-061     budget   752814 bytes   752744 RGB   43.056 shown   43.056 A inf      colour     -
+
+## Built during the fix, measured and dropped (ADD then prune)
+- A static quantiser cap on smooth blocks (<= 6): flat errors 0.10, but the card's rate floor rose
+  to 6.8 KB (LMB7 5.8 KB). Replaced by the chain-exact DC guard (+0 B at the floor).
+- A region = a colour covering >= 32 tile pixels: anti-aliased edge lines counted as regions, lossy
+  palettes were rejected on text tiles, eye frame 48.4 -> 41.3 dB at LMB7's bytes. Replaced by
+  2x2-cell regions.
+- Repeat-aware (Zstandard-amortised) tile rates in the mode decision: worse RD on the eye frame
+  (11,059 B / 51.05 dB against 0.6.0's 10,960 B / 55.19) — removed.
+- Pinned Lloyd seeds: superseded by region-mean centroids, which also let near-equal regions merge.
+- DC guard falling back to the finest step when no step fits (a 4:2:2 odd block cannot change its
+  chroma): glow 4:2:2 +19% bytes at equal q, -0.45 dB at LMB7's bytes. Fixed: keep the step.

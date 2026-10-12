@@ -43,7 +43,8 @@ const USAGE: &str = "usage:
                           [--start F] [--frames N] [--quiet]
   dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo]
                           [--quality Q | --frame-bytes N] [--modes dct|flat,palette,lossy]
-                          [--compressor zstd|none] [--start F] [--frames N] [--quiet]
+                          [--colour-tol T|off] [--compressor zstd|none] [--start F] [--frames N]
+                          [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:
   --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)";
@@ -246,6 +247,7 @@ fn main() -> ExitCode {
             "quality",
             "frame-bytes",
             "modes",
+            "colour-tol",
         ],
     );
     if let Some(a) = args.value("alpha-mode") {

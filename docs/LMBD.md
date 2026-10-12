@@ -375,9 +375,12 @@ rows top first). Any conforming decoder must reproduce them; DXVKit Plus's CPU d
 
 ### 11.11 The reference encoder (informative)
 
-`dxvkit_plus_lmbd_enc::lmbx` (from Amrit's B1d prototype): RGBA to YCoCg-R in integers
-(`Co = R - B`, `t = B + (Co >> 1)`, `Cg = G - t`, `Y = t + (Cg >> 1)`), edge-replicated to the coded
-size; 4:2:2 chroma = the rounded mean of each column pair. A float 8x8 DCT. Per block, the
+`dxvkit_plus_lmbd_enc::lmbx` (from Amrit's B1d prototype): RGBA to YCoCg-R in quarter code values,
+the forward the decoder's inverse undoes exactly (`Co = 4R - 4B`, `t = 4B + (Co >> 1)`,
+`Cg = 4G - t`, `Y = t + (Cg >> 1)`; the definition §11.6 uses), edge-replicated to the coded size;
+4:2:2 chroma = the rounded mean of each column pair. (Before 0.6.1 the encoder lifted in code values
+and scaled by 4: the floors do not scale, so a quarter of all colours — odd `R - B` and odd `G - t`
+— decoded 1 low in R and B at any quality.) A float 8x8 DCT. Per block, the
 quantiser index is the step nearest `base * clamp(AC energy / 380, 0.16, 2.6)` (`base` = the quality
 setting, default 16). Levels by deadzone quantisation (bias 0.45) refined by RDOQ against the
 actual rANS cost (lambda = 0.25 q^2, two passes over a bootstrapped rate model) with an
@@ -396,6 +399,22 @@ per stream). Candidates: flat (the tile's mean colour), the exact palette when t
 iterations, each pixel mapped to the nearest (RGBA squared distance). The coefficient and palette
 tables are built from the tiles that use them.
 
+**Colour guard** (0.6.1, default tolerance 1 code value; `--colour-tol T|off`). PSNR alone let the
+encoder move a flat region's colour: the guard holds every region's mean within the tolerance.
+(a) DCT tiles: a block's DC is a residual from the previous block's reconstructed DC at step
+`dc_step(q)`, so a flat block can only land on that lattice — at the rate floor's `q` 96 (chroma 154)
+a flat colour moved up to 12 code values. For each smooth block (luma AC energy under 23), in
+stream order with every plane's DC chain, the encoder keeps the block's step if the exact decoded
+colour of its DC (the integer IDCT and inverse YCoCg-R) is within the tolerance of the block's mean,
+shown channels (RGB times alpha) and alpha, else takes the coarsest step that is. Only the block
+where a colour changes needs a finer step: the run after it repeats an exact DC for nothing.
+(b) Direct tiles: a *region* is a colour that fills at least 16 uniform 2x2 cells of the tile (an
+area, not an anti-aliased edge line). A flat or lossy-palette candidate that moves any region by
+more than the tolerance is not a candidate; lossy palettes seed with the regions, a centroid holding
+regions moves to their mean only (not pulled by edge pixels), and tiles with at most 16 colours get
+the lossy palettes too, so near-equal regions such as a gradient's bands can merge within the
+tolerance instead of the tile going flat.
+
 ### 11.12 What version 2 measured (informative)
 
 W6 (`docs/data/w6-lmbx-v2-ab.txt`; every arm at LMB7's bytes per frame, Zstandard where the arm uses
@@ -409,6 +428,18 @@ length directory (12% of a graphics frame). Built, measured and removed: premult
 graphics card, −3.7 dB shown on real alpha), lossless (MED-predicted) tiles (at most ±0.1 dB once
 palettes exist), copy tiles (7 bytes: Zstandard already removes repeated tiles), 4:2:2 as the
 default (4:4:4 better on both real clips; 4:2:2 wins only on synthetic grain, +0.2 dB).
+
+### 11.12a What the colour guard measured (informative)
+
+W6b (`docs/data/w6b-lmbx-colour.txt`). The shift Amrit saw on the graphics eye clips had three
+proven causes, none in the decoder: the forward YCoCg-R scale (above; 25% of colours 1 low in R and
+B), the DC lattice at coarse steps (0.5.0's v1 arm, starved at its rate floor: flat fields off by up
+to 12 code values, predicted exactly from the lattice for every flat colour), and v2's mode decision
+coding a gradient's tiles flat (32-row stripes, rows off by up to 7). With the guard, at LMB7's
+bytes per frame: the graphics card 45.35 dB (0.6.0 38.41, LMB7 45.50), every flat region within
+0.02 (LMB7 1.00); with alpha 43.77 dB shown (0.6.0 35.92); the 1080p graphics eye clip 60.0 dB mean
+(0.6.0 51.2, LMB7 49.7), flat regions exact; natural footage equal or better (glow 43.06 against
+43.00, real alpha 48.66 / 55.35 against 48.63 / 55.34, grain +1.5 dB).
 
 ### 11.13 Why 32x32 tiles with a stream per plane (informative)
 

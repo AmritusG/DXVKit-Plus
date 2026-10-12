@@ -12,10 +12,13 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.6.0**: **LMBX bitstream v2** — flat and palette tiles chosen per tile by
-rate-distortion, and Zstandard frames — which lifts real-alpha footage past LMB7 at LMB7's size and
-brings flat graphics from 17 dB behind to within 14% more bytes of it ([LMBX](#lmbx)); v1 files
-still decode bit-exact. 0.5.0 added **LMBX**, the variable-rate profile of our LMBD codec — YCoCg, an
+This is release **0.6.1**: an LMBX encoder fix for a colour shift on flat graphics — an inexact
+forward colour transform, flat colours landing on a coarse DC lattice, and gradients coded as flat
+tiles — with a **colour guard** that holds every flat region within 1 code value; flat graphics now
+match LMB7 at LMB7's size ([LMBX](#lmbx)). The bitstream and decoder are unchanged. 0.6.0 brought
+**LMBX bitstream v2** — flat and palette tiles chosen per tile by rate-distortion, and Zstandard
+frames — which lifts real-alpha footage past LMB7 at LMB7's size; v1 files still decode bit-exact.
+0.5.0 added **LMBX**, the variable-rate profile of our LMBD codec — YCoCg, an
 integer DCT and rANS, decoded on the GPU by compute shaders bit-exactly with the CPU, with a
 frozen specification. 0.4.0 added **DXV**: it decodes — DXV3 Normal and High Quality, with and without alpha,
 and legacy DXV1/2 — through a safe-Rust port of DXVKit's decoder that is bit-exact on DXVKit's 334
@@ -196,6 +199,10 @@ compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is
   of up to 16 colours (exact, or a lossy palette of 2-16 refined colours), whichever costs least in
   rate and distortion. Flat graphics, UI and mattes stop paying for a transform they don't need.
   Frames are stored Zstandard-compressed when that is smaller. `--modes dct` writes v1.
+- **Colour guard** (0.6.1). A good PSNR can hide a shifted flat colour or a striped gradient; the
+  encoder holds every flat region's mean within a tolerance (`--colour-tol`, default 1 code value,
+  LMB7's own worst on the graphics card): smooth DCT blocks take a finer step only where their DC
+  would decode off their colour, and flat or lossy-palette tiles may not move a region of colour.
 
 ```sh
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --quality 16                 # 4:4:4
@@ -220,10 +227,24 @@ removed):
 | film grain (321 KB) | 44.76 | 50.88 | **52.30** |
 | noise-like detail (353 KB) | 16.99 | 18.27 | **21.31** |
 
+**0.6.1** (the colour fix, `docs/data/w6b-lmbx-colour.txt`; the same rows re-run with 0.6.0 and
+0.6.1 against the same LMB7 references; "flat" = the worst flat-region mean colour error, code
+values):
+
+| Content | LMB7 | LMBX v2, 0.6.0 | LMBX v2, 0.6.1 |
+|---|---|---|---|
+| graphics card, 960x540 (5.8 KB) | 45.50, flat 1.00 | 38.41, flat 1.81 | **45.35, flat 0.00** |
+| graphics card with alpha (5.2 KB) | **49.65, shown 46.66** | 42.61, shown 35.92 | 52.55, shown 43.77 |
+| 1080p graphics eye clip, 60 frames (10.9 KB) | 49.7, flat 1.00 | 51.2, flat 0.53, gradient rows off by 7 | **60.0, flat 0.00**, rows within 1 |
+| Amrit's real-alpha clip (354 KB) | 46.82, shown 52.68 | 48.63, shown 55.34 | **48.66, shown 55.35** |
+| Amrit's glow-over-dark clip (753 KB) | 41.40 | 43.00 | **43.06** |
+| synthetic alpha / film grain / detail | 46.64 / 44.76 / 16.99 | 52.57 / 52.30 / 21.31 | **53.38 / 53.84 / 21.31** |
+
 v2 passes LMB7 on real alpha at its size (+1.4 dB RGB, +2.7 dB as shown, +5.2 dB alpha) and gains
 on every other natural row. Flat graphics remain LMB7's strength: BC7 + Zstd codes a flat card in a
-few kilobytes, and at exactly that size v2 is still 7 dB short; v2 reaches LMB7's quality there at
-14% (opaque) / 23% (alpha) more bytes, where v1 could not get below 25-38 KB at all.
+few kilobytes, and at exactly that size 0.6.0's v2 was still 7 dB short (it reached LMB7's quality at
+14% / 23% more bytes, where v1 could not get below 25-38 KB at all). 0.6.1 closes the opaque gap
+(45.35 against 45.50 dB at LMB7's size) and halves the alpha one (shown 43.77 against 46.66).
 
 **Quality at matched size, bitstream v1** (0.5.0; one frame each, PSNR of RGB / SSIM; LMBX
 rate-controlled to the other codec's frame size, the better chroma mode shown;

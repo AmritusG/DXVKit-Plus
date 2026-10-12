@@ -8,4 +8,5 @@ sha256: 8f39563f0679792751f1553112e748f5fb1b682821ccba13d7760195a3cdcafc
 params: pattern=graphics_a chroma=422halo quality=32 modes=flat,palette,lossy
 decoded_rgba_q_sha256 frame 0: bb322b6285aca284595cee3940e47155797cbd142465e35c102f0106816c7c13
 decoded_rgba_q_sha256 frame 1: f586777f78590dd3b5f0952beb3d7e02150cfeb42d048710cfed580cf592b5a2
+reencoded_sha256: 431b396c957db8703952ba7868c7dfd67178abf2a1c39a712b7e355d20c4f972 (the 0.6.1 encoder, W6b, re-encoding this pattern with these params; the committed file above is the earlier encoder's)
 notes: An LMBX (profile 0x10, bitstream v2: per-tile modes — DCT, flat, palette — and a stream-length directory) conformance vector. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own procedural content, no third-party content.

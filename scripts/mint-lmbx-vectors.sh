@@ -3,12 +3,18 @@
 # patterns with the dxvkit-plus encoder, and print, per vector, the SHA-256 of the file and of every
 # frame's normative output (RGBA in quarter code values, u16 little endian) — those go into the
 # .attribution sidecars. Any conforming LMBX decoder must reproduce the frame hashes.
+# The committed vectors are the 0.5.0 (v1) and 0.6.0 (v2) encoders' output and are frozen as decoder
+# conformance. Since 0.6.1 (W6b: exact forward YCoCg-R, colour guard) the encoder writes different
+# files from the same patterns: run this into a scratch out dir; each file's sha256 is its sidecar's
+# reencoded_sha256 (crates/dxvkit-plus-lmbd-enc/tests/lmbx_identity.rs).
 #   scripts/mint-lmbx-vectors.sh <scratch dir> [out dir]
 set -eu
 SCRATCH="${1:?scratch dir}"
 OUT="${2:-$(cd "$(dirname "$0")/.." && pwd)/tests/fixtures}"
 mkdir -p "$SCRATCH" "$OUT"
-cargo build -q --release -p dxvkit-plus-cli -p dxvkit-plus-core --example lmbx_hashes
+# Two builds: with --example, cargo builds only the example, not the CLI binary.
+cargo build -q --release -p dxvkit-plus-cli
+cargo build -q --release -p dxvkit-plus-core --example lmbx_hashes
 BIN="$(dirname "$0")/../target/release"
 "$BIN/dxvkit-plus" gen-pattern "$SCRATCH/tiles" --frames 3 --width 200 --height 130 >/dev/null
 "$BIN/dxvkit-plus" gen-pattern "$SCRATCH/plasma_a" --frames 2 --width 333 --height 141 --plasma --alpha >/dev/null
