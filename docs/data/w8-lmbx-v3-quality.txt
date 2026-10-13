@@ -1,0 +1,55 @@
+# W8 — LMBX bitstream v3 (0.7.0) quality at LMB7's bytes against the W7 prototype's best arm (Mac Studio, 2026-10-13)
+# Method = W7's (docs/data/w7-lmbx-v3-ab.txt): every arm rate-controlled to LMB7's stored bytes per frame
+# (budget = LMB7 payload - 60, Zstandard 19; finest base quantiser 1..600, log bisection to 1/64); bytes =
+# LMBD payload; RGB = straight RGB PSNR, shown = premultiplied, A = alpha; colour = worst flat-region mean error.
+# Same references as W7 (re-created bit for bit: gfx_a1 / gfx1 = testpattern::graphics 960x540 frame 1; shroom_alpha =
+# ShroomiesKingdom_05 frame 150 4K centre crop; shroom_glow = ShroomiesKingdom_31 frame 150; alpha / film_grain /
+# detail = the W7 CC0 synthetics). "W7lab" rows: the W7 prototype (branch w7-explore) — base = 0.6.1, and its best
+# arm ctx+p32+bx+edge+quad. "W8" rows: 0.7.0 (crates/dxvkit-plus-lmbd-enc/examples/lmbx_quality.rs) — base = the
+# defaults, base+noapal = without the alpha-palette candidate.
+W7lab gfx_a1        base                     budget    5144 bytes    5159 q  269.70 RGB  52.552 shown  43.769 A  44.109 colour  0.00 enc   0.32s
+W7lab gfx_a1        ctx+p32+bx+edge+quad     budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+W8    gfx_a1        base                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+W8    gfx_a1        base+noapal              budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+W7lab gfx1          base                     budget    5747 bytes    5747 q   89.82 RGB  45.355 shown  45.355 A     inf colour  0.00 enc   0.28s
+W7lab gfx1          ctx+p32+bx+edge+quad     budget    5747 bytes    5379 q    1.00 RGB  85.966 shown  85.966 A     inf colour  0.00 enc   0.04s
+W8    gfx1          base                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+W8    gfx1          base+noapal              budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+W7lab shroom_alpha  base                     budget  354434 bytes  331458 q   15.82 RGB  48.639 shown  55.320 A  50.370 colour  0.00 enc   1.44s
+W7lab shroom_alpha  ctx+p32+bx+edge+quad     budget  354434 bytes  323732 q   15.82 RGB  48.582 shown  55.079 A  49.926 colour  0.00 enc   2.95s
+W8    shroom_alpha  base                     budget  354434 bytes  328812 q   15.82 RGB  48.745 shown  55.291 A  50.278 colour  0.00 enc   3.62s
+W8    shroom_alpha  base+noapal              budget  354434 bytes  328902 q   15.82 RGB  48.745 shown  55.284 A  50.257 colour  0.00 enc   3.17s
+W7lab shroom_glow   base                     budget  752754 bytes  752273 q   20.06 RGB  43.046 shown  43.046 A     inf colour  0.02 enc   2.18s
+W7lab shroom_glow   ctx+p32+bx+edge+quad     budget  752754 bytes  751376 q   20.82 RGB  43.001 shown  43.001 A     inf colour  0.00 enc   3.71s
+W8    shroom_glow   base                     budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc   5.08s
+W8    shroom_glow   base+noapal              budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc   5.34s
+W7lab alpha         base                     budget  395833 bytes  351885 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   0.86s
+W7lab alpha         ctx+p32+bx+edge+quad     budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.56s
+W8    alpha         base                     budget  395833 bytes  350916 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.43s
+W8    alpha         base+noapal              budget  395833 bytes  351884 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   4.56s
+W7lab film_grain    base                     budget  384074 bytes  364237 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.10s
+W7lab film_grain    ctx+p32+bx+edge+quad     budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.25s
+W8    film_grain    base                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.26s
+W8    film_grain    base+noapal              budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.21s
+W7lab detail        base                     budget  159416 bytes  157174 q   75.41 RGB  21.350 shown  21.350 A     inf colour  0.00 enc   1.14s
+W7lab detail        ctx+p32+bx+edge+quad     budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.82s
+W8    detail        base                     budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.52s
+W8    detail        base+noapal              budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.55s
+
+## Bytes to reach LMB7's quality (lmbx_quality match; W7: 0.6.1 6352 / 5801 B, W7 best 3767 / 3271 B)
+gfx_a1  0.7.0 reaches 46.66 dB shown at 3711 B (LMB7 5204 B)
+gfx1    0.7.0 reaches 45.50 dB RGB   at 3243 B (LMB7 5807 B)
+
+## Eye clip (1080p graphics + alpha, 60 frames, rate control to LMB7's 9371 B/frame payload, budget 9311 stored)
+LMB7        9371 B/frame
+0.7.0       6505 B/frame, quality 1.0 on all 60 frames: lossless (W7 best 6497 B/frame)
+
+## Reading
+- Graphics with alpha: lossless at LMB7's bytes, as W7 best (4444 vs 4339 B: 64-colour exact palettes and 10-bit index tables).
+- Graphics: lossless (W7 best 85.97 dB).
+- Real alpha +0.21 dB shown, synthetic alpha +0.50 dB shown (the alpha palette; without it equal to W7), grain equal;
+  glow -0.013 dB and detail -0.025 dB: within one rate-control step (W8 lands on q 21.08 / 55.87 where W7 landed on
+  20.82 / 55.87; at equal q the files differ by the 10-bit tables and the 64-colour palettes).
+- Alpha palette: no measurable speed cost (Shroomies 4K, 1080 alpha-palette tiles: GPU busy 8.944 vs 8.943 ms/step;
+  bytes +0.01%), +0.5 dB shown on synthetic alpha: kept (the brief's rule).
+- Colour guard holds on every row (worst flat region <= 0.01).

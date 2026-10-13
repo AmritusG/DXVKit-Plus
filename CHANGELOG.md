@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0 — 2026-10-13
+
+**LMBX bitstream v3** (W7 explored it, W8 made it fast and froze it; decision LMBX-D4: Amrit chose
+"speed recovery" — ship v3 after recovering its GPU decode speed before the freeze). Versions 1 and 2
+are frozen and still decode bit-exact (every v1 and v2 vector); LMB7 is unchanged (byte-identical).
+
+- Bitstream v3 (`docs/LMBD.md` §11.6a, normative): context-coded palette indices (copy-left,
+  copy-above or a literal, eight contexts, 10-bit tables); exact palettes of up to 64 colours (lossy
+  ones up to 16); **edge alpha** — a residual per pixel of partial alpha makes anti-aliased edges
+  exact; **quad tiles** — four 16x16 sub-tiles, flat or palette each; DCT colour with an **alpha
+  palette**. A direct tile's payload is its stream 0 (as in v2).
+- Graphics with alpha: lossless at LMB7's bytes (960x540 card 4.4 KB against LMB7's 5.2 KB; the
+  1080p eye clip 6.5 KB/frame against 9.4 KB); LMB7's quality at 3.7 KB (0.6.1 needed 6.4 KB).
+  Opaque graphics lossless at 5.2 KB (LMB7 5.8 KB). Real alpha +0.1 dB, synthetic alpha +0.5 dB
+  shown, grain equal, glow and detail within 0.06 dB of 0.6.1 / 0.03 dB of the W7 prototype
+  (`docs/data/w8-lmbx-v3-quality.txt`).
+- GPU decode (`dxvkit-plus-wgpu`): profiled with Metal System Trace before the freeze
+  (`docs/data/w8-lmbx-v3-profile.txt`). The prototype was 21-40% slower than 0.6.1; v3 itself adds
+  nothing to DCT tiles. The CPU now builds a tile list from the mode map; one entropy dispatch runs
+  DCT streams and direct tiles in separate workgroups (one direct tile every 8 lanes: a SIMD group
+  of palette decodes serialised on memory), with one-word index-table slots, word-cached rANS reads
+  and word reads of direct colours. 16 x 1080p glow 59-63 steps/s (0.6.1 61), 4 x 4K Shroomies
+  116 (108), 4 x 4K graphics 140 (146), 16 x 1080p graphics 120-121 (142; the context-coded palette
+  decode's own cost). GPU == CPU bit-exact on every vector, 96 encoded and 288 hostile v3 frames.
+- Encoder (`dxvkit-plus-lmbd-enc`): writes v3 whenever tile modes are on (`--modes dct` still
+  writes v1); `LmbxParams::alpha_palette`; deterministic at any thread count. The v2 writer is gone.
+- Dropped from the W7 prototype after measurement: escape colours, direct colour with a DCT alpha
+  plane, visibility-weighted alpha, lossy palettes above 16 colours, BC7 tiles (README roadmap).
+  Rejected in W8: row-run symbols, a row-start context, index tables in workgroup memory.
+- Five CC0 v3 conformance vectors (one hand-built: quad tiles with edge alpha); the re-encode
+  hashes of the v2 vectors now pin v3 files. Fuzzing 600 s over the v1-v3 vectors: 0 crashes.
+- Tools: `examples/lmbx_passes.rs` (per-pass GPU time), `examples/lmbx_quality.rs` (quality at a
+  byte budget), `examples/lmbx_v3_quad_edge.rs` (the hand-built vector).
+
 ## 0.6.1 — 2026-10-12
 
 Regression fix (W6b): LMBX shifted colours on the flat-graphics eye clips where LMB7 did not.

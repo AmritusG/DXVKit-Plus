@@ -1,0 +1,115 @@
+W8 DIAGNOSE — LMBX v3 (W7 prototype) GPU decode profile, Mac Studio M4 Max, Arena running.
+Tool: xctrace "Metal System Trace" (Instruments 26.0) of examples/lmbx_passes (16 layers, 35 steps,
+each pass in its own labelled compute encoder); GPU intervals exported (metal-gpu-intervals) and
+summed per encoder label for this process only. "busy/step" = union of this process's GPU
+intervals / steps (Arena's GPU work excluded). Per-pass = mean GPU interval per layer-step (passes of
+different layers overlap, so per-pass values do not add up to busy/step).
+
+Tile census (all frames): glow 0.6.1: DCT 96.4%, palette 3.4%; glow w7: DCT 77.9%, palette 19.5%,
+quad 2.4% (ctx makes palette tiles cheap, so the encoder picks them 5x as often); graphics (eye_ga)
+0.6.1 and w7: flat 62%, palette 38% (w7: 4% of those with edge alpha); no DCT tiles at all.
+
+clip                      busy/step  tables   entropy   idct    out(frag)
+glow 0.6.1 (v2)            16.15 ms  312 us   1077 us   273 us  162 us
+glow DCT-only 0.6.1 (v1)   14.86     326       993      248     159
+glow DCT-only w7 (v3)      15.01     301       976      261     156    <- v3 format on DCT tiles: +1%
+glow v3 (no ctx)           18.06     294      1277      284     173
+glow ctx                   18.49     287      1268      273     148
+glow ctx+p32+bx            18.33     294      1274      279     164
+glow ctx+edge              18.25     294      1299      287     167
+glow ctx+quad              21.08     287      1499      281     157
+glow w7 best (all)         20.68     292      1501      273     151
+graphics 0.6.1 (v2)         6.89     268       316      173      82
+graphics v3 (no ctx)        9.25     263       535      168      76
+graphics ctx                9.38     268       556      174      86
+graphics ctx+p32+bx         9.34     264       548      175      86
+graphics ctx+edge          11.46     264       738      158      75
+graphics ctx+quad          10.46     263       659      169      71
+graphics w7 best (all)     11.43     266       767      160      77
+
+Findings
+1. v3 adds nothing measurable to DCT tiles: a DCT-only v3 stream decodes within 1% of v1 (15.01 vs
+   14.86 ms). The "format overhead" W7 attributed to glow is not the format: it is palette tiles.
+2. The entropy pass carries the whole regression (glow +0.42 ms/layer, graphics +0.45 ms/layer);
+   tables, idct and output are unchanged.
+3. v3's palette path itself is slower than v2's at equal tools (graphics: v3 no-ctx 9.25 vs 0.6.1
+   6.89 ms; same tiles, same 16-colour palettes): per pixel it reads the row above back from device
+   memory (scr), writes two device words, and every palette stream's thread runs inside a SIMD group
+   whose other lanes are DCT/empty streams of neighbouring tiles (one dispatch, stream-major).
+4. Per tool on graphics: ctx +0.1 ms, 64-colour palettes 0, edge alpha +2.1 ms (a serial second
+   sweep of 1024 pixels with a device byte read each), quad +1.1 ms; on glow quad +2.6 ms.
+5. Tables pass ~0.27-0.31 ms/layer in 0.6.1 and v3 alike (11 workgroups expand in parallel); not a
+   v3 cost, but 16384-slot index tables (9 x 128 KB) make the palette decode's working set large.
+6. Shader-level counters: Xcode's GPU capture replay (shader profiler: per-line cost, occupancy,
+   registers) asks for an administrator password (Developer Tools Access) on this machine; not
+   available to this session. Metal System Trace's counter set records only "RT Unit Active" without
+   a custom template. Per-line attribution was therefore done by A/B kernel variants under Metal
+   System Trace (IMPLEMENT log below).
+
+IMPLEMENT log (Metal System Trace, 16 layers, ms of GPU busy per step; two interleaved rounds)
+S0  production v3 format, W7's kernels (one entropy dispatch over every stream)
+      glow 21.83 (W7 20.92)          graphics 9.27 (W7 11.45)
+      direct payload back in stream 0 (P streams per tile, no extra stream), edge alpha coded
+      inline (no second sweep), no escapes, 12-bit index tables.
+S1  DCT and direct work split: CPU tile list from the mode map (DCT tiles; direct-work tiles
+    grouped by mode); `entropy` = DCT streams only, new `direct` kernel = one invocation per
+    palette / quad / alpha-palette tile; unused tables skipped.
+      glow 13.86 (-37%)               graphics 5.48 (-41%)
+      0.6.1 same method: glow 16.28, graphics 6.85  -> S1 is 15% / 20% faster than 0.6.1.
+      Mechanism (per-pass): glow entropy 1554 -> 328 us/layer: the DCT streams were being held
+      by palette streams sharing their SIMD groups (one 1024-symbol serial palette decode
+      stalls 31 DCT lanes).
+S2  tables pass split into 1024-slot workgroups (192 per layer): REJECTED, glow 24-28, graphics
+    13.0. S2b (one workgroup per table, workgroup-memory prefix, one binary search per thread
+    then a walk): REJECTED, glow 23.6-28.8, graphics 12.5.
+    Bisected to one expression: taking a slot's frequency from the workgroup-memory cum
+    (`wcum[lo+1]-wcum[lo]`) instead of reading it back from the table in device memory makes
+    the *following* direct pass 5.6x slower (0.14 -> 0.79 ms, 1 layer, deterministic), with
+    bit-identical table contents (checked in-shader) and identical generated MSL for the direct
+    kernel. Not explained without the shader profiler (see 6.); S1's tables kernel is kept.
+    CORRECTION: S1's numbers above are invalid. The S1 profiler binary was built before a
+    COPY_DST fix, so its tile-list upload failed validation (error on stderr, which the script
+    discarded) and it decoded the wrong tiles fast. Rebuilt and guarded (the profiler now checks
+    GPU == CPU on the clip and zero wgpu errors before timing), S1 is glow 23.8 / graphics 12.7 —
+    slower than S0; S2/S2b/S3 were therefore not regressions of S1. Everything below is guarded.
+
+Method change: the per-step profiler waited for the GPU after every step; Metal System Trace's GPU
+performance-state track showed the GPU at "Minimum" ~25% of such runs (clock drops while idle). From
+here: every step submitted back to back (one query set), GPU busy = the union of all pass intervals
+per step (CPU-side gaps excluded), median of 3 interleaved runs, 16 x 1080p, ms per step.
+
+arm                                   glow     graphics   note
+0.6.1                                 16.28    6.76
+W7 prototype                          20.54    11.26
+S4  one entropy dispatch, workgroups  17.9     12.0       DCT and direct in separate workgroups
+    homogeneous (DCT or direct)                           of one dispatch (overlap, no SIMD mixing)
+S4c one direct tile per 4 lanes       15.75    9.17       memory divergence: a SIMD group of 32
+S4c spread 8 / 16 / 32                15.65 / 15.52 / 16.5    8.45 / 8.94 / 11.56   palette lanes
+                                                          touches 32 cache lines per load
+S5a one-word index slots (sym|f-1|b)  15.55    8.15       one table read per symbol
+IDX_BITS 12 / 11 / 10                 15.38 / 15.47 / 15.33   8.14 / 7.94 / 7.82   bytes: graphics
+                                                          +0.35%, 4K graphics +0.5%, glow +0.2% at 10
+S6  index tables in workgroup memory  27.5     16.3       REJECTED (20 KB per workgroup: occupancy)
+    (spread 1 / 2 / 4)                         12.5 / 11.4 / 11.9
+row buffer 8 KB -> 1 KB               15.27    7.75
+S7  rANS reads a word, not a byte     15.39    7.93 (vs 8.03, CPU-loaded run)   -1.3% graphics
+S8  direct colours: 2 word reads      14.74    7.55       -1.5% both
+S9  row runs (RUN_LEFT / RUN_ABOVE)   -        9.15       REJECTED: +10% bytes (+37% before a
+    + a row-start context                                 row-start context), slower; the
+    row-start context alone           -        7.78       context alone -1.5% bytes, +4% time:
+                                                          REJECTED
+
+## Result (0.7.0 = S8 with IDX_BITS 10; GPU busy, back-to-back, median of 3, ms per step)
+arm                         16x1080p glow   16x1080p graphics   4x4K Shroomies   4x4K graphics
+0.6.1                       16.28           6.76                9.31*            6.97*
+W7 prototype                20.54           11.26               14.53*           8.36*
+0.7.0                       14.74           7.55                8.94             6.88
+(* sustained ms per step: the 0.6.1 / W7 profilers predate the busy metric; unloaded, sustained = busy within ~1%.)
+Per pass, 16 x 1080p graphics, summed over the layers (ms per step; passes of different layers overlap):
+          tables  entropy  idct  output
+0.6.1     4.30    5.23     2.87  (fragment pass timestamps are not meaningful on a tile-based GPU)
+0.7.0     3.58    7.12     2.25
+The remaining graphics cost is the context-coded palette decode itself (8 tables, 4-neighbour contexts, a serial
+1024-symbol chain per tile, latency-bound): +1.9 ms of entropy per step against v2's 16-colour residual decode.
+Format-level attempts to shorten the chain (row runs, row-start context) cost bytes and did not decode faster (S9).
+Release bench (dxvkit-plus bench, steps/s): docs/data/w8-lmbx-v3-speed-macstudio.jsonl.
