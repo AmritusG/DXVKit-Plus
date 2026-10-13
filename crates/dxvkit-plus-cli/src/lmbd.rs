@@ -133,7 +133,20 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
         Some("off") => None,
         Some(v) => Some(v.parse::<f64>().ok().filter(|t| t.is_finite() && *t > 0.0).ok_or_else(|| format!("--colour-tol: a positive number or off, got {v}"))?),
     };
+    // W9 prototype (branch w9-explore): BC7 tiles (bitstream v4) with this BC7 RDO lambda.
+    let bc7_tiles = match args.value("bc7-tiles") {
+        Some(v) => Some(v.parse::<f32>().map_err(|_| format!("--bc7-tiles: a lambda, got {v}"))?),
+        None => None,
+    };
+    let bc7_bits_mult = match args.value("bc7-mult") {
+        Some(v) => v.parse::<f64>().map_err(|_| format!("--bc7-mult: a number, got {v}"))?,
+        None => 1.0,
+    };
+    let bc7_partitions = args.value("bc7-parts").map_or(Ok(1), |v| v.parse::<u32>().map_err(|_| format!("--bc7-parts: a count, got {v}")))?;
     let p = LmbxParams {
+        bc7_partitions,
+        bc7_tiles,
+        bc7_bits_mult,
         chroma,
         quality,
         colour_tol,

@@ -248,6 +248,9 @@ fn main() -> ExitCode {
             "frame-bytes",
             "modes",
             "colour-tol",
+            "bc7-tiles",
+            "bc7-mult",
+            "bc7-parts",
         ],
     );
     if let Some(a) = args.value("alpha-mode") {

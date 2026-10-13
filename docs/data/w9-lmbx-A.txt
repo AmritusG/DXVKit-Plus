@@ -1,0 +1,35 @@
+# W9 A matrix: lmbx_quality ab <content> <ref> <LMB7 bytes - 60> arms (examples/lmbx_quality.rs). base = LMBX 0.7.0 (v3);
+# bc7l1 = BC7 tile candidate, bc7enc_rdo port lambda 1 (uber 4, partitions 1); bc7m<x> = BC7 tile bit cost scaled by x in the tile choice.
+# enc = this arm's wall time on top of cached BC7 (the bc7l1 row carries the BC7 encode). Machine shared and heavily loaded (load 40-120).
+gfx_a1        base                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx_a1        base+bc7l1               budget    5144 bytes    4442 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc  11.60s
+gfx_a1        base+bc7l1+bc7m0.7       budget    5144 bytes    4442 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx_a1        base+bc7l1+bc7m0.5       budget    5144 bytes    4442 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          base                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          base+bc7l1               budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc  11.20s
+gfx1          base+bc7l1+bc7m0.7       budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+gfx1          base+bc7l1+bc7m0.5       budget    5747 bytes    5266 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+detail        base                     budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.09s
+detail        base+bc7l1               budget  159416 bytes  159242 q   38.41 RGB  25.932 shown  25.932 A     inf colour  0.00 enc  89.90s
+detail        base+bc7l1+bc7m0.7       budget  159416 bytes  159342 q   29.54 RGB  27.376 shown  27.376 A     inf colour  0.00 enc   1.52s
+detail        base+bc7l1+bc7m0.5       budget  159416 bytes  158309 q   25.11 RGB  27.591 shown  27.591 A     inf colour  0.00 enc   1.52s
+realdetail    base                     budget  374461 bytes  350801 q   15.82 RGB  48.125 shown  54.848 A  49.495 colour  0.00 enc   3.63s
+realdetail    base+bc7l1               budget  374461 bytes  349265 q   15.82 RGB  48.132 shown  54.823 A  49.386 colour  0.00 enc 145.91s
+realdetail    base+bc7l1+bc7m0.7       budget  374461 bytes  360330 q   15.82 RGB  48.309 shown  54.823 A  48.649 colour  0.00 enc   4.92s
+realdetail    base+bc7l1+bc7m0.5       budget  374461 bytes  373569 q   17.48 RGB  47.937 shown  53.785 A  46.708 colour  0.00 enc   4.93s
+shroom_alpha  base                     budget  354434 bytes  328812 q   15.82 RGB  48.745 shown  55.291 A  50.278 colour  0.00 enc   4.34s
+shroom_alpha  base+bc7l1               budget  354434 bytes  326942 q   15.82 RGB  48.746 shown  55.192 A  50.035 colour  0.00 enc 314.99s
+shroom_alpha  base+bc7l1+bc7m0.7       budget  354434 bytes  338170 q   15.82 RGB  48.892 shown  55.112 A  49.108 colour  0.00 enc   6.34s
+shroom_alpha  base+bc7l1+bc7m0.5       budget  354434 bytes  354393 q   16.84 RGB  48.690 shown  54.110 A  47.325 colour  0.01 enc   6.76s
+shroom_glow   base                     budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc  10.02s
+shroom_glow   base+bc7l1               budget  752754 bytes  750888 q   21.35 RGB  42.962 shown  42.962 A     inf colour  0.01 enc 499.18s
+shroom_glow   base+bc7l1+bc7m0.7       budget  752754 bytes  642783 q   21.89 RGB  42.339 shown  42.339 A     inf colour  0.01 enc   7.48s
+shroom_glow   base+bc7l1+bc7m0.5       budget  752754 bytes  685859 q   21.89 RGB  42.540 shown  42.540 A     inf colour  0.01 enc   7.73s
+alpha         base                     budget  395833 bytes  350916 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.52s
+alpha         base+bc7l1               budget  395833 bytes  350852 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc 247.21s
+alpha         base+bc7l1+bc7m0.7       budget  395833 bytes  350852 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.48s
+alpha         base+bc7l1+bc7m0.5       budget  395833 bytes  350852 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.63s
+film_grain    base                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.16s
+film_grain    base+bc7l1               budget  384074 bytes  364235 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc  97.14s
+film_grain    base+bc7l1+bc7m0.7       budget  384074 bytes  364235 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.20s
+film_grain    base+bc7l1+bc7m0.5       budget  384074 bytes  364235 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.20s

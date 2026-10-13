@@ -1,0 +1,79 @@
+# W9 DIAGNOSE — where LMBX v3 (0.7.0) loses to LMB7, per tile, and the ceiling of a per-tile BC7-or-v3 choice
+# (crates/dxvkit-plus-lmbd-enc/examples/w9_lab.rs diag; Mac Studio, 2026-10-13). Budget = LMB7's stored bytes - 60
+# (as W7/W8). v3 fit = finest base quantiser whose stored frame fits. BC7 variants: our bc7enc port, lambda 0 (no
+# RDO) at uber 0 and 4, lambda 1 (LMB7's default, lookback 16384). Shown = premultiplied RGB PSNR.
+# Tile classes: few colours (<= 64 distinct RGBA), smooth (luma variance < 50), noisy (mean |horizontal luma
+# gradient| > 20), textured (the rest). "SE share" = the class's part of the frame's squared error.
+# Oracle: per tile, the option (v3 at 0.35..2.8x the fitted quality, or one of the BC7 variants) minimising
+# SE + mu * bytes (per-tile bytes scaled so a frame's add up to its stored size), mu bisected to the budget; once
+# with v3 options only and once with BC7 added — the ceiling gain is the difference (the model's own bias cancels).
+# Contents: detail = W7's CC0 synthetic (960x540); gfx1 = testpattern::graphics frame 1 (960x540); realdetail =
+# ShroomiesKingdom_05 frame 150, the 1920x1080 crop with the most luma gradient energy (at 768,256; local, never
+# committed; LMB7 374521 B); shroom_glow = ShroomiesKingdom_31 frame 150 (local).
+
+## detail: 960x540, budget 159416 B, v3 fit q 55.87 stored 159042 B shown 20.991 dB
+   bc7 l0 u0    encode    0.02 s  frame zstd   314132 B  shown 22.307 dB
+   bc7 l0 u4    encode    0.04 s  frame zstd   324935 B  shown 22.327 dB
+   bc7 l1 u4    encode   85.61 s  frame zstd   146367 B  shown 21.855 dB
+   tile class                 tiles   v3 SE share  LMB7 SE share   v3 bytes  BC7(l1) bytes
+   noisy (grad > 20)            465         97.0%          98.4%     144606        134125
+   textured                      45          3.0%           1.6%      14436         12242
+   oracle at the budget: v3-only 22.431 dB (159317 B) | v3 or BC7 27.099 dB (159353 B, 314 of 510 tiles BC7) | ceiling gain +4.67 dB
+## gfx1: 960x540, budget 5747 B, v3 fit q 1.00 stored 5207 B shown inf dB
+   bc7 l0 u0    encode    0.00 s  frame zstd     5698 B  shown 58.811 dB
+   bc7 l0 u4    encode    0.00 s  frame zstd     5918 B  shown 59.184 dB
+   bc7 l1 u4    encode   11.26 s  frame zstd     5376 B  shown 45.336 dB
+   tile class                 tiles   v3 SE share  LMB7 SE share   v3 bytes  BC7(l1) bytes
+   few colours (<=64)           510          NaN%         100.0%       5207          5376
+   oracle at the budget: v3-only inf dB (5207 B) | v3 or BC7 inf dB (5207 B, 0 of 510 tiles BC7) | ceiling gain NaN dB
+## realdetail: 1920x1080, budget 374461 B, v3 fit q 16.02 stored 348499 B shown 54.745 dB
+   bc7 l0 u0    encode    0.02 s  frame zstd   438137 B  shown 58.222 dB
+   bc7 l0 u4    encode    0.04 s  frame zstd   443165 B  shown 58.429 dB
+   bc7 l1 u4    encode  132.91 s  frame zstd   358925 B  shown 52.300 dB
+   tile class                 tiles   v3 SE share  LMB7 SE share   v3 bytes  BC7(l1) bytes
+   few colours (<=64)          1441          0.2%           1.7%      25306         38577
+   smooth (var < 50)             26          1.2%           1.0%       8555          9383
+   textured                     573         98.6%          97.3%     314638        310965
+   oracle at the budget: v3-only 56.833 dB (374258 B) | v3 or BC7 58.110 dB (374363 B, 400 of 2040 tiles BC7) | ceiling gain +1.28 dB
+## shroom_glow: 1920x1080, budget 752754 B, v3 fit q 21.08 stored 752026 B shown 42.988 dB
+   bc7 l0 u0    encode    0.04 s  frame zstd  1081296 B  shown 54.361 dB
+   bc7 l0 u4    encode    0.05 s  frame zstd  1125248 B  shown 55.165 dB
+   bc7 l1 u4    encode  277.78 s  frame zstd   702283 B  shown 41.365 dB
+   tile class                 tiles   v3 SE share  LMB7 SE share   v3 bytes  BC7(l1) bytes
+   few colours (<=64)           321          4.3%           4.9%      60055         63787
+   smooth (var < 50)            845         26.3%          26.1%     281908        288343
+   textured                     874         69.4%          69.0%     410063        350152
+   oracle at the budget: v3-only 44.176 dB (752675 B) | v3 or BC7 46.893 dB (752650 B, 973 of 2040 tiles BC7) | ceiling gain +2.72 dB
+
+# B1 bound: per-tile signalling of a v3 frame at the budget (w9_lab overhead)
+gfx_a1.png: stored 4428 B; mode map + qmap + directory 12754 B raw, 321 B zstd; rANS states 2040 B; together 53.3% of the frame (64x64 merge saves at most ~40.0%)
+gfx1.png: stored 5207 B; mode map + qmap + directory 10714 B raw, 305 B zstd; rANS states 2040 B; together 45.0% of the frame (64x64 merge saves at most ~33.8%)
+detail.png: stored 159042 B; mode map + qmap + directory 10714 B raw, 1852 B zstd; rANS states 3520 B; together 3.4% of the frame (64x64 merge saves at most ~2.5%)
+realdetail.png: stored 348499 B; mode map + qmap + directory 51004 B raw, 6278 B zstd; rANS states 14184 B; together 5.9% of the frame (64x64 merge saves at most ~4.4%)
+shroom_glow.png: stored 752026 B; mode map + qmap + directory 42844 B raw, 12700 B zstd; rANS states 22688 B; together 4.7% of the frame (64x64 merge saves at most ~3.5%)
+shroom_alpha.png: stored 326183 B; mode map + qmap + directory 51004 B raw, 5724 B zstd; rANS states 13692 B; together 6.0% of the frame (64x64 merge saves at most ~4.5%)
+
+# B2 estimate: luma only, float orthonormal DCT 8x8 vs per-32x32-region Lagrangian choice of 8x8 / 16x16 / 32x32
+# (w9_lab bsize): deadzone 0.45 at the same step for every size, bits = empirical entropy of (band, |level| <= 31)
+# per size over the frame + sign bits + 2 bits per region for the size. Idealised (each size's entropy model is
+# trained on this frame, no RDOQ, no chroma): an optimistic upper estimate of variable transform sizes.
+detail.png step    2: 8x8 only    330479 B  53.36 dB | adaptive 8/16/32    265584 B  53.92 dB (regions 8/16/32: [14, 11, 455])
+detail.png step    4: 8x8 only    271000 B  47.65 dB | adaptive 8/16/32    215244 B  48.34 dB (regions 8/16/32: [14, 7, 459])
+detail.png step    8: 8x8 only    209382 B  41.96 dB | adaptive 8/16/32    168327 B  42.75 dB (regions 8/16/32: [16, 5, 459])
+detail.png step   16: 8x8 only    159365 B  36.45 dB | adaptive 8/16/32    123426 B  37.14 dB (regions 8/16/32: [15, 8, 457])
+detail.png step   32: 8x8 only    112637 B  30.79 dB | adaptive 8/16/32     79834 B  31.49 dB (regions 8/16/32: [9, 7, 464])
+shroom_glow.png step    2: 8x8 only    598672 B  53.35 dB | adaptive 8/16/32    591492 B  53.31 dB (regions 8/16/32: [1128, 465, 387])
+shroom_glow.png step    4: 8x8 only    383423 B  48.27 dB | adaptive 8/16/32    370422 B  48.05 dB (regions 8/16/32: [477, 835, 668])
+shroom_glow.png step    8: 8x8 only    222113 B  43.98 dB | adaptive 8/16/32    199660 B  43.68 dB (regions 8/16/32: [212, 365, 1403])
+shroom_glow.png step   16: 8x8 only    122786 B  40.30 dB | adaptive 8/16/32     96672 B  40.07 dB (regions 8/16/32: [61, 241, 1678])
+shroom_glow.png step   32: 8x8 only     56848 B  37.00 dB | adaptive 8/16/32     43939 B  36.99 dB (regions 8/16/32: [75, 153, 1752])
+realdetail.png step    2: 8x8 only    338604 B  58.88 dB | adaptive 8/16/32    316341 B  58.84 dB (regions 8/16/32: [322, 1340, 318])
+realdetail.png step    4: 8x8 only    237456 B  53.02 dB | adaptive 8/16/32    214202 B  52.88 dB (regions 8/16/32: [259, 116, 1605])
+realdetail.png step    8: 8x8 only    147476 B  47.91 dB | adaptive 8/16/32    117416 B  47.60 dB (regions 8/16/32: [120, 183, 1677])
+realdetail.png step   16: 8x8 only     89749 B  43.96 dB | adaptive 8/16/32     58563 B  43.75 dB (regions 8/16/32: [38, 172, 1770])
+realdetail.png step   32: 8x8 only     60365 B  40.55 dB | adaptive 8/16/32     30178 B  40.38 dB (regions 8/16/32: [5, 132, 1843])
+film_grain.png step    2: 8x8 only    252774 B  52.78 dB | adaptive 8/16/32    249062 B  52.77 dB (regions 8/16/32: [0, 12, 468])
+film_grain.png step    4: 8x8 only    191514 B  46.76 dB | adaptive 8/16/32    187463 B  46.76 dB (regions 8/16/32: [0, 20, 460])
+film_grain.png step    8: 8x8 only    130270 B  40.73 dB | adaptive 8/16/32    126894 B  40.73 dB (regions 8/16/32: [0, 66, 414])
+film_grain.png step   16: 8x8 only     73583 B  34.77 dB | adaptive 8/16/32     70409 B  34.75 dB (regions 8/16/32: [15, 139, 326])
+film_grain.png step   32: 8x8 only     16969 B  30.60 dB | adaptive 8/16/32     13700 B  30.59 dB (regions 8/16/32: [16, 128, 336])

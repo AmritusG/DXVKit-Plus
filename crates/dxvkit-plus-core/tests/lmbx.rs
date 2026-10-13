@@ -248,7 +248,8 @@ fn refusals() {
     p[..4].copy_from_slice(b"LMXS");
     assert!(matches!(parse(&p), Some(MediaError::Unsupported(_))), "prototype bitstream");
     let mut v = good.clone();
-    v[4] = 4;
+    // W9 prototype: version 4 (BC7 tiles) parses on the w9-explore branch, so 5 is the future one.
+    v[4] = 5;
     assert!(matches!(parse(&v), Some(MediaError::Unsupported(_))), "future version");
     for (at, val, what) in [(6usize, 2u8, "chroma"), (7, 2, "flags"), (8, 0, "width"), (18, 1, "reserved"), (20, 0, "q step 0")] {
         let mut c = good.clone();
