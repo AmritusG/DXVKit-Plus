@@ -1,0 +1,370 @@
+# W7 — can LMBX close its gap to LMB7 on graphics with alpha? Prototypes A/B (Mac Studio, 2026-10-12/13)
+# Branch w7-explore only (bitstream v3 prototype: docs/w7-lmbx-v3-prototype.md). Lab: crates/dxvkit-plus-lmbd-enc/examples/w7_lab.rs.
+# Every arm at LMB7's bytes per frame: budget = LMB7 payload - 60 (stored, Zstandard 19), rate control = finest base
+# quantiser (1..600, log bisection to 1/64) whose stored frame fits; bytes = LMBD payload. RGB = straight RGB PSNR,
+# shown = premultiplied, A = alpha; colour = worst flat-region mean error (code values; W6b guard, must be <= 1).
+# Contents: gfx_a1 / gfx1 = testpattern::graphics 960x540 frame 1 with / without alpha (CC0, LMB7 5204 / 5807 B);
+# shroom_alpha = ShroomiesKingdom_05 frame 150, 4K centre crop 1920x1080 (local, never committed; LMB7 354494 B, = W6b);
+# shroom_glow = ShroomiesKingdom_31 frame 150 1080p (local; LMB7 752814 B, = W6b); alpha / film_grain / detail =
+# CC0 synthetics RE-CREATED from W5's description (W5's scratch generator is gone; LMB7 395893 / 384134 / 159476 B).
+
+## DIAGNOSE — 0.6.1 vs LMB7 on gfx_a at LMB7's bytes (before any change)
+## palette tiles 249 (index streams raw 6374 B incl. 996 B rANS states; stored ~3898 B), flat tiles 227
+## stored bytes (zstd 19) 5143: tables+modes 167 qmap 15 directory 274 streams 4646; palette colours raw 2848 B, stored ~283 B
+## by pixel alpha class (shown SE = premultiplied RGB, summed over channels)
+  whole frame: LMBX shown 43.77 dB alpha 44.11 dB | LMB7 shown 46.66 dB alpha 46.85 dB
+  alpha 0        px 294743 (56.86%)  LMBX shown SE         0 (  0.0%) alpha SE         0 [shown SE from alpha alone         0, colour alone         0] | LMB7 shown SE        16 (  0.0%) alpha SE    133293
+  alpha 255      px 222398 (42.90%)  LMBX shown SE    605068 ( 14.3%) alpha SE     14416 [shown SE from alpha alone     43196, colour alone    561872] | LMB7 shown SE   1218187 ( 55.8%) alpha SE    209416
+  alpha partial  px   1259 ( 0.24%)  LMBX shown SE   3640384 ( 85.7%) alpha SE   1294447 [shown SE from alpha alone   3640384, colour alone         0] | LMB7 shown SE    963849 ( 44.2%) alpha SE    353469
+## by tile class (alpha content / source colours / LMBX mode)
+  AA-alpha     2-16 cols  Palette      tiles   28  LMBX bytes   1994 (   71/tile)  LMBX shown SE   2078970 ( 49.0%) alpha SE    771348 | LMB7 shown SE    695069 ( 31.9%) alpha SE    272322 | mean cols  12.0
+  AA-alpha    17-32 cols  Palette      tiles    7  LMBX bytes    797 (  114/tile)  LMBX shown SE   1604611 ( 37.8%) alpha SE    537515 | LMB7 shown SE    429721 ( 19.7%) alpha SE    154953 | mean cols  18.0
+  hard-matte   2-16 cols  Palette      tiles  141  LMBX bytes   4713 (   33/tile)  LMBX shown SE     65216 (  1.5%) alpha SE         0 | LMB7 shown SE    783364 ( 35.9%) alpha SE    151780 | mean cols   4.8
+  hard-matte  17-32 cols  Palette      tiles    6  LMBX bytes    243 (   40/tile)  LMBX shown SE    203168 (  4.8%) alpha SE         0 | LMB7 shown SE      6967 (  0.3%) alpha SE      1116 | mean cols  28.3
+  opaque          1 cols  Flat         tiles   57  LMBX bytes    228 (    4/tile)  LMBX shown SE         0 (  0.0%) alpha SE         0 | LMB7 shown SE     56721 (  2.6%) alpha SE     54272 | mean cols   1.0
+  opaque       2-16 cols  Palette      tiles   50  LMBX bytes   1265 (   25/tile)  LMBX shown SE         0 (  0.0%) alpha SE         0 | LMB7 shown SE    123306 (  5.7%) alpha SE     42695 | mean cols   2.3
+  opaque      17-32 cols  Dct          tiles   34  LMBX bytes   1088 (   32/tile)  LMBX shown SE    178704 (  4.2%) alpha SE         0 | LMB7 shown SE     60108 (  2.8%) alpha SE     10336 | mean cols  27.0
+  opaque      17-32 cols  Palette      tiles   17  LMBX bytes    459 (   27/tile)  LMBX shown SE    114784 (  2.7%) alpha SE         0 | LMB7 shown SE     26796 (  1.2%) alpha SE      8704 | mean cols  28.0
+  transparent     1 cols  Flat         tiles  170  LMBX bytes    680 (    4/tile)  LMBX shown SE         0 (  0.0%) alpha SE         0 | LMB7 shown SE         0 (  0.0%) alpha SE         0 | mean cols   1.0
+## tiles where LMBX loses most shown SE to LMB7
+  tile  289: excess   330147  AA-alpha    17-32 cols  Palette cols 18 bytes 110 LMBX shown 420741 alpha 140247 LMB7 shown 90594 alpha 32325
+  tile  287: excess   315278  AA-alpha    17-32 cols  Palette cols 17 bytes 114 LMBX shown 382773 alpha 127591 LMB7 shown 67495 alpha 23238
+  tile  139: excess   175221  AA-alpha    17-32 cols  Palette cols 17 bytes 79 LMBX shown 224427 alpha 74809 LMB7 shown 49206 alpha 18523
+  tile  290: excess   132337  AA-alpha    17-32 cols  Palette cols 17 bytes 129 LMBX shown 191868 alpha 63956 LMB7 shown 59531 alpha 22190
+  tile  256: excess   132178  AA-alpha    17-32 cols  Palette cols 17 bytes 118 LMBX shown 182739 alpha 60913 LMB7 shown 50561 alpha 17548
+  tile  286: excess   131122  AA-alpha     2-16 cols  Palette cols 10 bytes 146 LMBX shown 157128 alpha 52376 LMB7 shown 26006 alpha 16040
+  tile  138: excess   130581  AA-alpha     2-16 cols  Palette cols 15 bytes 49 LMBX shown 162954 alpha 54318 LMB7 shown 32373 alpha 11095
+  tile  288: excess   129584  AA-alpha     2-16 cols  Palette cols 15 bytes 119 LMBX shown 177843 alpha 59281 LMB7 shown 48259 alpha 8824
+  tile  255: excess   119874  AA-alpha     2-16 cols  Palette cols 6 bytes 20 LMBX shown 127302 alpha 42434 LMB7 shown 7428 alpha 3376
+  tile  260: excess   112894  AA-alpha     2-16 cols  Palette cols 16 bytes 108 LMBX shown 155544 alpha 51848 LMB7 shown 42650 alpha 14290
+  tile  170: excess    90769  AA-alpha     2-16 cols  Palette cols 15 bytes 101 LMBX shown 123171 alpha 41057 LMB7 shown 32402 alpha 12475
+  tile  231: excess    85124  AA-alpha     2-16 cols  Palette cols 14 bytes 87 LMBX shown 117768 alpha 39256 LMB7 shown 32644 alpha 9356
+
+## Tile 289 (worst): source colour -> 0.6.1 decode (a 17-level AA alpha ramp collapsed to 2 levels)
+arm base q 253.26 tile 289 mode Palette stream 110 B
+  src [0, 0, 0, 0] -> [0, 0, 0, 0] x392
+  src [235, 235, 235, 255] -> [235, 235, 235, 255] x92
+  src [255, 255, 255, 16] -> [255, 255, 255, 88] x5
+  src [255, 255, 255, 32] -> [255, 255, 255, 88] x4
+  src [255, 255, 255, 48] -> [255, 255, 255, 88] x1
+  src [255, 255, 255, 64] -> [255, 255, 255, 88] x7
+  src [255, 255, 255, 80] -> [255, 255, 255, 88] x6
+  src [255, 255, 255, 96] -> [255, 255, 255, 88] x2
+  src [255, 255, 255, 112] -> [255, 255, 255, 88] x4
+  src [255, 255, 255, 128] -> [255, 255, 255, 88] x2
+  src [255, 255, 255, 143] -> [255, 255, 255, 88] x2
+  src [255, 255, 255, 159] -> [255, 255, 255, 88] x5
+  src [255, 255, 255, 175] -> [255, 255, 255, 255] x2
+  src [255, 255, 255, 191] -> [255, 255, 255, 255] x9
+  src [255, 255, 255, 207] -> [255, 255, 255, 255] x2
+  src [255, 255, 255, 223] -> [255, 255, 255, 255] x3
+  src [255, 255, 255, 239] -> [255, 255, 255, 255] x6
+  src [255, 255, 255, 255] -> [255, 255, 255, 255] x480
+
+## Rate floor (q 600) where the stored bytes go (zstd 19); palette index streams = 75% of the floor
+arm base q 600.00 bitstream 23845 B
+## palette tiles 249 (index streams raw 5998 B incl. 996 B rANS states; stored ~3579 B), flat tiles 227
+## stored bytes (zstd 19) 4752: tables+modes 177 qmap 28 directory 290 streams 4277; palette colours raw 2712 B, stored ~239 B
+arm base q 600.00 bitstream 20678 B
+## palette tiles 220 (index streams raw 4695 B incl. 880 B rANS states; stored ~3056 B), flat tiles 227
+## stored bytes (zstd 19) 4375: tables+modes 225 qmap 59 directory 276 streams 3812; palette colours raw 2200 B, stored ~210 B
+
+## Palette index coding study (ideal static-table bits of 0.6.1's chosen index maps at the floor)
+arm base q 600.00: 249 palette tiles
+  v2: residual vs left, 1 table                index bits     41167 =    5146 B (+ 996 B states, 16 B tables approx)
+  residual vs left, ctx left==above            index bits     26717 =    3340 B (+ 996 B states, 32 B tables approx)
+  copy-left/copy-above/literal, ctx l==a       index bits     25706 =    3213 B (+ 996 B states, 36 B tables approx)
+  copy-l/copy-a/literal, ctx (l==a, a==ar)     index bits     15716 =    1965 B (+ 996 B states, 144 B tables approx)
+arm base q 600.00: 220 palette tiles
+  v2: residual vs left, 1 table                index bits     31481 =    3935 B (+ 880 B states, 16 B tables approx)
+  residual vs left, ctx left==above            index bits     20413 =    2552 B (+ 880 B states, 32 B tables approx)
+  copy-left/copy-above/literal, ctx l==a       index bits     19144 =    2393 B (+ 880 B states, 36 B tables approx)
+  copy-l/copy-a/literal, ctx (l==a, a==ar)     index bits     11937 =    1492 B (+ 880 B states, 136 B tables approx)
+# (an earlier version of the third scheme let the literal's own value pick its table — not decodable; fixed above)
+
+## Encoder-only rate allocation probe: lambda x aal on tiles with partial alpha (at the rate floor 0.6.1 cannot spend more)
+# (0.25-step rate control of the CLI; gfx_a budget 5144)
+gfx_a  aal0.5          bytes 5164 q 600 shown 43.769 A 44.109   (at the floor already)
+gfx_a  aal0.1          bytes 5281 q 600 shown 44.462 A 44.862
+gfx_a  aal0.03         bytes 5953 q 600 shown 49.595 A 52.205
+gfx_a  av+aal0.25      bytes 5637 q 600 shown 46.768 A 47.479
+gfx_a  av+aal0.1       bytes 5876 q 600 shown 49.538 A 51.658
+gfx_a  av+allk+cb8+aal0.1 bytes 6100 q 600 shown 51.385 A 55.440
+# 0.6.1's rate floor on the card is 4.77 KB stored; at LMB7's 5.1 KB it has no bytes left for the anti-aliased edges.
+# Moving rate to them works (+6 dB for +14% bytes) but cannot happen at LMB7's bytes: the floor itself must drop.
+
+## FINAL A/B (knobs: base = 0.6.1; av = alpha visibility weighting; allk = every lossy palette size; cb8 = 8 bits/colour
+## in the mode decision; v3 = the v3 format with v2 index coding; ctx = context-coded indices; p32/p64 = palettes up to
+## 32/64 colours, bx = above 16 only when exact; esc = escape colours; edge = exact alpha on partial pixels; adct =
+## direct colour + DCT alpha; apal = DCT colour + alpha palette; quad = 16x16 sub-tiles; bc7 = BC7 tiles)
+gfx_a1        base                     budget    5144 bytes    5159 q  269.70 RGB  52.552 shown  43.769 A  44.109 colour  0.00 enc   1.00s
+gfx_a1        av                       budget    5144 bytes    5137 q  600.00 RGB  51.213 shown  43.639 A  44.074 colour  0.00 enc   0.89s
+gfx_a1        allk+cb8                 budget    5144 bytes    5157 q  133.97 RGB  55.548 shown  42.579 A  42.320 colour  0.00 enc   1.36s
+gfx_a1        av+allk+cb8              budget    5144 bytes    5077 q  600.00 RGB  53.256 shown  43.795 A  43.649 colour  0.00 enc   1.41s
+gfx_a1        v3                       budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.21s
+gfx_a1        v3+p32+bx                budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.22s
+gfx_a1        v3+p64+bx                budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.20s
+gfx_a1        v3+p32                   budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.03s
+gfx_a1        esc                      budget    5144 bytes    5106 q   63.31 RGB  55.710 shown  41.175 A  41.128 colour  0.00 enc   1.29s
+gfx_a1        edge                     budget    5144 bytes    5111 q   81.28 RGB  55.571 shown  41.400 A  41.283 colour  0.00 enc   0.99s
+gfx_a1        adct                     budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.45s
+gfx_a1        apal                     budget    5144 bytes    5135 q   60.22 RGB  55.710 shown  41.401 A  41.371 colour  0.00 enc   1.38s
+gfx_a1        quad                     budget    5144 bytes    5148 q   39.38 RGB  57.897 shown  42.734 A  42.685 colour  0.00 enc   1.08s
+gfx_a1        bc7                      budget    5144 bytes    5146 q   63.31 RGB  55.639 shown  41.172 A  41.106 colour  0.11 enc  25.36s
+gfx_a1        ctx                      budget    5144 bytes    5152 q    5.47 RGB  65.098 shown  59.944 A  61.500 colour  0.00 enc   0.83s
+gfx_a1        ctx+p32+bx               budget    5144 bytes    5149 q    5.20 RGB  76.987 shown  61.693 A  61.823 colour  0.00 enc   0.71s
+gfx_a1        ctx+esc                  budget    5144 bytes    5153 q    6.04 RGB  65.098 shown  59.997 A  61.577 colour  0.00 enc   0.86s
+gfx_a1        ctx+edge                 budget    5144 bytes    4635 q    1.00 RGB  65.426 shown  65.426 A     inf colour  0.00 enc   0.05s
+gfx_a1        ctx+adct                 budget    5144 bytes    5152 q    5.47 RGB  65.098 shown  59.944 A  61.500 colour  0.00 enc   0.90s
+gfx_a1        ctx+apal                 budget    5144 bytes    5154 q    4.71 RGB  65.098 shown  60.316 A  62.043 colour  0.00 enc   0.78s
+gfx_a1        ctx+quad                 budget    5144 bytes    5038 q    1.00 RGB  65.703 shown  65.063 A  73.694 colour  0.00 enc   0.10s
+gfx_a1        ctx+bc7                  budget    5144 bytes    5152 q    5.47 RGB  65.098 shown  59.944 A  61.500 colour  0.00 enc   0.57s
+gfx_a1        ctx+p32+bx+edge+quad     budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.15s
+gfx_a1        ctx+p32+bx+edge+quad+esc budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx_a1        ctx+p32+bx+edge+quad+adct budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.09s
+gfx_a1        ctx+p32+bx+edge+quad+apal budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.11s
+gfx_a1        ctx+p32+bx+edge+quad+av  budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx_a1        ctx+p64+bx+edge+quad+esc+adct+apal+av budget    5144 bytes    4339 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.08s
+gfx1          base                     budget    5747 bytes    5747 q   89.82 RGB  45.355 shown  45.355 A     inf colour  0.00 enc   0.99s
+gfx1          av                       budget    5747 bytes    5747 q   89.82 RGB  45.355 shown  45.355 A     inf colour  0.00 enc   0.90s
+gfx1          allk+cb8                 budget    5747 bytes    5727 q   46.91 RGB  47.722 shown  47.722 A     inf colour  0.00 enc   1.39s
+gfx1          av+allk+cb8              budget    5747 bytes    5727 q   46.91 RGB  47.722 shown  47.722 A     inf colour  0.00 enc   1.40s
+gfx1          v3                       budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   1.27s
+gfx1          v3+p32+bx                budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   1.23s
+gfx1          v3+p64+bx                budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   0.98s
+gfx1          v3+p32                   budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   1.12s
+gfx1          esc                      budget    5747 bytes    5701 q   44.62 RGB  45.312 shown  45.312 A     inf colour  0.01 enc   1.16s
+gfx1          edge                     budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   1.08s
+gfx1          adct                     budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   1.04s
+gfx1          apal                     budget    5747 bytes    5713 q   44.62 RGB  45.349 shown  45.349 A     inf colour  0.01 enc   0.93s
+gfx1          quad                     budget    5747 bytes    5693 q   34.75 RGB  47.147 shown  47.147 A     inf colour  0.01 enc   1.10s
+gfx1          bc7                      budget    5747 bytes    5763 q   46.91 RGB  45.022 shown  45.022 A     inf colour  0.00 enc  25.55s
+gfx1          ctx                      budget    5747 bytes    5489 q    4.95 RGB  64.083 shown  64.083 A     inf colour  0.00 enc   0.64s
+gfx1          ctx+p32+bx               budget    5747 bytes    5638 q    1.00 RGB  78.977 shown  78.977 A     inf colour  0.00 enc   0.07s
+gfx1          ctx+esc                  budget    5747 bytes    5535 q    1.00 RGB  65.306 shown  65.306 A     inf colour  0.00 enc   0.05s
+gfx1          ctx+edge                 budget    5747 bytes    5489 q    4.95 RGB  64.083 shown  64.083 A     inf colour  0.00 enc   0.65s
+gfx1          ctx+adct                 budget    5747 bytes    5489 q    4.95 RGB  64.083 shown  64.083 A     inf colour  0.00 enc   0.65s
+gfx1          ctx+apal                 budget    5747 bytes    5489 q    4.95 RGB  64.083 shown  64.083 A     inf colour  0.00 enc   0.62s
+gfx1          ctx+quad                 budget    5747 bytes    5551 q    1.00 RGB  65.355 shown  65.355 A     inf colour  0.00 enc   0.09s
+gfx1          ctx+bc7                  budget    5747 bytes    5489 q    4.95 RGB  64.083 shown  64.083 A     inf colour  0.00 enc   0.73s
+gfx1          ctx+p32+bx+edge+quad     budget    5747 bytes    5379 q    1.00 RGB  85.966 shown  85.966 A     inf colour  0.00 enc   0.06s
+gfx1          ctx+p32+bx+edge+quad+esc budget    5747 bytes    5384 q    1.00 RGB  85.671 shown  85.671 A     inf colour  0.00 enc   0.10s
+gfx1          ctx+p32+bx+edge+quad+adct budget    5747 bytes    5379 q    1.00 RGB  85.966 shown  85.966 A     inf colour  0.00 enc   0.08s
+gfx1          ctx+p32+bx+edge+quad+apal budget    5747 bytes    5379 q    1.00 RGB  85.966 shown  85.966 A     inf colour  0.00 enc   0.05s
+gfx1          ctx+p32+bx+edge+quad+av  budget    5747 bytes    5379 q    1.00 RGB  85.966 shown  85.966 A     inf colour  0.00 enc   0.18s
+gfx1          ctx+p64+bx+edge+quad+esc+adct+apal+av budget    5747 bytes    5384 q    1.00 RGB  85.671 shown  85.671 A     inf colour  0.00 enc   0.07s
+shroom_alpha  base                     budget  354434 bytes  331458 q   15.82 RGB  48.639 shown  55.320 A  50.370 colour  0.00 enc   3.78s
+shroom_alpha  av                       budget  354434 bytes  331762 q   15.82 RGB  48.640 shown  55.330 A  50.403 colour  0.00 enc   4.56s
+shroom_alpha  allk+cb8                 budget  354434 bytes  330561 q   15.82 RGB  48.621 shown  55.283 A  50.233 colour  0.00 enc   6.46s
+shroom_alpha  av+allk+cb8              budget  354434 bytes  331338 q   15.82 RGB  48.628 shown  55.299 A  50.305 colour  0.00 enc   6.00s
+shroom_alpha  v3                       budget  354434 bytes  331587 q   15.82 RGB  48.638 shown  55.319 A  50.367 colour  0.00 enc   3.58s
+shroom_alpha  v3+p32+bx                budget  354434 bytes  331651 q   15.82 RGB  48.640 shown  55.320 A  50.368 colour  0.00 enc   3.59s
+shroom_alpha  v3+p64+bx                budget  354434 bytes  332230 q   15.82 RGB  48.653 shown  55.337 A  50.403 colour  0.00 enc   3.26s
+shroom_alpha  v3+p32                   budget  354434 bytes  331206 q   15.82 RGB  48.767 shown  55.249 A  50.084 colour  0.00 enc   3.42s
+shroom_alpha  esc                      budget  354434 bytes  332335 q   15.82 RGB  48.816 shown  55.359 A  50.335 colour  0.00 enc   2.83s
+shroom_alpha  edge                     budget  354434 bytes  333267 q   15.82 RGB  48.651 shown  55.382 A  50.527 colour  0.00 enc   3.17s
+shroom_alpha  adct                     budget  354434 bytes  332762 q   15.82 RGB  48.669 shown  55.374 A  50.463 colour  0.00 enc   3.18s
+shroom_alpha  apal                     budget  354434 bytes  331565 q   15.82 RGB  48.638 shown  55.320 A  50.367 colour  0.00 enc   3.00s
+shroom_alpha  quad                     budget  354434 bytes  331390 q   15.82 RGB  48.681 shown  55.316 A  50.296 colour  0.00 enc   2.76s
+shroom_alpha  bc7                      budget  354434 bytes  329916 q   15.82 RGB  48.676 shown  55.264 A  50.095 colour  0.00 enc 130.03s
+shroom_alpha  ctx                      budget  354434 bytes  324240 q   15.82 RGB  48.537 shown  55.134 A  50.073 colour  0.00 enc   1.96s
+shroom_alpha  ctx+p32+bx               budget  354434 bytes  324399 q   15.82 RGB  48.539 shown  55.136 A  50.075 colour  0.00 enc   1.97s
+shroom_alpha  ctx+esc                  budget  354434 bytes  320856 q   15.82 RGB  48.692 shown  55.030 A  49.867 colour  0.00 enc   2.29s
+shroom_alpha  ctx+edge                 budget  354434 bytes  325864 q   15.82 RGB  48.548 shown  55.197 A  50.248 colour  0.00 enc   2.57s
+shroom_alpha  ctx+adct                 budget  354434 bytes  324861 q   15.82 RGB  48.519 shown  55.181 A  50.248 colour  0.00 enc   3.05s
+shroom_alpha  ctx+apal                 budget  354434 bytes  324703 q   15.82 RGB  48.566 shown  55.200 A  50.166 colour  0.00 enc   3.33s
+shroom_alpha  ctx+quad                 budget  354434 bytes  322111 q   15.82 RGB  48.562 shown  55.041 A  49.789 colour  0.00 enc   3.11s
+shroom_alpha  ctx+bc7                  budget  354434 bytes  322845 q   15.82 RGB  48.595 shown  55.106 A  49.848 colour  0.00 enc   2.47s
+shroom_alpha  ctx+p32+bx+edge+quad     budget  354434 bytes  323732 q   15.82 RGB  48.582 shown  55.079 A  49.926 colour  0.00 enc   4.33s
+shroom_alpha  ctx+p32+bx+edge+quad+esc budget  354434 bytes  319423 q   15.82 RGB  48.660 shown  54.935 A  49.690 colour  0.00 enc   5.25s
+shroom_alpha  ctx+p32+bx+edge+quad+adct budget  354434 bytes  323495 q   15.82 RGB  48.550 shown  55.090 A  49.991 colour  0.00 enc   5.39s
+shroom_alpha  ctx+p32+bx+edge+quad+apal budget  354434 bytes  323609 q   15.82 RGB  48.583 shown  55.090 A  49.952 colour  0.00 enc   5.36s
+shroom_alpha  ctx+p32+bx+edge+quad+av  budget  354434 bytes  324972 q   15.82 RGB  48.589 shown  55.191 A  50.165 colour  0.00 enc   4.40s
+shroom_alpha  ctx+p64+bx+edge+quad+esc+adct+apal+av budget  354434 bytes  321622 q   15.82 RGB  48.670 shown  55.104 A  50.044 colour  0.00 enc   5.58s
+shroom_glow   base                     budget  752754 bytes  752273 q   20.06 RGB  43.046 shown  43.046 A     inf colour  0.02 enc   6.21s
+shroom_glow   av                       budget  752754 bytes  752273 q   20.06 RGB  43.046 shown  43.046 A     inf colour  0.02 enc   6.59s
+shroom_glow   allk+cb8                 budget  752754 bytes  751491 q   20.56 RGB  42.966 shown  42.966 A     inf colour  0.02 enc  12.86s
+shroom_glow   av+allk+cb8              budget  752754 bytes  751491 q   20.56 RGB  42.966 shown  42.966 A     inf colour  0.02 enc   9.61s
+shroom_glow   v3                       budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   4.01s
+shroom_glow   v3+p32+bx                budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   3.44s
+shroom_glow   v3+p64+bx                budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   3.60s
+shroom_glow   v3+p32                   budget  752754 bytes  752566 q   20.56 RGB  42.991 shown  42.991 A     inf colour  0.02 enc   3.99s
+shroom_glow   esc                      budget  752754 bytes  752009 q   20.31 RGB  43.002 shown  43.002 A     inf colour  0.02 enc   3.88s
+shroom_glow   edge                     budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   2.69s
+shroom_glow   adct                     budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   2.64s
+shroom_glow   apal                     budget  752754 bytes  750327 q   20.56 RGB  42.962 shown  42.962 A     inf colour  0.02 enc   2.61s
+shroom_glow   quad                     budget  752754 bytes  751817 q   20.31 RGB  43.022 shown  43.022 A     inf colour  0.02 enc   3.79s
+shroom_glow   bc7                      budget  752754 bytes  751256 q   20.82 RGB  42.963 shown  42.963 A     inf colour  0.02 enc 255.08s
+shroom_glow   ctx                      budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   2.47s
+shroom_glow   ctx+p32+bx               budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   2.40s
+shroom_glow   ctx+esc                  budget  752754 bytes  751185 q   20.82 RGB  43.006 shown  43.006 A     inf colour  0.00 enc   3.27s
+shroom_glow   ctx+edge                 budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   2.44s
+shroom_glow   ctx+adct                 budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   2.42s
+shroom_glow   ctx+apal                 budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   2.40s
+shroom_glow   ctx+quad                 budget  752754 bytes  751664 q   20.82 RGB  43.006 shown  43.006 A     inf colour  0.00 enc   3.44s
+shroom_glow   ctx+bc7                  budget  752754 bytes  751704 q   21.08 RGB  42.968 shown  42.968 A     inf colour  0.00 enc   2.67s
+shroom_glow   ctx+p32+bx+edge+quad     budget  752754 bytes  751376 q   20.82 RGB  43.001 shown  43.001 A     inf colour  0.00 enc   3.52s
+shroom_glow   ctx+p32+bx+edge+quad+esc budget  752754 bytes  751569 q   20.82 RGB  43.035 shown  43.035 A     inf colour  0.00 enc   4.36s
+shroom_glow   ctx+p32+bx+edge+quad+adct budget  752754 bytes  751376 q   20.82 RGB  43.001 shown  43.001 A     inf colour  0.00 enc   3.52s
+shroom_glow   ctx+p32+bx+edge+quad+apal budget  752754 bytes  751376 q   20.82 RGB  43.001 shown  43.001 A     inf colour  0.00 enc   3.41s
+shroom_glow   ctx+p32+bx+edge+quad+av  budget  752754 bytes  751376 q   20.82 RGB  43.001 shown  43.001 A     inf colour  0.00 enc   3.38s
+shroom_glow   ctx+p64+bx+edge+quad+esc+adct+apal+av budget  752754 bytes  751300 q   21.08 RGB  43.004 shown  43.004 A     inf colour  0.00 enc   5.32s
+alpha         base                     budget  395833 bytes  351885 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.41s
+alpha         av                       budget  395833 bytes  351885 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.60s
+alpha         allk+cb8                 budget  395833 bytes  351885 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   5.09s
+alpha         av+allk+cb8              budget  395833 bytes  351885 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   4.73s
+alpha         v3                       budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.99s
+alpha         v3+p32+bx                budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.49s
+alpha         v3+p64+bx                budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.21s
+alpha         v3+p32                   budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.94s
+alpha         esc                      budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.66s
+alpha         edge                     budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.49s
+alpha         adct                     budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.27s
+alpha         apal                     budget  395833 bytes  351816 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.25s
+alpha         quad                     budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.58s
+alpha         bc7                      budget  395833 bytes  351852 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc 155.75s
+alpha         ctx                      budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   1.43s
+alpha         ctx+p32+bx               budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   1.36s
+alpha         ctx+esc                  budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   1.63s
+alpha         ctx+edge                 budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.05s
+alpha         ctx+adct                 budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.09s
+alpha         ctx+apal                 budget  395833 bytes  350603 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   1.86s
+alpha         ctx+quad                 budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   2.03s
+alpha         ctx+bc7                  budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   1.63s
+alpha         ctx+p32+bx+edge+quad     budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   3.68s
+alpha         ctx+p32+bx+edge+quad+esc budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   4.06s
+alpha         ctx+p32+bx+edge+quad+adct budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   4.43s
+alpha         ctx+p32+bx+edge+quad+apal budget  395833 bytes  350603 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.99s
+alpha         ctx+p32+bx+edge+quad+av  budget  395833 bytes  351833 q   11.01 RGB  49.350 shown  50.348 A  56.610 colour  0.00 enc   3.53s
+alpha         ctx+p64+bx+edge+quad+esc+adct+apal+av budget  395833 bytes  350603 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   5.01s
+film_grain    base                     budget  384074 bytes  364237 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.16s
+film_grain    av                       budget  384074 bytes  364237 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.17s
+film_grain    allk+cb8                 budget  384074 bytes  364237 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.34s
+film_grain    av+allk+cb8              budget  384074 bytes  364237 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.42s
+film_grain    v3                       budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.23s
+film_grain    v3+p32+bx                budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.14s
+film_grain    v3+p64+bx                budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.14s
+film_grain    v3+p32                   budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.22s
+film_grain    esc                      budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.23s
+film_grain    edge                     budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.21s
+film_grain    adct                     budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.24s
+film_grain    apal                     budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.24s
+film_grain    quad                     budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.23s
+film_grain    bc7                      budget  384074 bytes  364232 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc 101.17s
+film_grain    ctx                      budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.11s
+film_grain    ctx+p32+bx               budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.09s
+film_grain    ctx+esc                  budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.15s
+film_grain    ctx+edge                 budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.09s
+film_grain    ctx+adct                 budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.10s
+film_grain    ctx+apal                 budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.10s
+film_grain    ctx+quad                 budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.14s
+film_grain    ctx+bc7                  budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.09s
+film_grain    ctx+p32+bx+edge+quad     budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.15s
+film_grain    ctx+p32+bx+edge+quad+esc budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.19s
+film_grain    ctx+p32+bx+edge+quad+adct budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.17s
+film_grain    ctx+p32+bx+edge+quad+apal budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.15s
+film_grain    ctx+p32+bx+edge+quad+av  budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.13s
+film_grain    ctx+p64+bx+edge+quad+esc+adct+apal+av budget  384074 bytes  364222 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.18s
+detail        base                     budget  159416 bytes  157174 q   75.41 RGB  21.350 shown  21.350 A     inf colour  0.00 enc   1.69s
+detail        av                       budget  159416 bytes  157174 q   75.41 RGB  21.350 shown  21.350 A     inf colour  0.00 enc   1.73s
+detail        allk+cb8                 budget  159416 bytes  151171 q  106.99 RGB  21.052 shown  21.052 A     inf colour  0.00 enc   3.04s
+detail        av+allk+cb8              budget  159416 bytes  151171 q  106.99 RGB  21.052 shown  21.052 A     inf colour  0.00 enc   3.08s
+detail        v3                       budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   2.24s
+detail        v3+p32+bx                budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   2.28s
+detail        v3+p64+bx                budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   2.12s
+detail        v3+p32                   budget  159416 bytes  157504 q   75.41 RGB  21.948 shown  21.948 A     inf colour  0.00 enc   2.34s
+detail        esc                      budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   2.30s
+detail        edge                     budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   1.88s
+detail        adct                     budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   1.65s
+detail        apal                     budget  159416 bytes  158435 q   74.47 RGB  21.944 shown  21.944 A     inf colour  0.00 enc   1.55s
+detail        quad                     budget  159416 bytes  156938 q   74.47 RGB  21.827 shown  21.827 A     inf colour  0.00 enc   2.09s
+detail        bc7                      budget  159416 bytes  159274 q   38.41 RGB  25.960 shown  25.960 A     inf colour  0.00 enc 100.18s
+detail        ctx                      budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   0.87s
+detail        ctx+p32+bx               budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   0.80s
+detail        ctx+esc                  budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   1.08s
+detail        ctx+edge                 budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   0.83s
+detail        ctx+adct                 budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   0.82s
+detail        ctx+apal                 budget  159416 bytes  159000 q   73.55 RGB  21.087 shown  21.087 A     inf colour  0.00 enc   0.86s
+detail        ctx+quad                 budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.36s
+detail        ctx+bc7                  budget  159416 bytes  159427 q   44.62 RGB  25.903 shown  25.903 A     inf colour  0.00 enc   1.09s
+detail        ctx+p32+bx+edge+quad     budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.32s
+detail        ctx+p32+bx+edge+quad+esc budget  159416 bytes  159387 q   55.87 RGB  21.025 shown  21.025 A     inf colour  0.00 enc   1.53s
+detail        ctx+p32+bx+edge+quad+adct budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.38s
+detail        ctx+p32+bx+edge+quad+apal budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.36s
+detail        ctx+p32+bx+edge+quad+av  budget  159416 bytes  159290 q   55.87 RGB  21.016 shown  21.016 A     inf colour  0.00 enc   1.37s
+detail        ctx+p64+bx+edge+quad+esc+adct+apal+av budget  159416 bytes  159387 q   55.87 RGB  21.025 shown  21.025 A     inf colour  0.00 enc   1.60s
+
+## Earlier probe kept for the record: lossy 32-colour palettes (p32 without bx) on glow — the regression bx fixes
+shroom_glow   base                     budget  752754 bytes  752273 q   20.06 RGB  43.046 shown  43.046 A     inf colour  0.02 enc   2.76s
+shroom_glow   ctx                      budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   3.04s
+shroom_glow   ctx+p32                  budget  752754 bytes  619549 q   21.89 RGB  42.163 shown  42.163 A     inf colour  0.01 enc   3.76s
+shroom_glow   ctx+quad                 budget  752754 bytes  751664 q   20.82 RGB  43.006 shown  43.006 A     inf colour  0.00 enc   4.18s
+shroom_glow   ctx+edge                 budget  752754 bytes  750981 q   20.82 RGB  42.964 shown  42.964 A     inf colour  0.00 enc   3.03s
+shroom_glow   v3+p32                   budget  752754 bytes  752566 q   20.56 RGB  42.991 shown  42.991 A     inf colour  0.02 enc   3.98s
+
+## Bytes needed to match LMB7 (budget bisection; gfx_a: shown 46.66 dB at LMB7's 5204 B; gfx: RGB 45.50 at 5807 B)
+gfx_a         base                                     reaches 46.66 dB shown at    6352 B (46.79 dB)
+gfx_a         allk+cb8                                 reaches 46.66 dB shown at    6052 B (46.79 dB)
+gfx_a         ctx                                      reaches 46.66 dB shown at    3957 B (46.79 dB)
+gfx_a         ctx+p32+bx                               reaches 46.66 dB shown at    3957 B (46.79 dB)
+gfx_a         ctx+edge                                 reaches 46.66 dB shown at    3723 B (49.46 dB)
+gfx_a         ctx+quad                                 reaches 46.66 dB shown at    3811 B (47.19 dB)
+gfx_a         ctx+p32+bx+edge+quad                     reaches 46.66 dB shown at    3767 B (51.24 dB)
+gfx_a         ctx+p32+bx+edge+quad+esc                 reaches 46.66 dB shown at    3739 B (49.47 dB)
+gfx           base                                     reaches 45.50 dB rgb at    5801 B (45.56 dB)
+gfx           allk+cb8                                 reaches 45.50 dB rgb at    5359 B (45.58 dB)
+gfx           ctx                                      reaches 45.50 dB rgb at    3307 B (45.67 dB)
+gfx           ctx+p32+bx                               reaches 45.50 dB rgb at    3307 B (45.67 dB)
+gfx           ctx+edge                                 reaches 45.50 dB rgb at    3307 B (45.67 dB)
+gfx           ctx+quad                                 reaches 45.50 dB rgb at    3249 B (45.51 dB)
+gfx           ctx+p32+bx+edge+quad                     reaches 45.50 dB rgb at    3271 B (45.64 dB)
+gfx           ctx+p32+bx+edge+quad+esc                 reaches 45.50 dB rgb at    3279 B (45.68 dB)
+
+## Eye clip: graphics+alpha 1920x1080, 60 frames (CC0), each arm at LMB7's average bytes (budget 9311 B/frame)
+lmb7  shown mean   48.87 min   48.75 | RGB min   51.76 | A min   48.94 | bytes/frame     9371 | lossless frames 0/60   (999 = infinite)
+x061  shown mean   49.78 min   49.25 | RGB min   64.48 | A min   49.31 | bytes/frame     9260 | lossless frames 0/60   (999 = infinite)
+ctx   shown mean   82.21 min   79.35 | RGB min  999.00 | A min   79.35 | bytes/frame     8020 | lossless frames 0/60   (999 = infinite)
+best  shown mean  999.00 min  999.00 | RGB min  999.00 | A min  999.00 | bytes/frame     6497 | lossless frames 60/60   (999 = infinite)
+# arms: lmb7 = encode-lmbd defaults (396 s for 60 frames); x061 = 0.6.1 at --frame-bytes 9311; ctx = --w7 ctx; best = --w7 ctx+p32+bx+edge+quad
+
+## GPU decode speed (dxvkit-plus bench --layers N --layers-only; Arena running; after the two GPU fixes; jsonl beside this file)
+{'round': 1, 'load': '{ 6.76 10.11 10.63 }', 'arena_running': True}
+1 sp_glow1080_061    layers 16 step p50  17.04 ms  sustained   58.2 steps/s  gpu  14.74 ms
+1 sp_glow1080_w7     layers 16 step p50  21.64 ms  sustained   46.0 steps/s  gpu  18.71 ms
+1 eye_ga.x061        layers 16 step p50   7.76 ms  sustained  128.3 steps/s  gpu   6.29 ms
+1 eye_ga.best        layers 16 step p50  11.83 ms  sustained   85.6 steps/s  gpu   9.97 ms
+1 sp_shroom4k_061    layers  4 step p50  10.57 ms  sustained   96.4 steps/s  gpu   7.26 ms
+1 sp_shroom4k_w7     layers  4 step p50  13.25 ms  sustained   75.8 steps/s  gpu  10.08 ms
+1 sp_ga4k_061        layers  4 step p50   6.69 ms  sustained  148.0 steps/s  gpu   5.38 ms
+1 sp_ga4k_w7         layers  4 step p50   7.94 ms  sustained  126.5 steps/s  gpu   5.67 ms
+{'round': 2, 'load': '{ 8.05 10.12 10.62 }', 'arena_running': True}
+2 sp_glow1080_061    layers 16 step p50  16.95 ms  sustained   58.6 steps/s  gpu  14.43 ms
+2 sp_glow1080_w7     layers 16 step p50  21.54 ms  sustained   46.2 steps/s  gpu  18.58 ms
+2 eye_ga.x061        layers 16 step p50   7.80 ms  sustained  128.0 steps/s  gpu   6.47 ms
+2 eye_ga.best        layers 16 step p50  11.79 ms  sustained   85.2 steps/s  gpu  10.14 ms
+2 sp_shroom4k_061    layers  4 step p50  10.53 ms  sustained   97.0 steps/s  gpu   7.13 ms
+2 sp_shroom4k_w7     layers  4 step p50  13.29 ms  sustained   75.0 steps/s  gpu   9.86 ms
+2 sp_ga4k_061        layers  4 step p50   6.60 ms  sustained  149.2 steps/s  gpu   5.39 ms
+2 sp_ga4k_w7         layers  4 step p50   8.23 ms  sustained  120.0 steps/s  gpu   6.57 ms
+# glow1080 = ShroomiesKingdom_31 frames 100-159 at quality 16; eye_ga = the eye clip above at LMB7's bytes;
+# shroom4k = ShroomiesKingdom_05 4K frames 100-129 at quality 16; ga4k = graphics+alpha 3840x2160, 30 frames, quality 16.
+# First measurement (before the fixes: table search bounded to the alphabet; palette indices in a chroma-plane scratch
+# instead of private arrays): glow 57.5 -> 39.8, graphics 127 -> 70, shroom4k 95 -> 62, ga4k 145 -> 103 steps/s.
+# Isolation, 20 frames x 16 layers, steps/s, before / after the fixes:
+#   glow:     0.6.1 56.1/56.5  v3 format 52.1/51.6  +ctx 46.3/49.7  +ctx+quad 39.6/44.2  +ctx+edge 45.0/-  best 40.0/45.6
+#   graphics: 0.6.1 125.6/126.4 v3 format 100.1/102.0 +ctx 78.2/100.0 +ctx+quad 72.2/-  +ctx+edge 69.4/-  best 70.8/83.5
+
+## Encoder time, one frame at quality 16 (bytes, seconds; 12 threads)
+shroom_glow base+q=16 789078 0.15s
+shroom_glow ctx+q=16 795916 0.17s
+shroom_glow ctx+p32+bx+edge+quad+q=16 796789 0.26s
+shroom_glow ctx+p32+bx+edge+quad+adct+apal+esc+q=16 797016 0.34s
+shroom_alpha base+q=16 329359 0.10s
+shroom_alpha ctx+q=16 321786 0.12s
+shroom_alpha ctx+p32+bx+edge+quad+q=16 321695 0.23s
+shroom_alpha ctx+p32+bx+edge+quad+adct+apal+esc+q=16 317687 0.37s
+gfx_a1 base+q=16 6480 0.03s
+gfx_a1 ctx+q=16 4212 0.04s
+gfx_a1 ctx+p32+bx+edge+quad+q=16 4146 0.04s
+gfx_a1 ctx+p32+bx+edge+quad+adct+apal+esc+q=16 4262 0.06s
+# bc7 tiles: + 25 s (960x540) to 255 s (1080p) per frame for the BC7 RDO encode (LMB7's encoder, look-back 16384).
