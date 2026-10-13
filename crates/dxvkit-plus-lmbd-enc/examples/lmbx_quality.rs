@@ -242,6 +242,7 @@ fn arm(spec: &str) -> LmbxParams {
             l if l.starts_with("bc7l") => p.bc7_tiles = Some(l[4..].parse().unwrap()),
             l if l.starts_with("bc7u") => p.bc7_uber = l[4..].parse().unwrap(),
             l if l.starts_with("bc7m") => p.bc7_bits_mult = l[4..].parse().unwrap(),
+            l if l.starts_with("bc7p") => p.bc7_partitions = l[4..].parse().unwrap(),
             l if l.starts_with("q=") => p.quality = l[2..].parse().unwrap(),
             other => panic!("unknown arm modifier {other}"),
         }

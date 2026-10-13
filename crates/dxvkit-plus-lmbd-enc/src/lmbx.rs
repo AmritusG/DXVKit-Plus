@@ -70,6 +70,8 @@ pub struct LmbxParams {
     /// W9 PROTOTYPE: what the mode decision charges for a BC7 tile, as a multiple of its blocks'
     /// Zstandard size in bits.
     pub bc7_bits_mult: f64,
+    /// W9 PROTOTYPE: independent BC7 RDO runs (1 = LMB7's single run; more run in parallel).
+    pub bc7_partitions: u32,
     /// Colour-accuracy guard (W6b), in 8-bit code values; `None` = off (0.6.0's behaviour). A
     /// region of one source colour must decode to a mean within this of its colour, not only score
     /// a good PSNR: a smooth DCT block gets a finer step where its DC would otherwise land off its
@@ -97,6 +99,7 @@ impl Default for LmbxParams {
             bc7_tiles: None,
             bc7_uber: 4,
             bc7_bits_mult: 1.0,
+            bc7_partitions: 1,
             colour_tol: Some(1.0),
         }
     }

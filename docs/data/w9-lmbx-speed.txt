@@ -1,0 +1,90 @@
+# W9 GPU decode, W8 GPU-busy method (examples/lmbx_passes.rs via passes-w9: back to back, 32 steps, GPU == CPU asserted), 3 runs each.
+# v3 = 0.7.0 encode; v4 = --bc7-tiles 1 --bc7-mult 0.7 --bc7-parts 12 (default quality). r1 = WGSL BC7 decode, r2 = hardware BC7 texture.
+# INVALID AS ABSOLUTE NUMBERS: the GPU was shared with Arena, Blender and another job (Metal System Trace below); W8 measured ga at 7.5 ms.
+# 1080p clips at 16 layers, 4K at 4 layers. passes_ms = tables, entropy, bc7scatter, idct (summed over steps).
+detail1080 v3 r0 59.517 [11.112, 30.839, 25.185, 216.518]
+detail1080 v3 r0 57.339 [7.689, 29.823, 15.056, 141.659]
+detail1080 v3 r0 59.421 [6.601, 21.839, 11.116, 102.091]
+detail1080 v4 r1 60.166 [7.614, 24.747, 14.327, 119.434]
+detail1080 v4 r1 66.936 [9.08, 25.401, 15.898, 121.583]
+detail1080 v4 r1 61.527 [7.397, 23.719, 17.916, 132.869]
+detail1080 v4 r2 65.117 [6.58, 23.059, 7.57, 93.796]
+detail1080 v4 r2 59.523 [8.495, 30.859, 7.567, 138.258]
+detail1080 v4 r2 57.283 [6.782, 21.042, 6.743, 75.718]
+glow v3 r0 58.348 [9.875, 30.721, 14.054, 161.863]
+glow v3 r0 57.221 [8.101, 34.991, 17.939, 98.198]
+glow v3 r0 57.854 [8.3, 27.111, 12.213, 156.57]
+glow v4 r1 63.234 [9.167, 35.316, 14.514, 137.428]
+glow v4 r1 40.306 [5.697, 20.508, 10.282, 64.742]
+glow v4 r1 62.166 [8.11, 31.507, 13.019, 129.948]
+glow v4 r2 64.73 [8.172, 37.848, 7.55, 117.057]
+glow v4 r2 67.727 [7.978, 38.899, 7.554, 187.173]
+glow v4 r2 62.433 [9.192, 35.444, 7.161, 173.666]
+ga v3 r0 36.019 [4.941, 10.831, 5.897, 60.316]
+ga v3 r0 43.914 [5.569, 13.367, 6.72, 64.35]
+ga v3 r0 44.9 [6.165, 14.705, 6.953, 87.517]
+ga v4 r1 33.986 [5.532, 11.56, 5.724, 66.375]
+ga v4 r1 41.153 [5.921, 13.825, 8.282, 80.172]
+ga v4 r1 40.748 [7.219, 13.297, 6.191, 79.782]
+ga v4 r2 41.837 [7.848, 13.503, 7.379, 70.299]
+ga v4 r2 44.081 [6.732, 16.192, 7.335, 75.337]
+ga v4 r2 43.325 [7.352, 15.906, 7.39, 79.947]
+s4k v3 r0 27.927 [1.888, 8.874, 6.76, 40.313]
+s4k v3 r0 26.971 [1.531, 8.964, 6.483, 38.463]
+s4k v3 r0 26.28 [1.804, 7.076, 6.859, 34.631]
+s4k v4 r1 26.744 [1.509, 9.235, 6.842, 38.309]
+s4k v4 r1 27.413 [1.556, 8.432, 6.574, 51.113]
+s4k v4 r1 29.983 [1.885, 7.58, 9.351, 44.544]
+s4k v4 r2 28.126 [2.4, 8.855, 5.818, 34.356]
+s4k v4 r2 21.975 [2.13, 6.933, 5.169, 25.595]
+s4k v4 r2 28.751 [2.14, 10.05, 5.306, 41.028]
+ga4k v3 r0 21.575 [1.655, 3.456, 8.02, 23.405]
+ga4k v3 r0 20.34 [1.912, 4.258, 6.521, 28.86]
+ga4k v3 r0 20.609 [1.672, 4.003, 6.159, 27.321]
+ga4k v4 r1 21.677 [1.517, 3.622, 6.618, 26.74]
+ga4k v4 r1 20.18 [1.737, 3.766, 6.262, 24.814]
+ga4k v4 r1 20.983 [1.986, 3.575, 6.203, 28.099]
+ga4k v4 r2 20.713 [1.562, 3.657, 5.985, 24.698]
+ga4k v4 r2 21.271 [1.582, 3.526, 6.276, 30.711]
+ga4k v4 r2 19.794 [1.494, 3.244, 5.941, 28.325]
+
+## medians
+detail1080 v3 r0       median   59.42 ms  runs [59.517, 57.339, 59.421]
+detail1080 v4 r1       median   61.53 ms  runs [60.166, 66.936, 61.527]
+detail1080 v4 r2       median   59.52 ms  runs [65.117, 59.523, 57.283]
+glow v3 r0             median   57.85 ms  runs [58.348, 57.221, 57.854]
+glow v4 r1             median   62.17 ms  runs [63.234, 40.306, 62.166]
+glow v4 r2             median   64.73 ms  runs [64.73, 67.727, 62.433]
+ga v3 r0               median   43.91 ms  runs [36.019, 43.914, 44.9]
+ga v4 r1               median   40.75 ms  runs [33.986, 41.153, 40.748]
+ga v4 r2               median   43.33 ms  runs [41.837, 44.081, 43.325]
+s4k v3 r0              median   26.97 ms  runs [27.927, 26.971, 26.28]
+s4k v4 r1              median   27.41 ms  runs [26.744, 27.413, 29.983]
+s4k v4 r2              median   28.13 ms  runs [28.126, 21.975, 28.751]
+ga4k v3 r0             median   20.61 ms  runs [21.575, 20.34, 20.609]
+ga4k v4 r1             median   20.98 ms  runs [21.677, 20.18, 20.983]
+ga4k v4 r2             median   20.71 ms  runs [20.713, 21.271, 19.794]
+
+## v4 tile mix (detail1080_v4): Bc7 1596, Dct 3508, Palette 3024, Quad 32
+## clip bytes
+-rw-r--r--  1 amritrosell  wheel  3038116 Oct 13 23:40 detail1080_v3.lmbd
+-rw-r--r--  1 amritrosell  wheel  2618124 Oct 13 23:41 detail1080_v4.lmbd
+-rw-r--r--  1 amritrosell  wheel    43315 Oct 13 23:40 ga4k_v3.lmbd
+-rw-r--r--  1 amritrosell  wheel    43315 Oct 13 23:44 ga4k_v4.lmbd
+-rw-r--r--  1 amritrosell  wheel    25855 Oct 13 23:40 ga_v3.lmbd
+-rw-r--r--  1 amritrosell  wheel    25856 Oct 13 23:42 ga_v4.lmbd
+-rw-r--r--  1 amritrosell  wheel  3036548 Oct 13 23:40 glow_v3.lmbd
+-rw-r--r--  1 amritrosell  wheel  3074751 Oct 13 23:48 glow_v4.lmbd
+-rw-r--r--  1 amritrosell  wheel  4143303 Oct 13 23:40 s4k_v3.lmbd
+-rw-r--r--  1 amritrosell  wheel  4242591 Oct 13 23:55 s4k_v4.lmbd
+
+## Metal System Trace (xctrace, detail1080_v4 route 2, 16 layers): top-level GPU time per process
+trace span 3971.5 ms; top-level GPU intervals by process:
+  Arena                             2053.3 ms  (5358 intervals)
+  passes-w9                         1976.3 ms  (3327 intervals)
+  Blender                           1565.8 ms  (2030 intervals)
+  m4_exit-9bdbd3b4215516ee           593.0 ms  (1361 intervals)
+  WindowServer                       338.0 ms  (909 intervals)
+  ?                                  143.1 ms  (228 intervals)
+  Terminal                            35.3 ms  (93 intervals)
+  loombda-ffgl-host                   12.0 ms  (101 intervals)

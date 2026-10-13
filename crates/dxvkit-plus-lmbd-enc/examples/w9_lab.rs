@@ -286,12 +286,145 @@ fn bc7time(rp: &str) {
     }
 }
 
+
+/// B1 estimate: the per-tile signalling of a v3 frame at the budget — quantiser map, stream
+/// directory, mode map (stored, Zstandard 19) and the 4-byte rANS state of every non-empty
+/// stream: what merging 2x2 tiles into 64x64 could save at most (3/4 of it).
+fn overhead(rp: &str, budget: usize) {
+    let (w, h, r) = load(rp);
+    let q = v3_fit(&r, w, h, budget);
+    let b = encode_frame(&r, w, h, &LmbxParams { quality: q, zstd: Some(19), threads: 12, ..LmbxParams::default() }).unwrap();
+    let f = Frame::parse(&b, w, h).unwrap();
+    let s = f.sections;
+    let side = &b[s.modes..s.data];
+    let side_z = zstd::bulk::compress(side, 19).unwrap().len();
+    let states = 4 * (0..f.offsets.len()).filter(|&i| !f.stream(i).is_empty()).count();
+    let stored = stored_size(&b, Some(19));
+    println!(
+        "{rp}: stored {stored} B; mode map + qmap + directory {} B raw, {side_z} B zstd; rANS states {states} B; together {:.1}% of the frame (64x64 merge saves at most ~{:.1}%)",
+        side.len(),
+        100.0 * (side_z + states) as f64 / stored as f64,
+        75.0 * (side_z + states) as f64 / stored as f64
+    );
+}
+
+/// Orthonormal DCT-II basis of size n.
+fn basis_n(n: usize) -> Vec<f64> {
+    let mut m = vec![0f64; n * n];
+    for k in 0..n {
+        let c = if k == 0 { (1.0 / n as f64).sqrt() } else { (2.0 / n as f64).sqrt() };
+        for i in 0..n {
+            m[k * n + i] = c * ((2 * i + 1) as f64 * k as f64 * std::f64::consts::PI / (2 * n) as f64).cos();
+        }
+    }
+    m
+}
+
+/// B2 estimate: luma (YCoCg Y, code values) coded with 8x8 DCTs only, or per 32x32 region the
+/// Lagrangian best of 8x8, 16x16 and 32x32 DCTs; deadzone quantisation (bias 0.45) at step `q`
+/// for every size (orthonormal, so equal steps give comparable distortion); bits = the empirical
+/// entropy of the levels per size and frequency band, plus a sign bit per non-zero level, plus
+/// 2 bits per region for the size. Prints (bits, PSNR) per step for both, to compare at equal
+/// bits.
+fn bsize(rp: &str) {
+    let (w, h, r) = load(rp);
+    let (w32, h32) = (w / 32 * 32, h / 32 * 32);
+    let y = |x: u32, yy: u32| {
+        let i = ((yy * w + x) * 4) as usize;
+        let (rr, g, b) = (f64::from(r[i]), f64::from(r[i + 1]), f64::from(r[i + 2]));
+        0.25 * rr + 0.5 * g + 0.25 * b
+    };
+    let bases: Vec<(usize, Vec<f64>)> = [8usize, 16, 32].iter().map(|&n| (n, basis_n(n))).collect();
+    for step in [2.0f64, 4.0, 8.0, 16.0, 32.0] {
+        // Per region, per size: (levels with band, distortion).
+        let mut regions: Vec<Vec<(Vec<(usize, i64)>, f64)>> = Vec::new();
+        for ry in (0..h32).step_by(32) {
+            for rx in (0..w32).step_by(32) {
+                let mut per = Vec::new();
+                for (n, m) in &bases {
+                    let n = *n;
+                    let (mut lv, mut dist) = (Vec::new(), 0f64);
+                    for by in (0..32).step_by(n) {
+                        for bx in (0..32).step_by(n) {
+                            let blk: Vec<f64> = (0..n * n).map(|i| y(rx + bx as u32 + (i % n) as u32, ry + by as u32 + (i / n) as u32) - 128.0).collect();
+                            for k in 0..n {
+                                for l in 0..n {
+                                    let mut c = 0f64;
+                                    for i in 0..n {
+                                        for j in 0..n {
+                                            c += m[k * n + i] * m[l * n + j] * blk[i * n + j];
+                                        }
+                                    }
+                                    let a = c.abs() / step;
+                                    let q = (a + 0.45).floor().max(0.0) as i64 * if c < 0.0 { -1 } else { 1 };
+                                    dist += (c - q as f64 * step).powi(2);
+                                    // Band: the coefficient's frequency scaled to 8x8 terms.
+                                    let band = ((k.max(l)) * 8 / n).min(7);
+                                    lv.push((band, q));
+                                }
+                            }
+                        }
+                    }
+                    per.push((lv, dist));
+                }
+                regions.push(per);
+            }
+        }
+        // Empirical entropy model per size: histograms of (band, min(|level|, 31)).
+        let mut hist = vec![std::collections::HashMap::<(usize, i64), u64>::new(); 3];
+        let mut tot = [[0u64; 8]; 3];
+        for reg in &regions {
+            for (s, (lv, _)) in reg.iter().enumerate() {
+                for &(b, q) in lv {
+                    *hist[s].entry((b, q.abs().min(31))).or_default() += 1;
+                    tot[s][b] += 1;
+                }
+            }
+        }
+        let bits_of = |s: usize, lv: &[(usize, i64)]| -> f64 {
+            lv.iter()
+                .map(|&(b, q)| {
+                    let c = hist[s][&(b, q.abs().min(31))] as f64;
+                    -(c / tot[s][b] as f64).log2() + if q != 0 { 1.0 } else { 0.0 } + if q.abs() >= 31 { 8.0 } else { 0.0 }
+                })
+                .sum()
+        };
+        let lam = 0.25 * step * step * 6.0;
+        let (mut b8, mut d8, mut ba, mut da, mut picks) = (0f64, 0f64, 0f64, 0f64, [0usize; 3]);
+        for reg in &regions {
+            let costs: Vec<(f64, f64)> = reg.iter().enumerate().map(|(s, (lv, d))| (bits_of(s, lv) + 2.0, *d)).collect();
+            b8 += costs[0].0 - 2.0;
+            d8 += costs[0].1;
+            let best = (0..3).min_by(|&a, &b| (costs[a].1 + lam * costs[a].0).total_cmp(&(costs[b].1 + lam * costs[b].0))).unwrap();
+            ba += costs[best].0;
+            da += costs[best].1;
+            picks[best] += 1;
+        }
+        let n = f64::from(w32 * h32);
+        println!(
+            "{rp} step {step:4}: 8x8 only {:9.0} B {:6.2} dB | adaptive 8/16/32 {:9.0} B {:6.2} dB (regions 8/16/32: {:?})",
+            b8 / 8.0,
+            psnr(d8, n),
+            ba / 8.0,
+            psnr(da, n),
+            picks
+        );
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     match a[1].as_str() {
         "diag" => diag(&a[2], &a[3], a[4].parse().unwrap()),
         "bestcrop" => bestcrop(&a[2], &a[3], a[4].parse().unwrap(), a[5].parse().unwrap()),
         "bc7time" => bc7time(&a[2]),
+        "overhead" => overhead(&a[2], a[3].parse().unwrap()),
+        "bsize" => bsize(&a[2]),
+        "tile2x2" => {
+            let (w, h, r) = load(&a[2]);
+            let px: Vec<u8> = (0..2 * h).flat_map(|y| (0..2 * w).flat_map(move |x| (0..4).map(move |c| ((y % h) * w + x % w) * 4 + c))).map(|i| r[i as usize]).collect();
+            write_png(&a[3], 2 * w, 2 * h, &px);
+        }
         other => panic!("unknown command {other}"),
     }
 }

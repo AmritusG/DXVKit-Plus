@@ -1,0 +1,52 @@
+# W9 eye clips (1080p, 60 frames, ProRes 4444 XQ in _eye/), every LMBX arm at LMB7's bytes - 60. Script: per-content encode + CPU decode + ffmpeg prores_ks.
+# detail = the detail card (one frame, held 60 frames); realdetail = ShroomiesKingdom_05 frames (60). lmbx w9 bc7 = --bc7-tiles 1 --bc7-mult 0.7 --bc7-parts 12.
+# Arena: layer 7 'LMBX Eye Test', columns 29-32 detail (source, lmb7, lmbx 0.7.0, lmbx w9 bc7), 33-36 realdetail (same order). Nothing triggered.
+
+## detail
+detail LMB7 file 275229 B, ~275176 B/frame, LMBX budget 275116
+{"bytes_per_frame":274244,"chroma":"full444","encoded":"detail1","file_bytes":274297,"fps":"30/1","frame_bytes_budget":275116,"frames":1,"height":1080,"lmbd":"detail_070.lmbd","payload_bytes":274244,"profile":"lmbx","quality":[105.7080078125],"seconds":7.95,"width":1920}
+real 7.96
+user 37.87
+sys 0.40
+{"bytes_per_frame":274981,"chroma":"full444","encoded":"detail1","file_bytes":275034,"fps":"30/1","frame_bytes_budget":275116,"frames":1,"height":1080,"lmbd":"detail_w9.lmbd","payload_bytes":274981,"profile":"lmbx","quality":[49.697998046875],"seconds":78.71,"width":1920}
+real 78.72
+user 412.65
+sys 3.39
+-rw-r--r--  1 amritrosell  wheel  274297 Oct 13 23:57 detail_070.lmbd
+-rw-r--r--  1 amritrosell  wheel  275034 Oct 13 23:58 detail_w9.lmbd
+-rw-r--r--  1 amritrosell  wheel  275229 Oct 13 23:55 lmb7_detail1.lmbd
+lmb7 {"codec":"LMB7","file":"lmb7_detail1.lmbd","float_reference":false,"frame":0,"frame_bytes":275176,"height":1080,"psnr":{"a":53.5591,"b":17.5504,"g":30.5164,"r":29.4473},"psnr_rgb":21.8484,"psnr_rgb_premultiplied":21.8478,"ref_frame":0,"reference":"detail/f00000.png","ssim":0.99517,"ssim_windows":2052649,"width":1920} 
+070 {"codec":"LMBX","file":"detail_070.lmbd","float_reference":false,"frame":0,"frame_bytes":274244,"height":1080,"psnr":{"a":"inf","b":16.9526,"g":24.6066,"r":23.4682},"psnr_rgb":20.279,"psnr_rgb_premultiplied":20.279,"ref_frame":0,"reference":"detail/f00000.png","ssim":0.979575,"ssim_windows":2052649,"width":1920} 
+w9 {"codec":"LMBX","file":"detail_w9.lmbd","float_reference":false,"frame":0,"frame_bytes":274981,"height":1080,"psnr":{"a":"inf","b":18.1922,"g":31.9349,"r":31.0115},"psnr_rgb":22.5713,"psnr_rgb_premultiplied":22.5713,"ref_frame":0,"reference":"detail/f00000.png","ssim":0.995721,"ssim_windows":2052649,"width":1920} 
+-rw-r--r--   1 amritrosell  staff  507080402 Oct 13 23:58 LMBX eye test w9 - detail - lmb7.mov
+-rw-r--r--   1 amritrosell  staff  485107382 Oct 13 23:58 LMBX eye test w9 - detail - lmbx 0.7.0.mov
+-rw-r--r--   1 amritrosell  staff  454546382 Oct 13 23:58 LMBX eye test w9 - detail - lmbx w9 bc7.mov
+-rw-r--r--   1 amritrosell  staff  425526422 Oct 13 23:58 LMBX eye test w9 - detail - source.mov
+
+## realdetail
+-rw-r--r--  1 amritrosell  wheel  19679401 Oct 14 00:05 lmb7_realdetail.lmbd
+realdetail LMB7 file 19679401 B, ~327989 B/frame, LMBX budget 327929
+real 291.21
+user 1431.64
+sys 12.80
+real 1165.22
+user 8869.09
+sys 63.96
+-rw-r--r--  1 amritrosell  wheel  19679401 Oct 14 00:05 lmb7_realdetail.lmbd
+-rw-r--r--  1 amritrosell  wheel  18761404 Oct 14 00:11 realdetail_070.lmbd
+-rw-r--r--  1 amritrosell  wheel  18694953 Oct 14 00:30 realdetail_w9.lmbd
+lmb7 {"codec":"LMB7","file":"lmb7_realdetail.lmbd","float_reference":false,"frame":0,"frame_bytes":353966,"height":1080,"psnr":{"a":43.2451,"b":45.2013,"g":45.3375,"r":44.7073},"psnr_rgb":45.0735,"psnr_rgb_premultiplied":50.147,"ref_frame":0,"reference":"realdetail/f00001.png","ssim":0.996894,"ssim_windows":2052649,"width":1920} 
+070 {"codec":"LMBX","file":"realdetail_070.lmbd","float_reference":false,"frame":0,"frame_bytes":327888,"height":1080,"psnr":{"a":46.625,"b":45.0791,"g":46.8106,"r":46.0191},"psnr_rgb":45.9118,"psnr_rgb_premultiplied":51.4117,"ref_frame":0,"reference":"realdetail/f00001.png","ssim":0.997059,"ssim_windows":2052649,"width":1920} 
+w9 {"codec":"LMBX","file":"realdetail_w9.lmbd","float_reference":false,"frame":0,"frame_bytes":326355,"height":1080,"psnr":{"a":45.6472,"b":44.9471,"g":46.7598,"r":46.0439},"psnr_rgb":45.8523,"psnr_rgb_premultiplied":51.1571,"ref_frame":0,"reference":"realdetail/f00001.png","ssim":0.997203,"ssim_windows":2052649,"width":1920} 
+-rw-r--r--   1 amritrosell  staff  101699661 Oct 14 00:30 LMBX eye test w9 - realdetail - lmb7.mov
+-rw-r--r--   1 amritrosell  staff   95427881 Oct 14 00:30 LMBX eye test w9 - realdetail - lmbx 0.7.0.mov
+-rw-r--r--   1 amritrosell  staff   96124605 Oct 14 00:30 LMBX eye test w9 - realdetail - lmbx w9 bc7.mov
+-rw-r--r--   1 amritrosell  staff  103687918 Oct 14 00:30 LMBX eye test w9 - realdetail - source.mov
+
+realdetail_070.lmbd bytes/frame 312676 seconds 291.21 q min/max 15.77 20.3
+realdetail_w9.lmbd bytes/frame 311568 seconds 1165.23 q min/max 15.77 21.91
+
+## bytes to reach LMB7's 21.86 dB on the detail card (960x540; LMB7 159476 B), lmbx_quality match
+detail        base                                     reaches 21.86 dB shown at  205308 B (21.96 dB)
+detail        base+bc7l1+bc7m0.7                       reaches 21.86 dB shown at  113088 B (21.93 dB)
+detail        base+bc7l1+bc7p12+bc7m0.7                reaches 21.86 dB shown at  127374 B (21.93 dB)

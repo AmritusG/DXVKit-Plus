@@ -441,7 +441,7 @@ pub(crate) fn encode_v3(
             static CACHE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
             use std::hash::{Hash, Hasher};
             let mut hs = std::collections::hash_map::DefaultHasher::new();
-            (&padded, cw, ch, lambda.to_bits(), p.bc7_uber).hash(&mut hs);
+            (&padded, cw, ch, lambda.to_bits(), p.bc7_uber, p.bc7_partitions).hash(&mut hs);
             let key = hs.finish();
             let hit = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == key).map(|e| e.1.clone());
             let blocks = match hit {
@@ -450,6 +450,7 @@ pub(crate) fn encode_v3(
                     let mut ep = crate::EncodeParams::default();
                     ep.rdo.lambda = lambda;
                     ep.bc7.uber_level = p.bc7_uber;
+                    ep.rdo.partitions = p.bc7_partitions;
                     let b = std::sync::Arc::new(crate::encode_bc7(&padded, cw, ch, &ep, p.threads)?);
                     let mut g = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if g.len() > 8 {
