@@ -196,7 +196,13 @@ that passes validation, so every conforming decoder — CPU, GPU, anyone's — p
 samples. Decisions: LMBX-D1 (integer inverse transform, so outputs are bit-identical, not "within 1
 code value"), LMBX-D2 (two signalled chroma modes, 4:2:2 with halo and 4:4:4) and LMBX-D3 (bitstream
 version 2, 0.6.0: per-tile **modes** — DCT, flat, palette — signalled in a tile mode map, and a
-directory of stream lengths; version 1, 0.5.0, is frozen and still decoded).
+directory of stream lengths; version 1, 0.5.0, is frozen and still decoded) and LMBX-D4 (bitstream
+version 3, 0.7.0: context-coded palette indices, palettes of up to 64 colours, exact edge alpha,
+quad tiles of four 16x16 sub-tiles, and DCT colour with an alpha palette — §11.6a; versions 1 and 2
+are frozen and still decoded). LMBX-D4 in Amrit's words: W7 was asked to "See if alpha and graphics
+can be done, and wgat it would give" (2026-10-12); of shipping the new version with a speed-recovery
+step before it is frozen or keeping v2 with an encoder-only gain, he chose "speed recovery"
+(2026-10-13). W8 recovered the GPU decode speed (§11.12b) before freezing v3.
 
 ### 11.1 In the container
 
@@ -216,7 +222,7 @@ All integers little-endian.
 | Offset | Size | Field | Value |
 |---|---|---|---|
 | 0 | 4 | magic | `L` `M` `B` `X` |
-| 4 | 2 | version | `1` or `2` (a bitstream starting `LMXS` is the prototype: refuse) |
+| 4 | 2 | version | `1`, `2` or `3` (a bitstream starting `LMXS` is the prototype: refuse) |
 | 6 | 1 | chroma | `0` = 4:4:4, `1` = 4:2:2 halo |
 | 7 | 1 | flags | bit 0: an alpha plane is coded; other bits 0 |
 | 8 | 4 | width | equals the container's width |
@@ -226,10 +232,12 @@ All integers little-endian.
 | 20 | 32 | quantiser steps | `QT[0..16]`, u16 each, 1 ..= 4095 |
 | 52 | … | frequency table | §11.3 (coefficients: 2048 symbols) |
 | … | … | palette table | **v2 only**: §11.3 with 16 symbols (palette indices, §11.6) |
-| … | `T` | tile mode map | **v2 only**: one byte per tile, raster: `0` DCT, `1` flat, `2` palette (§11.6) |
+| … | … | index tables | **v3 only**: eight tables, §11.3 with 65 symbols and precision 10 (palette indices, contexts 0..7, §11.6a) |
+| … | … | edge-alpha table | **v3 only**: §11.3 with 256 symbols and precision 10 (§11.6a) |
+| … | `T` | tile mode map | **v2, v3**: one byte per tile, raster. v2: `0` DCT, `1` flat, `2` palette (§11.6). v3: colour mode (low nibble: `0` DCT, `1` flat, `2` palette, `3` quad) plus 16 times the alpha mode (high nibble: `0` own, `1` edge, `2` alpha palette) (§11.6a) |
 | … | `8 * T` | quantiser map | §11.4 |
 | … | 4 | stream count | `S = T * P` |
-| … | `4 * S` | stream directory | **v1**: offsets `off[0..S]`, relative to the data start; `off[0] = 0`, non-decreasing, each <= the data length. **v2**: lengths `len[0..S]`; `off[i]` = the sum of `len[0..i]`, and the sum of all lengths must not exceed the data length |
+| … | `4 * S` | stream directory | **v1**: offsets `off[0..S]`, relative to the data start; `off[0] = 0`, non-decreasing, each <= the data length. **v2, v3**: lengths `len[0..S]`; `off[i]` = the sum of `len[0..i]`, and the sum of all lengths must not exceed the data length |
 | … | … | data | the streams; stream `i` is bytes `off[i] .. off[i+1]` (the last ends at the bitstream's end) |
 
 Geometry: tiles are 32x32. `tx = ceil(width / 32)`, `ty = ceil(height / 32)`, `T = tx * ty`
@@ -241,9 +249,11 @@ tile `t`.
 ### 11.3 Frequency table (rANS)
 
 `u16 n` (1 ..= the alphabet size), then `n` entries of (`u16 symbol`, `u16 freq`): symbols strictly
-increasing, each < the alphabet size (2048 for coefficients, 16 for palette indices), every freq >= 1,
-the freqs adding up to exactly 16384. Absent symbols have frequency 0. `cum[s]` = the sum of the
-frequencies of all symbols below `s`. Coefficient symbols: `s < 2047` is a coefficient level
+increasing, each < the alphabet size (2048 for coefficients, 16 for v2 palette indices, 65 for v3
+palette indices, 256 for v3 edge alpha), every freq >= 1, the freqs adding up to exactly `2^b` — the
+table's **precision** `b` is 14 (16384), except v3's index and edge-alpha tables, whose precision is
+10 (1024; W8: as compact as 12 bits within 0.5%, and faster to decode). Absent symbols have
+frequency 0. `cum[s]` = the sum of the frequencies of all symbols below `s`. Coefficient symbols: `s < 2047` is a coefficient level
 `s - 1023`; `2047` ends a block (EOB). One table of each kind serves every stream of the frame.
 
 ### 11.4 Quantiser map
@@ -257,16 +267,16 @@ chroma block (column `bx`, row `by` within the tile) uses
 
 ### 11.5 Decoding a stream
 
-rANS with 32-bit state `x`, 14-bit probabilities, byte-wise renormalisation, lower bound `L = 2^23`.
-Bytes of the stream are read in order; **reading past the stream's end gives 0** (so a short or
-empty stream is still defined).
+rANS with 32-bit state `x`, byte-wise renormalisation, lower bound `L = 2^23`; each symbol is read
+with its table, of precision `b` (§11.3). Bytes of the stream are read in order; **reading past the
+stream's end gives 0** (so a short or empty stream is still defined).
 
 ```
 x = byte0 | byte1 << 8 | byte2 << 16 | byte3 << 24          (the stream's first four bytes)
-next symbol:
-    slot = x & 16383
+next symbol (table of precision b):
+    slot = x & (2^b - 1)
     s    = the symbol with cum[s] <= slot < cum[s] + freq[s]
-    x    = freq[s] * (x >> 14) + slot - cum[s]               (modulo 2^32)
+    x    = freq[s] * (x >> b) + slot - cum[s]                (modulo 2^32)
     repeat at most 4 times: if x >= 2^23 stop; else x = (x << 8 | next byte) (modulo 2^32)
 ```
 
@@ -308,6 +318,48 @@ planes (so the 4:2:2 halo of a DCT neighbour reads defined values): Y = the pixe
 forward YCoCg-R of `4R, 4G, 4B` (`Co = 4R - 4B`, `t = 4B + (Co >> 1)`, `Cg = 4G - t`), for 4:2:2
 the rounded mean `(c[2x] + c[2x+1] + 1) >> 1` of each column pair.
 
+### 11.6a Tile modes (v3)
+
+In v3 the mode byte gives each tile a **colour mode** (low nibble) and an **alpha mode** (high
+nibble). Valid bytes: colour mode `0` ..= `3`; alpha mode `0` (own); `1` (**edge**) only with an
+alpha plane and colour mode `2` or `3`; `2` (**alpha palette**) only with an alpha plane and colour
+mode `0`. Any other byte is invalid (§11.9).
+
+A **DCT** tile (`0`) is decoded as in §11.5 and §11.7 — except, with alpha mode `2`, its A stream
+(stream 3), which holds an alpha palette instead of DCT blocks: byte 0 is `n` (read 0 as 1, above
+64 as 64), then `n` alpha levels of one byte, then one rANS stream of the 32x32 tile's palette
+indices (context-coded, below); the A sample of each pixel is `4 *` its index's level (its A blocks
+are not transformed).
+
+A **direct** tile (colour mode `1` ..= `3`) is 32x32 RGBA8 pixels read from its stream 0 alone (as
+in v2: its other streams and its quantiser map are ignored; writers leave them empty and zero).
+Bytes past the stream's end read as 0.
+
+- **Flat** (`1`): bytes 0..4 are R, G, B, A.
+- **Palette** (`2`): a palette header — byte `n` (read 0 as 1, above 64 as 64), then `n` colours
+  of 4 bytes (R, G, B, A) — then one rANS stream of the 32x32 tile's pixels: per pixel, raster
+  order, its context-coded index (below) and, with the edge alpha mode, its edge-alpha residual.
+- **Quad** (`3`): four 16x16 sub-tiles — top-left, top-right, bottom-left, bottom-right — each a
+  kind byte, then either (kind `0`, flat) 4 colour bytes or (any other kind, palette) a palette
+  header; then one rANS stream (starting right after the last header): the sub-tiles in order,
+  each pixel of a sub-tile in raster order within it: a palette sub-tile's pixel takes its
+  context-coded index within the 16x16 region, then its edge-alpha residual; a flat sub-tile's
+  pixel takes only its edge-alpha residual.
+
+**Context-coded indices** of a region (`s x s`, `s` = 32 or 16, `n` colours or levels), pixel `i =
+y * s + x` in raster order: `l` = the index to the left (column 0: the index above; the region's
+first pixel: 0); `a` = the index above (row 0: `l`); `ar` = above-right and `al` = above-left (row 0,
+or outside the region: `a`). The symbol is read with index table `c = 4 (l == a) + 2 (a == ar) +
+(al == l)`: symbol `0` is the index `l`, `1` is `a`, `s >= 2` is `(l + s - 1) mod n`. (Every index is
+below `n`.)
+
+**Edge alpha** (alpha mode `1`): after a pixel's index (a flat sub-tile's pixel: at its turn), if
+the alpha `A` of its colour is neither 0 nor 255, one edge-alpha symbol `e` follows, and the pixel's
+alpha becomes `(A + e) mod 256`. Pixels whose colour has alpha 0 or 255 take none.
+
+Without an alpha plane every direct pixel's alpha is 255. A v3 direct tile writes into the sample
+planes as in §11.6.
+
 ### 11.7 Integer inverse DCT
 
 With the integer basis `M[k][n]` (frequency `k`, sample `n`) — `1448` for `k = 0`, otherwise
@@ -340,7 +392,8 @@ DCT tiles' blocks are transformed.
 ### 11.8 Output
 
 For each picture pixel `(x, y)` (the top-left `width x height` of the coded planes), in quarter
-code values: in a direct tile (v2), `R, G, B, A = 4 *` the pixel's RGBA8 (§11.6); otherwise
+code values: in a direct tile (v2, v3), `R, G, B, A = 4 *` the pixel's RGBA8 (§11.6, §11.6a);
+otherwise
 
 ```
 Y  = Y plane at (x, y)
@@ -359,7 +412,7 @@ This RGBA (straight alpha, sRGB-encoded) in quarter code values is the **normati
 ### 11.9 Validation
 
 Reject a frame whose magic, version, chroma, flags, size, reserved bytes, quantiser steps, frequency
-tables, tile modes (v2: 0 ..= 2), stream count or directory break the rules above. Nothing else is an error: stream contents are
+tables, tile modes (v2: 0 ..= 2; v3: §11.6a), stream count or directory break the rules above. Nothing else is an error: stream contents are
 defined for every byte pattern (§11.5), so a decoder needs no per-stream checks.
 
 ### 11.10 Conformance vectors
@@ -368,7 +421,11 @@ defined for every byte pattern (§11.5), so a decoder needs no per-stream checks
 with and without alpha, quality 4 to 48, sizes 200x130, 333x141 and 97x61 (none a multiple of 32).
 Version 2 (`lmbx_v2_*`): graphics cards (with and without alpha, 333x185) whose frames mix DCT, flat
 and palette tiles (exact and lossy palettes; 4:2:2 at quality 400, so DCT tiles border direct ones
-through the halo), and a plasma with alpha (DCT tiles, the length directory). Each
+through the halo), and a plasma with alpha (DCT tiles, the length directory). Version 3
+(`lmbx_v3_*`, 0.7.0): graphics cards with and without alpha (palette tiles of up to 64 colours with
+context-coded indices, edge alpha, quad tiles with flat and palette sub-tiles), a coarse 4:2:2
+mixed card (direct tiles bordering DCT ones through the halo), and a plasma with alpha (DCT colour
+with an alpha palette). Each
 sidecar holds every frame's SHA-256 of the normative output (`width * height * 4` u16 little-endian,
 rows top first). Any conforming decoder must reproduce them; DXVKit Plus's CPU decoder
 (`dxvkit_plus_core::lmbx`) and its GPU compute decoder (`dxvkit-plus-wgpu`) both do.
@@ -415,6 +472,17 @@ regions moves to their mean only (not pulled by edge pixels), and tiles with at 
 the lossy palettes too, so near-equal regions such as a gradient's bands can merge within the
 tolerance instead of the tile going flat.
 
+Version 3 (the default since 0.7.0; `--modes dct` still writes v1): the same decision over the v3
+candidates: flat; palettes of the tile (the exact palette when it has at most 64 colours; lossy
+palettes of 2, 3, 4, 6, 8, 12 and 16 colours, Lloyd-refined as in v2 — lossy palettes above 16
+colours cost glow 0.88 dB in W7); with partial alpha, the same palettes of the tile's canonical form
+(every partial alpha read as 128) with edge alpha, so the residual makes every partial alpha exact;
+quad (per 16x16 sub-tile, the best of its mean colour and its palettes by an approximate rate), with
+and without edge alpha; and, with alpha, DCT colour with an alpha palette (the exact levels, up to
+64, or 1 to 16 Lloyd levels). Index and edge-alpha rates come from every candidate's symbols, then
+from the first choice's; the tables are built from the chosen tiles. Writing is deterministic at
+any thread count (each tile's candidates are a pure function of its pixels).
+
 ### 11.12 What version 2 measured (informative)
 
 W6 (`docs/data/w6-lmbx-v2-ab.txt`; every arm at LMB7's bytes per frame, Zstandard where the arm uses
@@ -440,6 +508,29 @@ bytes per frame: the graphics card 45.35 dB (0.6.0 38.41, LMB7 45.50), every fla
 0.02 (LMB7 1.00); with alpha 43.77 dB shown (0.6.0 35.92); the 1080p graphics eye clip 60.0 dB mean
 (0.6.0 51.2, LMB7 49.7), flat regions exact; natural footage equal or better (glow 43.06 against
 43.00, real alpha 48.66 / 55.35 against 48.63 / 55.34, grain +1.5 dB).
+
+### 11.12b What version 3 measured (informative)
+
+W7 (`docs/data/w7-lmbx-v3-ab.txt`, exploration): at LMB7's bytes the graphics card with alpha lost
+2.9 dB shown to LMB7 (43.77 against 46.66), 86% of it in the 0.24% of pixels with partial alpha;
+0.6.1 sat at its rate floor there, 75% of which was palette index streams. Context-coded indices cut
+the index bits by 62% and alone gave 59.9 dB shown; with 17..64-colour exact palettes, edge alpha
+and quad tiles the card codes losslessly in fewer bytes than LMB7. Built, measured and dropped:
+escape colours (noise), direct colour with a DCT alpha plane (no gain), visibility-weighted alpha
+(no gain), lossy palettes above 16 colours (glow −0.88 dB), BC7 tiles (lose on graphics; +4.6 dB on
+noise-like detail at a 2-4 minute encode per 1080p frame — a separate question).
+
+W8 (`docs/data/w8-lmbx-v3-profile.txt`, `w8-lmbx-v3-speed-macstudio.jsonl`,
+`w8-lmbx-v3-quality.txt`): the prototype decoded 21% (glow) to 33% (graphics) slower than 0.6.1.
+Profiled with Metal System Trace: v3 adds nothing to DCT tiles (a DCT-only v3 frame decodes within
+1% of v1); the cost was the serial palette decode — each palette tile's 1024-symbol stream ran in
+the same SIMD groups as DCT streams, and a SIMD group full of palette tiles touches a different cache
+line per lane at every step. The decoder now runs DCT streams and direct tiles in separate
+workgroups of one dispatch, one direct tile every 8 lanes, with one-word table slots; v3's format
+changes for speed: the direct payload in stream 0 (no extra stream per tile), edge alpha coded per
+pixel (no second sweep), escapes removed, and 10-bit index tables. Rejected after measurement: a
+row-copy / row-run symbol (+10% bytes, slower), a row-start context (−1.5% bytes, +4% time),
+index tables in workgroup memory (occupancy), splitting the tables pass.
 
 ### 11.13 Why 32x32 tiles with a stream per plane (informative)
 

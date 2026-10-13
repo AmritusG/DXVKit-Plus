@@ -1,0 +1,12 @@
+asset: tests/fixtures/lmbx_v3_graphics_444_q16.lmbd
+title: LMBX v3 conformance vector (4:4:4, quality 16, context-coded palettes) — graphics card (testpattern::graphics) 333x185, 2 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 444 --quality 16 --threads 1 --modes flat,palette,lossy --compressor none (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-13
+sha256: 82ad8a49473249b45cefaa40cdac3d4992a6025d806e38fa8f257fbe3ebc6238
+params: pattern=graphics chroma=444 quality=16 modes=flat,palette,lossy
+decoded_rgba_q_sha256 frame 0: 2bfd026fa0566f370a9f4902de60785045e2469f1ec500f8de4729cfb25b28ec
+decoded_rgba_q_sha256 frame 1: 3ad940c30c5fe1f7c6d23c5ba3b7b4dba120743e0537d3338eafd3459c44513a
+reencoded_sha256: 82ad8a49473249b45cefaa40cdac3d4992a6025d806e38fa8f257fbe3ebc6238 (the 0.7.0 encoder re-encoding this pattern with these params writes this file)
+notes: An LMBX (profile 0x10, bitstream v3: context-coded palette indices, palettes of up to 64 colours, exact edge alpha, quad tiles, DCT colour with an alpha palette) conformance vector covering flat and palette tiles (palettes of up to 64 colours, context-coded indices). decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own procedural / hand-built content, no third-party content.

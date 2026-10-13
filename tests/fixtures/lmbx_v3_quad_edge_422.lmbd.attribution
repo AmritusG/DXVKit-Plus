@@ -1,0 +1,11 @@
+asset: tests/fixtures/lmbx_v3_quad_edge_422.lmbd
+title: LMBX v3 conformance vector (4:2:2 halo, hand-built) — quad tiles with edge alpha 64x32, 2 frames
+author: Amrit Rosell — hand-built bitstream (W8)
+source: Built by crates/dxvkit-plus-core/examples/lmbx_v3_quad_edge.rs from the bitstream definition (docs/LMBD.md §11.6a; the reference encoder does not choose quad tiles with edge alpha on the procedural cards) (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-13
+sha256: 223c16441506a086f7b2712147040f833aaa0deec6c306d3b379dc1ed7a00376
+params: pattern=handbuilt chroma=422halo
+decoded_rgba_q_sha256 frame 0: 9a6ed00dccc321416eb79403cdc8e4d3bc477448567b19d941030911ceec743e
+decoded_rgba_q_sha256 frame 1: 2683341809fa4f613af38abddf7d72d0c5e6622fd32e6973a3ea05fd121dd7c2
+notes: An LMBX (profile 0x10, bitstream v3: context-coded palette indices, palettes of up to 64 colours, exact edge alpha, quad tiles, DCT colour with an alpha palette) conformance vector covering quad tiles with edge alpha (flat and palette sub-tiles of partial alpha made exact by edge residuals) and a palette tile with edge alpha. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own procedural / hand-built content, no third-party content.

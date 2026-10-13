@@ -28,7 +28,7 @@ mod staging;
 
 pub use convert::{CONVERT_WGSL, Converter, DirectView, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
 pub use lmbd::LmbdTexture;
-pub use lmbx::{LMBX_OUT_WGSL, LMBX_WGSL};
+pub use lmbx::{LMBX_OUT_WGSL, LMBX_WGSL, profile_passes};
 pub use staging::{StagedFrame, Uploader};
 
 use dxvkit_plus_core::source::PixelFormat;

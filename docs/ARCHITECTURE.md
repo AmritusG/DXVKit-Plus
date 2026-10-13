@@ -79,18 +79,23 @@ validates the bitstream's header, tables, tile mode map (v2) and stream director
 hands the bytes over unchanged as one `PixelFormat::LmbxBitstream` plane (`Shading::Lmbx`); nothing
 else happens on the CPU. `FrameRenderer` uploads the bytes into a storage buffer (`write_buffer`,
 or through the staging belt) and decodes them with compute passes: `tables` (a workgroup per rANS
-table — coefficients, and in v2 palette indices — plus, in v2, one that turns the directory's
-stream lengths into offsets), `entropy` (one invocation per stream = per plane of each 32x32 tile:
-rANS, dequantise, write coefficients in place; a v2 flat or palette tile is decoded whole by its
-stream-0 invocation into the same sample planes), `idct` (one invocation per 8x8 block of a DCT
-tile: the integer inverse DCT as generated straight-line WGSL), then a fragment pass (4:2:2 halo or
+table — coefficients; v2 palette indices; v3 the eight index tables and the edge-alpha table — plus,
+in v2 and v3, one that turns the directory's stream lengths into offsets; tables no tile uses are
+skipped), `entropy` (one dispatch in two kinds of workgroup, from a tile list the CPU builds from
+the mode map: one invocation per stream of each DCT tile — rANS, dequantise, write coefficients in
+place — and, in separate workgroups, one invocation per direct tile, one every 8 lanes, for the
+serial part: v2 palette indices, v3 context-coded palette and quad indices with edge alpha, v3 alpha
+palettes; W8 measured a SIMD group shared between the two, or full of palette decodes, as the
+v3 prototype's slowdown), `idct` (one invocation per 8x8 block of a DCT tile: the integer inverse
+DCT as generated straight-line WGSL; a direct tile's Y-plane blocks expand its pixels instead),
+then a fragment pass (4:2:2 halo or
 4:4:4 chroma, inverse YCoCg-R, direct tiles' RGBA8, 8-bit output). The arithmetic is the reference decoder's, so GPU and
 CPU agree bit for bit on every frame, hostile ones included. LMBX frames vary in size, so they have
 no fixed `FrameSource::layout` (no decode-into-staging, no direct view). The encoder is
-`lmbd_enc::lmbx` (B1d's RDOQ, with rate control; v2 adds a rate-distortion choice per tile between
-the DCT and flat or palette coding, lossy palettes included; 0.6.1 adds the exact forward YCoCg-R
-and a colour guard that holds flat regions within a tolerance — encoder only, `docs/LMBD.md`
-§11.11).
+`lmbd_enc::lmbx` (B1d's RDOQ, with rate control; a rate-distortion choice per tile between the DCT
+and the direct modes; 0.6.1 adds the exact forward YCoCg-R and a colour guard that holds flat
+regions within a tolerance; 0.7.0 writes bitstream v3 from `lmbd_enc::v3` — context-coded palettes
+of up to 64 colours, edge alpha, quad tiles, alpha palettes — `docs/LMBD.md` §11.11).
 
 *Zstd backend.* One private function, `lmbd::zstd_decompress(data, out) -> bytes written`, sits
 behind two core features. `zstd-c` (default) calls libzstd's `ZSTD_decompressDCtx` through the
