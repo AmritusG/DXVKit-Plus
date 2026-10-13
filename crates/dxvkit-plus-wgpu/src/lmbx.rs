@@ -42,6 +42,9 @@ struct P {
     qt: array<vec4<u32>, 4>,
     // v3: the eight index tables' and the edge-alpha table's offsets in the bitstream.
     t3: array<vec4<u32>, 3>,
+    // W9 prototype: BC7 route (0 none, 1 WGSL decode, 2 hardware texture), BC7 tiles, staging
+    // pitch (words per block row), staging offset (words into tab).
+    x: vec4<u32>,
 };
 "#;
 
@@ -69,6 +72,7 @@ pub const LMBX_BINDINGS_WGSL: &str = r#"
 pub const LMBX_WGSL: &str = r#"
 @group(0) @binding(2) var<storage, read_write> tab: array<u32>;
 @group(0) @binding(3) var<storage, read_write> planes: array<i32>;
+@group(0) @binding(4) var bc7tex: texture_2d<f32>;
 
 // tab layout, per table: dense frequencies (2048), cumulative frequencies (2049), then per slot
 // (up to 16384) the slot entry — coefficient and v2 palette tables two words (the owning symbol |
@@ -457,6 +461,16 @@ fn expand_block(t: u32, mode: u32, o: u32, gx: u32, gy: u32) {
     let csz = p.chw * p.ch;
     let cm = mode & 15u;
     let edge = (mode >> 4u) == 1u;
+    if (cm == 4u && p.x.x == 1u) {
+        // W9 route 1: decode this 8x8 block's four BC7 blocks in WGSL.
+        let bt = ((gy % TILE) / 4u) * 8u + (gx % TILE) / 4u;
+        for (var q = 0u; q < 4u; q++) {
+            let b = bt + (q / 2u) * 8u + (q % 2u);
+            bc7_load(start + 16u * b, end);
+            bc7_decode();
+            for (var k = 0u; k < 16u; k++) { B7PX[((q / 2u) * 4u + k / 4u) * 8u + (q % 2u) * 4u + k % 4u] = OUTPX[k]; }
+        }
+    }
     for (var i = 0u; i < 8u; i++) {
         var pc = vec2<i32>(0, 0);
         for (var j = 0u; j < 8u; j++) {
@@ -467,7 +481,14 @@ fn expand_block(t: u32, mode: u32, o: u32, gx: u32, gy: u32) {
                 if (cm != 1u) { c = u32(planes[at]); }
             } else if (mode == 2u) { c = start + 1u + 4u * u32(planes[at]); }
             var v = 0u;
-            if (c + 4u <= end) {
+            if (cm == 4u) {
+                if (p.x.x == 1u) {
+                    v = B7PX[i * 8u + j];
+                } else {
+                    // W9 route 2: the hardware decodes the block as it loads the texel.
+                    v = pack4x8unorm(textureLoad(bc7tex, vec2<i32>(i32(gx + j), i32(gy + i)), 0));
+                }
+            } else if (c + 4u <= end) {
                 // The four colour bytes from (at most) two aligned words.
                 let sh = (c & 3u) * 8u;
                 v = bits[c >> 2u] >> sh;
@@ -605,6 +626,25 @@ fn direct_tile(i: u32) {
     direct3(t, sr.x, sr.y, cm, mode >> 4u);
 }
 
+// W9 route 2: one invocation per BC7 block of the BC7 tiles (tile list after the direct work):
+// its 16 bytes (0 past the stream's end) into the staging image (block rows of `x.z` words).
+@compute @workgroup_size(64)
+fn bc7scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let e = gid.x / 64u;
+    if (e >= p.x.y) { return; }
+    let b = gid.x % 64u;
+    let t = tab[p.list_off + p.n_dct + p.n_dir + e];
+    let sr = stream_range(t * (3u + p.alpha));
+    let bx = (t % p.tiles_x) * 8u + b % 8u;
+    let by = (t / p.tiles_x) * 8u + b / 8u;
+    let dst = p.x.w + by * p.x.z + bx * 4u;
+    for (var k = 0u; k < 4u; k++) {
+        var w = 0u;
+        for (var j = 0u; j < 4u; j++) { w = w | (sb(sr.x + 16u * b + 4u * k + j, sr.y) << (8u * j)); }
+        tab[dst + k] = w;
+    }
+}
+
 @compute @workgroup_size(64)
 fn idct(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Blocks: Y, then Co, Cg, then A (when coded), raster within each plane.
@@ -727,10 +767,167 @@ fn geometry_wgsl() -> String {
     )
 }
 
+/// W9 prototype: the WGSL BC7 decoder, with the partition and anchor tables from the CPU decoder.
+fn bc7_wgsl() -> String {
+    let (p2, p3, a2, a3a, a3b) = dxvkit_plus_core::lmbx_bc7_tables();
+    let mask = |p: &[u8; 16], bits: u32| p.iter().enumerate().map(|(i, &v)| u32::from(v) << (bits * i as u32)).fold(0u32, |a, b| a | b);
+    let list = |v: Vec<u32>| v.iter().map(|x| format!("{x}u")).collect::<Vec<_>>().join(", ");
+    format!(
+        "const BP2 = array<u32, 64>({});\nconst BP3 = array<u32, 64>({});\nconst BA2 = array<u32, 64>({});\nconst BA3A = array<u32, 64>({});\nconst BA3B = array<u32, 64>({});\n{BC7_WGSL}",
+        list(p2.iter().map(|p| mask(p, 1)).collect()),
+        list(p3.iter().map(|p| mask(p, 2)).collect()),
+        list(a2.iter().map(|&v| u32::from(v)).collect()),
+        list(a3a.iter().map(|&v| u32::from(v)).collect()),
+        list(a3b.iter().map(|&v| u32::from(v)).collect()),
+    )
+}
+
 /// The whole WGSL of the compute passes (the uniforms and every entry point).
 fn compute_wgsl() -> String {
-    format!("{PARAMS_WGSL}{}{LMBX_BINDINGS_WGSL}{PARAMS_FNS_WGSL}{LMBX_WGSL}{}", geometry_wgsl(), idct_wgsl())
+    format!("{PARAMS_WGSL}{}{LMBX_BINDINGS_WGSL}{PARAMS_FNS_WGSL}{LMBX_WGSL}{}{}", geometry_wgsl(), idct_wgsl(), bc7_wgsl())
 }
+
+/// W9 prototype WGSL (route 1).
+const BC7_WGSL: &str = r#"
+// W9 route 1: the BC7 block decoder (`dxvkit_plus_core::bc7`, operation for operation).
+var<private> BLK: array<u32, 4>;
+var<private> OUTPX: array<u32, 16>;
+var<private> B7PX: array<u32, 64>;
+const BW2 = array<u32, 4>(0u, 21u, 43u, 64u);
+const BW3 = array<u32, 8>(0u, 9u, 18u, 27u, 37u, 46u, 55u, 64u);
+const BW4 = array<u32, 16>(0u, 4u, 9u, 13u, 17u, 21u, 26u, 30u, 34u, 38u, 43u, 47u, 51u, 55u, 60u, 64u);
+
+// The 16 bytes at `c` (0 at or past `end`).
+fn bc7_load(c: u32, end: u32) {
+    for (var k = 0u; k < 4u; k++) {
+        var w = 0u;
+        for (var j = 0u; j < 4u; j++) { w = w | (sb(c + 4u * k + j, end) << (8u * j)); }
+        BLK[k] = w;
+    }
+}
+
+// `n` bits (n <= 8) at bit `at`, LSB first; 0 past bit 128.
+fn bbits(at: u32, n: u32) -> u32 {
+    if (n == 0u || at >= 128u) { return 0u; }
+    let w = at >> 5u;
+    let o = at & 31u;
+    var v = BLK[w] >> o;
+    if (o + n > 32u && w < 3u) { v = v | (BLK[w + 1u] << (32u - o)); }
+    return v & ((1u << n) - 1u);
+}
+
+fn bexpand(v: u32, n: u32) -> u32 {
+    if (n >= 8u) { return v & 255u; }
+    let x = v << (8u - n);
+    return (x | (x >> n)) & 255u;
+}
+
+fn bweight(bits: u32, i: u32) -> u32 {
+    if (bits == 2u) { return BW2[i & 3u]; }
+    if (bits == 3u) { return BW3[i & 7u]; }
+    return BW4[i & 15u];
+}
+
+fn binterp(e0: u32, e1: u32, w: u32) -> u32 { return ((64u - w) * e0 + w * e1 + 32u) >> 6u; }
+
+fn bc7_decode() {
+    let first = BLK[0] & 255u;
+    if (first == 0u) {
+        for (var i = 0u; i < 16u; i++) { OUTPX[i] = 0u; }
+        return;
+    }
+    let mode = firstTrailingBit(first);
+    var ns = 1u; var pb = 0u; var rb = 0u; var isb = 0u; var cb = 0u; var ab = 0u;
+    var epb = false; var spb = false; var ib = 0u; var ib2 = 0u;
+    switch (mode) {
+        case 0u: { ns = 3u; pb = 4u; cb = 4u; epb = true; ib = 3u; }
+        case 1u: { ns = 2u; pb = 6u; cb = 6u; spb = true; ib = 3u; }
+        case 2u: { ns = 3u; pb = 6u; cb = 5u; ib = 2u; }
+        case 3u: { ns = 2u; pb = 6u; cb = 7u; epb = true; ib = 2u; }
+        case 4u: { rb = 2u; isb = 1u; cb = 5u; ab = 6u; ib = 2u; ib2 = 3u; }
+        case 5u: { rb = 2u; cb = 7u; ab = 8u; ib = 2u; ib2 = 2u; }
+        case 6u: { cb = 7u; ab = 7u; epb = true; ib = 4u; }
+        default: { ns = 2u; pb = 6u; cb = 5u; ab = 5u; epb = true; ib = 2u; }
+    }
+    var at = mode + 1u;
+    let part = bbits(at, pb); at += pb;
+    let rot = bbits(at, rb); at += rb;
+    let isel = bbits(at, isb); at += isb;
+    // Endpoints [subset * 8 + endpoint * 4 + channel].
+    var ep: array<u32, 24>;
+    for (var ch = 0u; ch < 4u; ch++) {
+        var n = cb;
+        if (ch == 3u) { n = ab; }
+        for (var s = 0u; s < ns; s++) {
+            for (var e = 0u; e < 2u; e++) {
+                ep[s * 8u + e * 4u + ch] = bbits(at, n);
+                at += n;
+            }
+        }
+    }
+    var pbit = 0u;
+    if (epb || spb) {
+        pbit = 1u;
+        for (var s = 0u; s < ns; s++) {
+            let p0 = bbits(at, 1u);
+            at += 1u;
+            var p1 = p0;
+            if (epb) { p1 = bbits(at, 1u); at += 1u; }
+            for (var ch = 0u; ch < 4u; ch++) {
+                ep[s * 8u + ch] = (ep[s * 8u + ch] << 1u) | p0;
+                ep[s * 8u + 4u + ch] = (ep[s * 8u + 4u + ch] << 1u) | p1;
+            }
+        }
+    }
+    for (var s = 0u; s < ns; s++) {
+        for (var e = 0u; e < 2u; e++) {
+            for (var ch = 0u; ch < 4u; ch++) {
+                let k = s * 8u + e * 4u + ch;
+                if (ch < 3u) { ep[k] = bexpand(ep[k], cb + pbit); } else if (ab == 0u) { ep[k] = 255u; } else { ep[k] = bexpand(ep[k], ab + pbit); }
+            }
+        }
+    }
+    var idx: array<u32, 16>;
+    for (var px = 0u; px < 16u; px++) {
+        var anchor = px == 0u;
+        if (ns == 2u && BA2[part] == px) { anchor = true; }
+        if (ns == 3u && (BA3A[part] == px || BA3B[part] == px)) { anchor = true; }
+        var n = ib;
+        if (anchor) { n = ib - 1u; }
+        idx[px] = bbits(at, n);
+        at += n;
+    }
+    var idx2: array<u32, 16>;
+    if (ib2 > 0u) {
+        for (var px = 0u; px < 16u; px++) {
+            var n = ib2;
+            if (px == 0u) { n = ib2 - 1u; }
+            idx2[px] = bbits(at, n);
+            at += n;
+        }
+    }
+    for (var px = 0u; px < 16u; px++) {
+        var s = 0u;
+        if (ns == 2u) { s = (BP2[part] >> px) & 1u; }
+        if (ns == 3u) { s = (BP3[part] >> (2u * px)) & 3u; }
+        var ci = idx[px]; var cbits = ib; var ai = idx[px]; var abits = ib;
+        if (ib2 > 0u) {
+            if (isel == 0u) { ai = idx2[px]; abits = ib2; } else { ci = idx2[px]; cbits = ib2; }
+        }
+        let cw = bweight(cbits, ci);
+        let aw = bweight(abits, ai);
+        var c = array<u32, 4>(0u, 0u, 0u, 0u);
+        for (var ch = 0u; ch < 3u; ch++) { c[ch] = binterp(ep[s * 8u + ch], ep[s * 8u + 4u + ch], cw); }
+        c[3] = binterp(ep[s * 8u + 3u], ep[s * 8u + 7u], aw);
+        if (rot > 0u) {
+            let tmp = c[rot - 1u];
+            c[rot - 1u] = c[3];
+            c[3] = tmp;
+        }
+        OUTPX[px] = c[0] | (c[1] << 8u) | (c[2] << 16u) | (c[3] << 24u);
+    }
+}
+"#;
 
 /// The entropy pass runs one direct tile every `DSPREAD` lanes (the rest of the workgroup
 /// idles): a direct tile's decode touches a different cache line per lane at almost every step, so
@@ -745,6 +942,7 @@ struct Params {
     v: [u32; 24],
     qt: [u32; 16],
     t3: [u32; 12],
+    x: [u32; 4],
 }
 
 impl std::fmt::Debug for Params {
@@ -773,6 +971,31 @@ fn uniform(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry 
         ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     }
+}
+
+/// W9 prototype: the BC7-tile decode route (1 WGSL, 2 hardware texture; 0 = `LMBX_BC7_ROUTE` or 2).
+static BC7_ROUTE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// W9 prototype (not API): choose the BC7-tile decode route for the frames uploaded after this.
+#[doc(hidden)]
+pub fn set_bc7_route(route: u32) {
+    BC7_ROUTE.store(route, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// W9 prototype: a BC7 texture (and its view) the hardware decodes on load.
+fn bc7_texture(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    let t = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("dxvkit-plus-lmbx-bc7"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bc7RgbaUnorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let v = t.create_view(&Default::default());
+    (t, v)
 }
 
 /// What an upload needs to know about a frame (from its validated header and tile mode map).
@@ -814,6 +1037,21 @@ pub(crate) fn shape(blob: &[u8], width: u32, height: u32) -> Result<LmbxShape, G
     direct.sort_by_key(|d| d.0);
     let n_dir = direct.len() as u32;
     list.extend(direct.into_iter().map(|d| d.1));
+    // W9 prototype: BC7 tiles (v4) after the direct work; the route from LMBX_BC7_ROUTE (1 WGSL,
+    // 2 hardware texture; default 2); the staging image after the list, 256-byte aligned rows.
+    let bc7: Vec<u32> = (0..h.tile_count()).filter(|&t| f.mode(t) == TileMode::Bc7).collect();
+    let n_bc7 = bc7.len() as u32;
+    list.extend(bc7);
+    let forced = BC7_ROUTE.load(std::sync::atomic::Ordering::Relaxed);
+    let route = if n_bc7 == 0 {
+        0
+    } else if forced != 0 {
+        forced
+    } else {
+        std::env::var("LMBX_BC7_ROUTE").ok().and_then(|v| v.parse().ok()).unwrap_or(2u32)
+    };
+    let pitch_words = ((cw / 4) * 16).div_ceil(256) * 256 / 4;
+    let staging_off = ((TABLE_WORDS as u32) + h.stream_count() + list.len() as u32).div_ceil(64) * 64;
     let v = [
         width,
         height,
@@ -845,7 +1083,7 @@ pub(crate) fn shape(blob: &[u8], width: u32, height: u32) -> Result<LmbxShape, G
         *d = as32(o);
     }
     Ok(LmbxShape {
-        params: Params { v, qt: h.qt.map(u32::from), t3 },
+        params: Params { v, qt: h.qt.map(u32::from), t3, x: [route, n_bc7, pitch_words, staging_off] },
         list,
         bits_bytes: u64::from(len).div_ceil(4).max(1) * 4,
         planes_bytes: planes * 4,
@@ -860,6 +1098,9 @@ pub(crate) struct LmbxDecoder {
     tables: wgpu::ComputePipeline,
     entropy: wgpu::ComputePipeline,
     idct: wgpu::ComputePipeline,
+    /// W9 prototype: BC7 tiles — the scatter kernel and the coded-size BC7 texture (route 2).
+    bc7scatter: wgpu::ComputePipeline,
+    bc7tex: (wgpu::Texture, wgpu::TextureView),
     render_layout: wgpu::BindGroupLayout,
     render: wgpu::RenderPipeline,
     params: wgpu::Buffer,
@@ -875,7 +1116,22 @@ impl LmbxDecoder {
         let cs = wgpu::ShaderStages::COMPUTE;
         let compute_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dxvkit-plus-lmbx"),
-            entries: &[uniform(0, cs), storage(1, true, cs), storage(2, false, cs), storage(3, false, cs)],
+            entries: &[
+                uniform(0, cs),
+                storage(1, true, cs),
+                storage(2, false, cs),
+                storage(3, false, cs),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: cs,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
         let fs = wgpu::ShaderStages::FRAGMENT;
         let render_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -904,7 +1160,8 @@ impl LmbxDecoder {
                 cache: None,
             })
         };
-        let (tables, entropy, idct) = (compute("tables"), compute("entropy"), compute("idct"));
+        let (tables, entropy, idct, bc7scatter) = (compute("tables"), compute("entropy"), compute("idct"), compute("bc7scatter"));
+        let bc7tex = bc7_texture(device, 4, 4);
         let rpl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("dxvkit-plus-lmbx-out"),
             bind_group_layouts: &[Some(&render_layout)],
@@ -932,19 +1189,24 @@ impl LmbxDecoder {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        LmbxDecoder { compute_layout, tables, entropy, idct, render_layout, render, params, table: None, bits: None, planes: None, pending: None }
+        LmbxDecoder { compute_layout, tables, entropy, idct, bc7scatter, bc7tex, render_layout, render, params, table: None, bits: None, planes: None, pending: None }
     }
 
     /// Make sure the bitstream and plane buffers fit `s` (grown, never shrunk), and make `s` the
     /// pending frame.
     pub(crate) fn prepare(&mut self, device: &wgpu::Device, s: LmbxShape) {
         let small = |b: &Option<wgpu::Buffer>, need: u64| b.as_ref().is_none_or(|b| b.size() < need);
-        let table_bytes = (TABLE_WORDS + u64::from(s.streams) + s.list.len() as u64) * 4;
+        let (cw, ch) = (s.params.v[2], s.params.v[3]);
+        let staging = if s.params.x[0] == 2 { u64::from(s.params.x[3]) + u64::from(s.params.x[2]) * u64::from(ch / 4) } else { 0 };
+        let table_bytes = (TABLE_WORDS + u64::from(s.streams) + s.list.len() as u64).max(staging) * 4;
+        if s.params.x[0] == 2 && (self.bc7tex.0.width() != cw || self.bc7tex.0.height() != ch) {
+            self.bc7tex = bc7_texture(device, cw, ch);
+        }
         if small(&self.table, table_bytes) {
             self.table = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("dxvkit-plus-lmbx-tables"),
                 size: table_bytes.next_power_of_two(),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }));
         }
@@ -1040,19 +1302,45 @@ impl LmbxDecoder {
                 wgpu::BindGroupEntry { binding: 1, resource: bits.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: table.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: planes.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&self.bc7tex.1) },
             ],
         });
-        let passes: [(&str, &wgpu::ComputePipeline, u32); 3] = [
+        let (route, n_bc7) = (s.params.x[0], s.params.x[1]);
+        let passes: [(&str, &wgpu::ComputePipeline, u32); 4] = [
             ("lmbx-tables", &self.tables, 12),
             ("lmbx-entropy", &self.entropy, (n_dct * planes_n).div_ceil(64) + (n_dir * DSPREAD).div_ceil(64)),
+            ("lmbx-bc7scatter", &self.bc7scatter, if route == 2 { n_bc7 } else { 0 }),
             ("lmbx-idct", &self.idct, s.nblocks.div_ceil(64)),
         ];
+        // W9 route 2: after the scatter, the staging image goes into the BC7 texture (outside a
+        // compute pass), before the expansion reads it.
+        let copy = |encoder: &mut wgpu::CommandEncoder| {
+            if route == 2 {
+                let (cw, ch) = (s.params.v[2], s.params.v[3]);
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: table,
+                        layout: wgpu::TexelCopyBufferLayout { offset: u64::from(s.params.x[3]) * 4, bytes_per_row: Some(s.params.x[2] * 4), rows_per_image: Some(ch / 4) },
+                    },
+                    wgpu::TexelCopyTextureInfo { texture: &self.bc7tex.0, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+                );
+            }
+        };
         if let Some((set, base)) = prof {
-            for (i, (label, pipe, n)) in (0u32..).zip(passes) {
+            for (i, (label, pipe, n)) in passes.into_iter().enumerate() {
+                if i == 3 {
+                    copy(encoder);
+                }
+                if i == 2 && n == 0 {
+                    continue;
+                }
+                // Timestamps: tables, entropy, idct (the scatter shares the entropy slot's end).
+                let k = if i == 3 { 2 } else { i as u32 };
                 let tw = wgpu::ComputePassTimestampWrites {
                     query_set: set,
-                    beginning_of_pass_write_index: Some(base + 2 * i),
-                    end_of_pass_write_index: Some(base + 2 * i + 1),
+                    beginning_of_pass_write_index: (i != 2).then_some(base + 2 * k),
+                    end_of_pass_write_index: Some(base + 2 * k.min(2) + 1),
                 };
                 let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(label), timestamp_writes: Some(tw) });
                 cp.set_bind_group(0, &bind, &[]);
@@ -1062,11 +1350,21 @@ impl LmbxDecoder {
                 }
             }
         } else {
-            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("dxvkit-plus-lmbx"), timestamp_writes: None });
+            let [a, b, c, d] = passes;
+            {
+                let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("dxvkit-plus-lmbx"), timestamp_writes: None });
+                cp.set_bind_group(0, &bind, &[]);
+                for (_, pipe, n) in [a, b, c].into_iter().filter(|p| p.2 > 0) {
+                    cp.set_pipeline(pipe);
+                    cp.dispatch_workgroups(n, 1, 1);
+                }
+            }
+            copy(encoder);
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("dxvkit-plus-lmbx-idct"), timestamp_writes: None });
             cp.set_bind_group(0, &bind, &[]);
-            for (_, pipe, n) in passes.into_iter().filter(|p| p.2 > 0) {
-                cp.set_pipeline(pipe);
-                cp.dispatch_workgroups(n, 1, 1);
+            if d.2 > 0 {
+                cp.set_pipeline(d.1);
+                cp.dispatch_workgroups(d.2, 1, 1);
             }
         }
         let out_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {

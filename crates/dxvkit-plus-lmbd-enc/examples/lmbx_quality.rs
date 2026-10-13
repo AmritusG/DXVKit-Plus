@@ -238,6 +238,10 @@ fn arm(spec: &str) -> LmbxParams {
             "422" => p.chroma = dxvkit_plus_core::lmbx::Chroma::Halo422,
             "noapal" => p.alpha_palette = false,
             "exact" => p.palette_lossy = false,
+            // W9 prototype: BC7 tiles (v4) with the BC7 encoder's RDO lambda, uber level, rate multiplier.
+            l if l.starts_with("bc7l") => p.bc7_tiles = Some(l[4..].parse().unwrap()),
+            l if l.starts_with("bc7u") => p.bc7_uber = l[4..].parse().unwrap(),
+            l if l.starts_with("bc7m") => p.bc7_bits_mult = l[4..].parse().unwrap(),
             l if l.starts_with("q=") => p.quality = l[2..].parse().unwrap(),
             other => panic!("unknown arm modifier {other}"),
         }

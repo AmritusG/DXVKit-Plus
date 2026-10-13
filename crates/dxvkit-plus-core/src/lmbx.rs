@@ -42,6 +42,9 @@ pub const PALETTE_SYMBOLS: usize = 16;
 /// colours, quad tiles (four 16x16 direct sub-tiles), exact edge alpha on palette colours with
 /// partial alpha, and DCT colour with an alpha palette.
 pub const VERSION_3: u16 = 3;
+/// W9 PROTOTYPE bitstream version 4 (branch `w9-explore`, never frozen): v3 plus BC7 tiles
+/// (colour mode 4: stream 0 holds the tile's 64 BC7 blocks, raster in its 8x8 grid of 4x4 blocks).
+pub const VERSION_4: u16 = 4;
 /// v3: the most colours a palette holds.
 pub const PAL3_MAX: usize = 64;
 /// v3 palette-index alphabet: 0 copy-left, 1 copy-above, `1 + d` the index `d` steps after the
@@ -69,6 +72,8 @@ pub enum TileMode {
     Palette = 2,
     /// v3: four 16x16 direct sub-tiles, each flat or palette (stream 0).
     Quad = 3,
+    /// W9 prototype (v4): 64 BC7 blocks (stream 0).
+    Bc7 = 4,
 }
 
 /// v3: where a tile's alpha comes from (the high nibble of its mode byte). `#[repr(u32)]` = the
@@ -95,12 +100,13 @@ impl TileMode {
         }
     }
     /// A v3 mode byte (colour mode | alpha mode << 4); `alpha`: the frame codes alpha.
-    fn from_byte3(b: u8, alpha: bool) -> Option<(TileMode, AlphaMode)> {
+    fn from_byte3(b: u8, alpha: bool, v4: bool) -> Option<(TileMode, AlphaMode)> {
         let m = match b & 15 {
             0 => TileMode::Dct,
             1 => TileMode::Flat,
             2 => TileMode::Palette,
             3 => TileMode::Quad,
+            4 if v4 => TileMode::Bc7,
             _ => return None,
         };
         let a = match b >> 4 {
@@ -408,10 +414,10 @@ impl<'a> Frame<'a> {
             return Err(lmbx(format!("bad frame magic {magic:02X?}")));
         }
         let version = le16(b, 4).ok_or_else(short)?;
-        if version != u32::from(VERSION) && version != u32::from(VERSION_2) && version != u32::from(VERSION_3) {
+        if version != u32::from(VERSION) && version != u32::from(VERSION_2) && version != u32::from(VERSION_3) && version != u32::from(VERSION_4) {
             return Err(MediaError::Unsupported(format!("LMBX frame version {version} (this decoder knows versions {VERSION} to {VERSION_3})")));
         }
-        let v3 = version == u32::from(VERSION_3);
+        let v3 = version >= u32::from(VERSION_3);
         let v2 = version == u32::from(VERSION_2) || v3;
         let chroma = match byte(b, 6).ok_or_else(short)? {
             0 => Chroma::Full444,
@@ -459,7 +465,7 @@ impl<'a> Frame<'a> {
                 at = n;
             }
             let map = b.get(at..at + header.tile_count() as usize).ok_or_else(short)?;
-            if let Some(i) = map.iter().position(|&x| TileMode::from_byte3(x, header.alpha).is_none()) {
+            if let Some(i) = map.iter().position(|&x| TileMode::from_byte3(x, header.alpha, header.version >= VERSION_4).is_none()) {
                 return Err(lmbx(format!("tile {i} mode byte {}", map.get(i).copied().unwrap_or(0))));
             }
             (single()?, after, at, at + header.tile_count() as usize)
@@ -522,7 +528,7 @@ impl<'a> Frame<'a> {
         }
         let m = self.bytes.get(self.sections.modes + t as usize).copied();
         if self.header.version >= VERSION_3 {
-            return m.and_then(|m| TileMode::from_byte3(m, self.header.alpha)).map_or(TileMode::Dct, |m| m.0);
+            return m.and_then(|m| TileMode::from_byte3(m, self.header.alpha, self.header.version >= VERSION_4)).map_or(TileMode::Dct, |m| m.0);
         }
         m.and_then(TileMode::from_byte).unwrap_or(TileMode::Dct)
     }
@@ -532,7 +538,7 @@ impl<'a> Frame<'a> {
         if self.header.version < VERSION_3 {
             return AlphaMode::Own;
         }
-        self.bytes.get(self.sections.modes + t as usize).and_then(|&m| TileMode::from_byte3(m, self.header.alpha)).map_or(AlphaMode::Own, |m| m.1)
+        self.bytes.get(self.sections.modes + t as usize).and_then(|&m| TileMode::from_byte3(m, self.header.alpha, self.header.version >= VERSION_4)).map_or(AlphaMode::Own, |m| m.1)
     }
 
     /// The quantiser index of luma block `b` (raster, `0..16`) of tile `t`.
@@ -766,7 +772,7 @@ pub fn direct_tile(f: &Frame<'_>, t: u32) -> Vec<[u8; 4]> {
     let n_px = (TILE * TILE) as usize;
     let mut px = vec![[0u8; 4]; n_px];
     match f.mode(t) {
-        TileMode::Dct | TileMode::Quad => {}
+        TileMode::Dct | TileMode::Quad | TileMode::Bc7 => {}
         TileMode::Flat => px.fill([at(0), at(1), at(2), at(3)]),
         TileMode::Palette => {
             let n = usize::from(at(0)).clamp(1, PALETTE_SYMBOLS);
@@ -870,6 +876,16 @@ fn direct_tile3(f: &Frame<'_>, t: u32) -> Vec<[u8; 4]> {
             let (pal, n) = palette3_header(s, 0);
             regions.push((0, tl, pal, false));
             o = n;
+        }
+        TileMode::Bc7 => {
+            for b in 0..64usize {
+                // Bytes past the stream's end read as 0.
+                let blk = crate::bc7::bc7_block(&std::array::from_fn::<u8, 16, _>(|k| at(b * 16 + k)));
+                let (bx, by) = (b % 8, b / 8);
+                for (k, c) in blk.iter().enumerate() {
+                    px[(by * 4 + k / 4) * tl + bx * 4 + k % 4] = *c;
+                }
+            }
         }
         TileMode::Quad => {
             for q in 0..4usize {

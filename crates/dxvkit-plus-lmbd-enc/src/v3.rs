@@ -10,7 +10,7 @@
 
 use crate::lmbx::{LmbxParams, QT, Source, Symbols, direct_pixels, histogram, normalize, normalize_bits, rans_encode, rates, rates_bits, regions, within};
 use dxvkit_plus_core::MediaError;
-use dxvkit_plus_core::lmbx::{ALPHA_SYMBOLS, AlphaMode, FreqTable, IDX_BITS, PAL3_CTX, PAL3_MAX, PAL3_SYMBOLS, RANS_L, TILE, TileMode, VERSION_3};
+use dxvkit_plus_core::lmbx::{ALPHA_SYMBOLS, AlphaMode, FreqTable, IDX_BITS, PAL3_CTX, PAL3_MAX, PAL3_SYMBOLS, RANS_L, TILE, TileMode, VERSION_3, VERSION_4};
 
 type Px = [u8; 4];
 /// The edge-alpha table's id in a candidate's `(table, symbol)` list (index tables are `0..8`).
@@ -224,12 +224,34 @@ fn canonical(src: &[Px]) -> Vec<Px> {
 }
 
 /// Every direct candidate of tile `t`.
-fn candidates(rgba: &[u8], width: u32, height: u32, s: &Source, t: u32, p: &LmbxParams, lam: f64) -> Vec<Cand> {
+fn candidates(rgba: &[u8], width: u32, height: u32, s: &Source, t: u32, p: &LmbxParams, lam: f64, bc7: Option<&[u8]>) -> Vec<Cand> {
     let h = &s.header;
     let src = direct_pixels(rgba, width, height, h, t);
     let tl = TILE as usize;
     let regs = if p.colour_tol.is_some() { regions(&src) } else { Vec::new() };
     let mut out = Vec::new();
+    // W9 prototype: the tile's 64 BC7 blocks (from the frame's BC7, coded size, raster blocks).
+    if let Some(bc) = bc7 {
+        let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+        let bw = (h.tiles_x() * 8) as usize;
+        let mut head = Vec::with_capacity(1024);
+        let mut dec = vec![[0u8; 4]; tl * tl];
+        for b in 0..64usize {
+            let (bx, by) = (tx as usize * 8 + b % 8, ty as usize * 8 + b / 8);
+            let blk = &bc[(by * bw + bx) * 16..(by * bw + bx) * 16 + 16];
+            head.extend_from_slice(blk);
+            for (k, c) in dxvkit_plus_core::lmbx_bc7_block(blk).iter().enumerate() {
+                dec[((b / 8) * 4 + k / 4) * tl + (b % 8) * 4 + k % 4] = *c;
+            }
+        }
+        if !h.alpha {
+            dec.iter_mut().for_each(|q| q[3] = 255);
+        }
+        let bits = 8.0 * zstd::bulk::compress(&head, 3).map_or(1024, |z| z.len()) as f64 * p.bc7_bits_mult;
+        if let Some(c) = finish(&src, (head, Vec::new(), bits, dec), TileMode::Bc7, AlphaMode::Own, p, &regs) {
+            out.push(c);
+        }
+    }
     let whole = |kind: Kind| vec![(0usize, tl, kind)];
     let mut push = |rs: Vec<(usize, usize, Kind)>, map: &[Px], mode: TileMode, alpha: AlphaMode| {
         if let Some(c) = finish(&src, build(&src, map, &rs, mode == TileMode::Quad, alpha == AlphaMode::Edge), mode, alpha, p, &regs) {
@@ -403,7 +425,44 @@ pub(crate) fn encode_v3(
     sse: &[[f64; 4]],
 ) -> Result<Vec<u8>, MediaError> {
     let mut h = s.header;
-    h.version = VERSION_3;
+    h.version = if p.bc7_tiles.is_some() { VERSION_4 } else { VERSION_3 };
+    // W9 prototype: the frame's BC7 blocks at the coded size (edge-replicated), for BC7 tiles.
+    let bc7: Option<Vec<u8>> = match p.bc7_tiles {
+        Some(lambda) => {
+            let (cw, ch) = h.coded_size();
+            let mut padded = Vec::with_capacity((cw * ch * 4) as usize);
+            for y in 0..ch {
+                for x in 0..cw {
+                    let i = ((y.min(height - 1) * width + x.min(width - 1)) * 4) as usize;
+                    padded.extend_from_slice(&rgba[i..i + 4]);
+                }
+            }
+            // Prototype: cached per (pixels, lambda, uber) — rate control re-encodes the same frame.
+            static CACHE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+            use std::hash::{Hash, Hasher};
+            let mut hs = std::collections::hash_map::DefaultHasher::new();
+            (&padded, cw, ch, lambda.to_bits(), p.bc7_uber).hash(&mut hs);
+            let key = hs.finish();
+            let hit = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|e| e.0 == key).map(|e| e.1.clone());
+            let blocks = match hit {
+                Some(b) => b,
+                None => {
+                    let mut ep = crate::EncodeParams::default();
+                    ep.rdo.lambda = lambda;
+                    ep.bc7.uber_level = p.bc7_uber;
+                    let b = std::sync::Arc::new(crate::encode_bc7(&padded, cw, ch, &ep, p.threads)?);
+                    let mut g = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if g.len() > 8 {
+                        g.remove(0);
+                    }
+                    g.push((key, b.clone()));
+                    b
+                }
+            };
+            Some(blocks.to_vec())
+        }
+        None => None,
+    };
     let np = h.planes() as usize;
     let nt = h.tile_count() as usize;
     let dct_rate = rates(&normalize(&histogram(syms)));
@@ -416,12 +475,12 @@ pub(crate) fn encode_v3(
         let hs: Vec<_> = (0..nt)
             .step_by(per)
             .map(|start| {
-                let lam = &lam;
+                let (lam, bc7) = (&lam, bc7.as_deref());
                 sc.spawn(move || {
                     (start..(start + per).min(nt))
                         .map(|t| {
                             let ap = if p.alpha_palette && h.alpha { alpha_palettes(rgba, width, height, s, t as u32) } else { Vec::new() };
-                            (candidates(rgba, width, height, s, t as u32, p, lam[t]), ap)
+                            (candidates(rgba, width, height, s, t as u32, p, lam[t], bc7), ap)
                         })
                         .collect::<Vec<_>>()
                 })

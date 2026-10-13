@@ -358,6 +358,55 @@ fn lmbx_v3_gpu_decode_is_bit_exact_with_the_cpu() {
     assert_ne!(dec(&bad), dec(&blob));
 }
 
+/// W9 prototype: LMBX v4 BC7 tiles decode bit-exactly with the CPU through both GPU routes (WGSL
+/// BC7 decode; blocks into a BC7 texture the hardware decodes), both chroma modes, with and
+/// without alpha, and on hostile frames (random data; every stream empty).
+#[test]
+fn lmbx_v4_bc7_tiles_gpu_decode_is_bit_exact_with_the_cpu() {
+    use dxvkit_plus_core::lmbx::{Chroma, Frame, TileMode};
+    use dxvkit_plus_lmbd_enc::lmbx::{LmbxParams, encode_frame};
+    let Some(g) = gpu() else { return };
+    let mut a = FrameRenderer::new(&g.device);
+    let mut state = 0x5151u64;
+    let (mut frames, mut bc7_tiles) = (0, 0);
+    let contents: Vec<(&str, u32, u32, Vec<u8>)> = vec![
+        ("plasma_alpha", 200, 130, dxvkit_plus_core::testpattern::plasma(2, 200, 130, true)),
+        ("plasma", 333, 185, dxvkit_plus_core::testpattern::plasma(3, 333, 185, false)),
+        ("card_alpha", 333, 185, dxvkit_plus_core::testpattern::graphics(1, 333, 185, true)),
+    ];
+    for (name, w, h, px) in &contents {
+        for chroma in [Chroma::Full444, Chroma::Halo422] {
+            // A tiny BC7 rate so most tiles take BC7 (the decode under test).
+            let p = LmbxParams { chroma, quality: 24.0, threads: 4, bc7_tiles: Some(0.0), bc7_bits_mult: 0.02, ..LmbxParams::default() };
+            let blob = encode_frame(px, *w, *h, &p).unwrap();
+            let fr = Frame::parse(&blob, *w, *h).unwrap();
+            assert_eq!(fr.header.version, dxvkit_plus_core::lmbx::VERSION_4);
+            bc7_tiles += (0..fr.header.tile_count()).filter(|&t| fr.mode(t) == TileMode::Bc7).count();
+            let mut rnd = blob.clone();
+            for x in rnd[fr.sections.data..].iter_mut() {
+                *x = (rng(&mut state) >> 56) as u8;
+            }
+            let mut empty = blob[..fr.sections.data].to_vec();
+            for t in 0..fr.offsets.len() {
+                let at = fr.sections.directory + 4 + t * 4;
+                empty[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+            }
+            for route in [1u32, 2] {
+                dxvkit_plus_wgpu::set_bc7_route(route);
+                for (what, b) in [("encoded", &blob), ("random data", &rnd), ("empty", &empty)] {
+                    let planes = vec![Plane { format: PixelFormat::LmbxBitstream, width: *w, height: *h, data: b.clone() }];
+                    let d = Decoded::Planes { index: 0, width: *w, height: *h, shading: Shading::Lmbx, planes };
+                    assert_eq!(render(&g, &mut a, &d), d.to_rgba().unwrap(), "{name} {chroma:?} route {route} {what}");
+                    frames += 1;
+                }
+            }
+        }
+    }
+    dxvkit_plus_wgpu::set_bc7_route(0);
+    eprintln!("LMBX v4 BC7 tiles GPU == CPU: {frames} frames (both routes), {bc7_tiles} BC7 tiles encoded");
+    assert!(bc7_tiles > 100, "{bc7_tiles}");
+}
+
 /// HAP R (BC7) and HAP HDR (BC6H) movies render their colours (blocks built from the public BPTC
 /// definition; no encoder we may use writes these variants).
 #[test]
