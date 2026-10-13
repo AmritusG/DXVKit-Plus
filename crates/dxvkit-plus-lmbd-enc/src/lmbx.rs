@@ -62,6 +62,14 @@ pub struct LmbxParams {
     pub palette_lossy: bool,
     /// With alpha: DCT colour with an alpha palette (v3) as a tile candidate.
     pub alpha_palette: bool,
+    /// W9 PROTOTYPE: BC7 tiles (bitstream v4) as a tile candidate, the frame's BC7 encoded with
+    /// this RDO lambda (0 = no RDO, the fast path); `None` = off.
+    pub bc7_tiles: Option<f32>,
+    /// W9 PROTOTYPE: the BC7 encoder's uber level for BC7 tiles (0..=4).
+    pub bc7_uber: u32,
+    /// W9 PROTOTYPE: what the mode decision charges for a BC7 tile, as a multiple of its blocks'
+    /// Zstandard size in bits.
+    pub bc7_bits_mult: f64,
     /// Colour-accuracy guard (W6b), in 8-bit code values; `None` = off (0.6.0's behaviour). A
     /// region of one source colour must decode to a mean within this of its colour, not only score
     /// a good PSNR: a smooth DCT block gets a finer step where its DC would otherwise land off its
@@ -86,6 +94,9 @@ impl Default for LmbxParams {
             palette: true,
             palette_lossy: true,
             alpha_palette: true,
+            bc7_tiles: None,
+            bc7_uber: 4,
+            bc7_bits_mult: 1.0,
             colour_tol: Some(1.0),
         }
     }

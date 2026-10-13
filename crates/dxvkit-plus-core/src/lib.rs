@@ -46,3 +46,15 @@ pub use error::MediaError;
 
 /// Largest frame edge accepted from any file (pixels).
 pub const MAX_DIMENSION: u32 = 16_384;
+
+/// W9 prototype: the BC7 block decoder, for LMBX v4 BC7 tiles and the W9 lab.
+pub fn lmbx_bc7_block(blk: &[u8]) -> [[u8; 4]; 16] {
+    bc7::bc7_block(blk)
+}
+
+/// W9 prototype: the BC7 partition and anchor tables (two-subset, three-subset, anchors of subset 1
+/// of two, subsets 1 and 2 of three), for the WGSL BC7 decoder.
+#[allow(clippy::type_complexity)]
+pub fn lmbx_bc7_tables() -> (&'static [[u8; 16]; 64], &'static [[u8; 16]; 64], &'static [u8; 64], &'static [u8; 64], &'static [u8; 64]) {
+    (&bc7::P2, &bc7::P3, &bc7::A2, &bc7::A3A, &bc7::A3B)
+}
