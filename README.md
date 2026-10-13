@@ -12,7 +12,12 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.6.1**: an LMBX encoder fix for a colour shift on flat graphics — an inexact
+This is release **0.7.0**: **LMBX bitstream v3** — context-coded palette indices, palettes of up to
+64 colours, exact edge alpha and 16x16 quad tiles — codes graphics with alpha **losslessly in fewer
+bytes than LMB7** (the 1080p eye clip at 69% of LMB7's size), and its GPU decode was made faster
+before the format was frozen: natural footage decodes as fast as 0.6.1 or faster, graphics within
+15% ([LMBX](#lmbx)). v1 and v2 files still decode bit-exact. 0.6.1 was an LMBX encoder fix for a
+colour shift on flat graphics — an inexact
 forward colour transform, flat colours landing on a coarse DC lattice, and gradients coded as flat
 tiles — with a **colour guard** that holds every flat region within 1 code value; flat graphics now
 match LMB7 at LMB7's size ([LMBX](#lmbx)). The bitstream and decoder are unchanged. 0.6.0 brought
@@ -48,7 +53,7 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
-| LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate; flat and palette tiles) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec (v1, v2) + conformance vectors |
+| LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate; flat, palette and quad tiles, edge alpha) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec (v1, v2, v3) + conformance vectors |
 | DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit |
 | DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied |
 | DXV3 High Quality (`YCG6`) | ✅ pure Rust | Y BC4 + CoCg BC5 → RGB in WGSL, bit-exact with the CPU | FSE-coded opcode streams; the two sections decode in parallel |
@@ -184,13 +189,13 @@ LMBX is LMBD's second profile (`0x10`): instead of BC7's fixed 8 bits per pixel 
 where the picture needs them — YCoCg-R, an 8x8 DCT, a quantiser per 8x8 block chosen by rate-
 distortion optimisation, and rANS — and the GPU decodes it with compute shaders (only the
 compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is specified in
-[`docs/LMBD.md`](docs/LMBD.md) §11 as two frozen bitstream versions — v1 (0.5.0, DCT only) and v2
-(0.6.0, what the encoder writes):
+[`docs/LMBD.md`](docs/LMBD.md) §11 as three frozen bitstream versions — v1 (0.5.0, DCT only), v2
+(0.6.0, tile modes) and v3 (0.7.0, what the encoder writes):
 
 - **Exact integer decoding** (LMBX-D1). The inverse transform, the colour conversion and every
   rounding are specified in integers, so every conforming decoder — CPU or GPU, ours or anyone's —
   produces the same samples bit for bit (10 bits of precision; 8-bit output is `(v + 2) >> 2`).
-  Five CC0 conformance vectors carry the expected hashes.
+  Fourteen CC0 conformance vectors (v1, v2, v3) carry the expected hashes.
 - **Two chroma modes** (LMBX-D2): `444` (the encoder's default, by measurement) and `422halo`
   (half-width chroma, interpolated across tile edges; ~26% faster to decode), signalled per clip.
 - **Parallel by construction.** Every plane of every 32x32 tile is its own stream: a 1080p frame is
@@ -199,6 +204,10 @@ compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is
   of up to 16 colours (exact, or a lossy palette of 2-16 refined colours), whichever costs least in
   rate and distortion. Flat graphics, UI and mattes stop paying for a transform they don't need.
   Frames are stored Zstandard-compressed when that is smaller. `--modes dct` writes v1.
+- **Graphics and alpha** (v3, LMBX-D4). Palette indices are coded with contexts (copy-left,
+  copy-above or a literal, eight contexts from the neighbours), palettes hold up to 64 exact colours,
+  a residual makes every partial alpha of an anti-aliased edge exact, a tile can split into four
+  16x16 sub-tiles (flat or palette each), and a DCT tile can carry its alpha as a palette of levels.
 - **Colour guard** (0.6.1). A good PSNR can hide a shifted flat colour or a striped gradient; the
   encoder holds every flat region's mean within a tolerance (`--colour-tol`, default 1 code value,
   LMB7's own worst on the graphics card): smooth DCT blocks take a finer step only where their DC
@@ -211,6 +220,30 @@ dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 444 --frame-by
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --modes dct --compressor none        # bitstream v1
 dxvkit-plus compare frames/ clip.lmbd --frame 3 [--float]
 ```
+
+**Bitstream v3 at LMB7's size** (0.7.0; one frame each, rate-controlled to LMB7's frame size,
+4:4:4, the W7 references; `docs/data/w8-lmbx-v3-quality.txt`):
+
+| Content | LMB7 | LMBX v2 (0.6.1) | LMBX v3 (0.7.0) |
+|---|---|---|---|
+| graphics card with alpha, 960x540 (5.2 KB) | 49.65, shown 46.66 | 52.55, shown 43.77 | **lossless at 4.4 KB**; LMB7's quality at 3.7 KB |
+| graphics card, 960x540 (5.8 KB) | 45.50 | 45.35 | **lossless at 5.2 KB**; LMB7's quality at 3.2 KB |
+| 1080p graphics eye clip with alpha, 60 frames (9.4 KB/frame) | shown 48.87 | shown 49.78 | **lossless at 6.5 KB/frame** |
+| Amrit's real-alpha clip (354 KB) | 46.82, shown 52.68 | 48.64, shown 55.32 | **48.75, shown 55.29** |
+| Amrit's glow-over-dark clip (753 KB) | 41.40 | 43.05 | 42.99 |
+| synthetic alpha / film grain / detail (re-created in W7; 396 / 384 / 159 KB) | — | shown 50.35 / 53.30 / 21.35 | **shown 50.85** / 53.30 / 20.99 |
+
+**Decode speed, bitstream v3** (0.7.0; Mac Studio, release, two rounds, Arena running;
+`docs/data/w8-lmbx-v3-speed-macstudio.jsonl`; each version decoding its own encode of the same
+frames). W8 profiled the v3 prototype with Metal System Trace and moved the serial palette decode
+out of the DCT streams' SIMD groups (`docs/data/w8-lmbx-v3-profile.txt`):
+
+| Clip (quality 16; graphics at LMB7's bytes) | Layers | 0.6.1 (v2) | v3 prototype (W7) | 0.7.0 (v3) |
+|---|---|---|---|---|
+| 1080p Shroomies glow, 4:4:4 | 16 | 61.3-61.6 steps/s | 44.8-46.7 | **59.1-62.6** |
+| 1080p graphics eye clip with alpha | 16 | 141.9-142.5 | 85.4-86.0 | **120.2-121.3** |
+| 4K Shroomies (alpha), 4:4:4 | 4 | 107.1-108.5 | 76.2-77.0 | **115.6-115.8** |
+| 4K graphics card with alpha | 4 | 144.3-147.4 | 125.8-128.3 | **140.4-140.8** |
 
 **Bitstream v2 at LMB7's size** (0.6.0; one frame each, LMBX rate-controlled to LMB7's frame size,
 4:4:4; PSNR of RGB, and for alpha content of RGB as shown — premultiplied — and of alpha;
@@ -543,6 +576,8 @@ only). Builds and tests run on the Mac Studio; there is no remote CI yet.
 ## Roadmap
 
 - **LMBD** — a faster GPU (compute) BC7 encoder for LMB7; GPU-side LMBX encoding.
+- **LMBX BC7 tiles** — W7 measured BC7 blocks as an LMBX tile mode: no gain on graphics, but +4.6 dB
+  on noise-like detail at LMB7's bytes (at a 2-4 minute BC7 encode per 1080p frame); not in v3.
 - **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
   `Backend` trait.
 - **Encoders** — HAP and DXV encode (LMBD encode ships in 0.2.0). (HAP Q encoding will be written from the YCoCg-DXT paper the
