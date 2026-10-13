@@ -165,7 +165,7 @@ fn lmbx_end_to_end() {
         .filter(|p| p.file_name().unwrap().to_str().unwrap().starts_with("lmbx_") && p.extension().and_then(|e| e.to_str()) == Some("lmbd"))
         .collect();
     vectors.sort();
-    assert_eq!(vectors.len(), 9);
+    assert_eq!(vectors.len(), 14);
     for f in &vectors {
         let p = &run(bin().arg("probe").arg(f))[0];
         assert_eq!((p["kind"].as_str(), p["codec"].as_str()), (Some("lmbd"), Some("LMBX")));

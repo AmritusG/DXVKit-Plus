@@ -1,8 +1,10 @@
 //! LMBX (LMBD profile `0x10`, texture format `0x11`): the variable-rate, per-tile-independent
 //! profile — YCoCg-R, an 8x8 DCT with an exactly specified integer inverse, per-block adaptive
 //! quantisation and rANS with one independent stream per plane of every 32x32 tile, so a GPU
-//! decodes thousands of streams at once (the compute passes in `dxvkit-plus-wgpu`). This module is the normative reference decoder; the format is frozen in
-//! `docs/LMBD.md` ("LMBX").
+//! decodes thousands of streams at once (the compute passes in `dxvkit-plus-wgpu`). This module is the
+//! normative reference decoder of the three frozen bitstream versions — v1 (DCT tiles), v2 (flat and
+//! palette tiles), v3 (context-coded palettes of up to 64 colours, edge alpha, quad tiles, alpha
+//! palettes) — specified in `docs/LMBD.md` ("LMBX").
 //!
 //! Every step of the decode is integer arithmetic with a fixed definition for every input that
 //! passes [`Frame::parse`] (a tile stream that ends early reads zero bytes; the rANS
@@ -36,9 +38,25 @@ pub const VERSION: u16 = 1;
 pub const VERSION_2: u16 = 2;
 /// Palette-index alphabet (v2): a palette has at most 16 colours.
 pub const PALETTE_SYMBOLS: usize = 16;
+/// Frame bitstream version 3 (0.7.0): context-coded palette indices, palettes of up to 64
+/// colours, quad tiles (four 16x16 direct sub-tiles), exact edge alpha on palette colours with
+/// partial alpha, and DCT colour with an alpha palette.
+pub const VERSION_3: u16 = 3;
+/// v3: the most colours a palette holds.
+pub const PAL3_MAX: usize = 64;
+/// v3 palette-index alphabet: 0 copy-left, 1 copy-above, `1 + d` the index `d` steps after the
+/// left one (`d` in `1..=63`).
+pub const PAL3_SYMBOLS: usize = PAL3_MAX + 1;
+/// v3 palette-index contexts (one table each): `4 (left == above) + 2 (above == above-right) +
+/// (above-left == left)`.
+pub const PAL3_CTX: usize = 8;
+/// v3 edge-alpha residual alphabet.
+pub const ALPHA_SYMBOLS: usize = 256;
+/// v3 precision of the index and edge-alpha tables: their frequencies add up to `1 << IDX_BITS`.
+pub const IDX_BITS: u32 = 10;
 
-/// How a tile is coded (v2; every v1 tile is [`TileMode::Dct`]). `#[repr(u32)]` = the byte in the
-/// tile mode map.
+/// How a tile is coded (v2, v3; every v1 tile is [`TileMode::Dct`]). `#[repr(u32)]` = the byte in
+/// the v2 tile mode map, the low nibble of the v3 one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 #[repr(u32)]
@@ -47,7 +65,23 @@ pub enum TileMode {
     Dct = 0,
     /// One RGBA8 colour (stream 0 holds the four bytes).
     Flat = 1,
-    /// Up to 16 RGBA8 colours and a rANS-coded index per pixel (stream 0).
+    /// Up to 16 RGBA8 colours (v3: 64) and a rANS-coded index per pixel (stream 0).
+    Palette = 2,
+    /// v3: four 16x16 direct sub-tiles, each flat or palette (stream 0).
+    Quad = 3,
+}
+
+/// v3: where a tile's alpha comes from (the high nibble of its mode byte). `#[repr(u32)]` = the
+/// nibble.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum AlphaMode {
+    /// The colour mode's own: a direct tile's RGBA, a DCT tile's A plane (every v1 / v2 tile).
+    Own = 0,
+    /// A palette or quad tile's colours, made exact on pixels of partial alpha by a residual each.
+    Edge = 1,
+    /// A DCT tile's alpha as a palette of up to 64 levels (its A stream).
     Palette = 2,
 }
 
@@ -59,6 +93,23 @@ impl TileMode {
             2 => Some(TileMode::Palette),
             _ => None,
         }
+    }
+    /// A v3 mode byte (colour mode | alpha mode << 4); `alpha`: the frame codes alpha.
+    fn from_byte3(b: u8, alpha: bool) -> Option<(TileMode, AlphaMode)> {
+        let m = match b & 15 {
+            0 => TileMode::Dct,
+            1 => TileMode::Flat,
+            2 => TileMode::Palette,
+            3 => TileMode::Quad,
+            _ => return None,
+        };
+        let a = match b >> 4 {
+            0 => AlphaMode::Own,
+            1 if alpha && matches!(m, TileMode::Palette | TileMode::Quad) => AlphaMode::Edge,
+            2 if alpha && m == TileMode::Dct => AlphaMode::Palette,
+            _ => return None,
+        };
+        Some((m, a))
     }
 }
 /// Tile edge in pixels (each plane of each tile is an independent stream).
@@ -147,13 +198,22 @@ pub struct FreqTable {
     pub freq: Vec<u16>,
     /// Cumulative frequency, `cum[s] = sum(freq[..s])`; `freq.len() + 1` entries.
     pub cum: Vec<u32>,
-    /// The symbol owning each of the `PROB_SCALE` slots.
+    /// The symbol owning each of the `1 << bits` slots.
     pub slot2sym: Vec<u16>,
+    /// Precision: the frequencies add up to `1 << bits` ([`PROB_BITS`]; v3 index and edge-alpha
+    /// tables [`IDX_BITS`]).
+    pub bits: u32,
 }
 
 impl FreqTable {
     /// Build from dense frequencies that add up to exactly [`PROB_SCALE`].
     pub fn from_freq(freq: Vec<u16>) -> Result<FreqTable, MediaError> {
+        FreqTable::from_freq_bits(freq, PROB_BITS)
+    }
+
+    /// Build from dense frequencies that add up to exactly `1 << bits`.
+    pub fn from_freq_bits(freq: Vec<u16>, bits: u32) -> Result<FreqTable, MediaError> {
+        let scale = 1u32 << bits;
         let mut cum = Vec::with_capacity(freq.len() + 1);
         let mut acc = 0u32;
         cum.push(0);
@@ -161,10 +221,10 @@ impl FreqTable {
             acc += u32::from(f);
             cum.push(acc);
         }
-        if acc != PROB_SCALE {
-            return Err(lmbx(format!("frequency table adds up to {acc}, not {PROB_SCALE}")));
+        if acc != scale {
+            return Err(lmbx(format!("frequency table adds up to {acc}, not {scale}")));
         }
-        let mut slot2sym = vec![0u16; PROB_SCALE as usize];
+        let mut slot2sym = vec![0u16; scale as usize];
         for (s, w) in cum.windows(2).enumerate() {
             if let [a, b] = w
                 && let Some(dst) = slot2sym.get_mut(*a as usize..*b as usize)
@@ -172,13 +232,18 @@ impl FreqTable {
                 dst.fill(s as u16);
             }
         }
-        Ok(FreqTable { freq, cum, slot2sym })
+        Ok(FreqTable { freq, cum, slot2sym, bits })
     }
 
     /// Parse the sparse form at `at`: `u16 n`, then `n` x (`u16 symbol`, `u16 freq`), symbols
     /// strictly increasing below `symbols`, every freq >= 1, sum [`PROB_SCALE`]. Returns the table
     /// and the offset after it.
     pub fn parse(b: &[u8], at: usize, symbols: usize) -> Result<(FreqTable, usize), MediaError> {
+        FreqTable::parse_bits(b, at, symbols, PROB_BITS)
+    }
+
+    /// [`FreqTable::parse`] of a table whose frequencies add up to `1 << bits`.
+    pub fn parse_bits(b: &[u8], at: usize, symbols: usize, bits: u32) -> Result<(FreqTable, usize), MediaError> {
         let short = || lmbx("frequency table truncated".into());
         let n = le16(b, at).ok_or_else(short)? as usize;
         if n == 0 || n > symbols {
@@ -197,7 +262,7 @@ impl FreqTable {
                 *d = f as u16;
             }
         }
-        Ok((FreqTable::from_freq(freq)?, at + 2 + n * 4))
+        Ok((FreqTable::from_freq_bits(freq, bits)?, at + 2 + n * 4))
     }
 
     /// The sparse form ([`FreqTable::parse`]) of dense frequencies.
@@ -216,7 +281,7 @@ impl FreqTable {
 /// The fixed frame header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct FrameHeader {
-    /// [`VERSION`] (1) or [`VERSION_2`].
+    /// [`VERSION`] (1), [`VERSION_2`] or [`VERSION_3`].
     pub version: u16,
     pub chroma: Chroma,
     /// An alpha plane is coded (otherwise alpha is 1).
@@ -284,8 +349,11 @@ impl FrameHeader {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Sections {
     pub coef_table: usize,
-    /// v2: the palette-index table and the tile mode map (one byte per tile); 0 for v1.
+    /// v2: the palette-index table and the tile mode map (one byte per tile); 0 for v1. v3: the
+    /// first of the eight index tables.
     pub palette_table: usize,
+    /// v3: the eight index tables and the edge-alpha table (0 before v3).
+    pub tables3: [usize; 9],
     pub modes: usize,
     /// The quantiser map: [`QMAP_BYTES`] per tile, tile-major; block `b` (raster in the tile's 4x4
     /// luma blocks) is the low nibble of byte `b / 2` for even `b`, the high nibble for odd.
@@ -301,8 +369,12 @@ pub struct Sections {
 pub struct Frame<'a> {
     pub header: FrameHeader,
     pub coef: FreqTable,
-    /// The v2 palette-index table (v1: an unused single-symbol table).
+    /// The v2 palette-index table (v1, v3: an unused single-symbol table).
     pub palette: FreqTable,
+    /// v3: the palette-index tables, one per context (empty before v3).
+    pub idx: Vec<FreqTable>,
+    /// v3: the edge-alpha table (before v3: an unused single-symbol table).
+    pub edge: FreqTable,
     /// Start of every stream (tile `t`, plane `k` is stream `t * planes + k`), relative to
     /// [`Sections::data`]; a stream ends where the next starts (the last at the end of the
     /// bitstream).
@@ -336,10 +408,11 @@ impl<'a> Frame<'a> {
             return Err(lmbx(format!("bad frame magic {magic:02X?}")));
         }
         let version = le16(b, 4).ok_or_else(short)?;
-        if version != u32::from(VERSION) && version != u32::from(VERSION_2) {
-            return Err(MediaError::Unsupported(format!("LMBX frame version {version} (this decoder knows versions {VERSION} and {VERSION_2})")));
+        if version != u32::from(VERSION) && version != u32::from(VERSION_2) && version != u32::from(VERSION_3) {
+            return Err(MediaError::Unsupported(format!("LMBX frame version {version} (this decoder knows versions {VERSION} to {VERSION_3})")));
         }
-        let v2 = version == u32::from(VERSION_2);
+        let v3 = version == u32::from(VERSION_3);
+        let v2 = version == u32::from(VERSION_2) || v3;
         let chroma = match byte(b, 6).ok_or_else(short)? {
             0 => Chroma::Full444,
             1 => Chroma::Halo422,
@@ -372,7 +445,25 @@ impl<'a> Frame<'a> {
         let coef_table = HEADER_BYTES;
         let (coef, after) = FreqTable::parse(b, coef_table, COEF_SYMBOLS)?;
         let single = || FreqTable::from_freq(vec![PROB_SCALE as u16]);
-        let (palette, palette_table, modes, qmap) = if v2 {
+        let (mut idx, mut edge, mut tables3) = (Vec::new(), single()?, [0usize; 9]);
+        let (palette, palette_table, modes, qmap) = if v3 {
+            let mut at = after;
+            for (k, slot) in tables3.iter_mut().enumerate() {
+                *slot = at;
+                let (t, n) = FreqTable::parse_bits(b, at, if k < PAL3_CTX { PAL3_SYMBOLS } else { ALPHA_SYMBOLS }, IDX_BITS)?;
+                if k < PAL3_CTX {
+                    idx.push(t);
+                } else {
+                    edge = t;
+                }
+                at = n;
+            }
+            let map = b.get(at..at + header.tile_count() as usize).ok_or_else(short)?;
+            if let Some(i) = map.iter().position(|&x| TileMode::from_byte3(x, header.alpha).is_none()) {
+                return Err(lmbx(format!("tile {i} mode byte {}", map.get(i).copied().unwrap_or(0))));
+            }
+            (single()?, after, at, at + header.tile_count() as usize)
+        } else if v2 {
             let (palette, m) = FreqTable::parse(b, after, PALETTE_SYMBOLS)?;
             let map = b.get(m..m + header.tile_count() as usize).ok_or_else(short)?;
             if let Some(i) = map.iter().position(|&x| TileMode::from_byte(x).is_none()) {
@@ -412,7 +503,16 @@ impl<'a> Frame<'a> {
             prev = o;
             offsets.push(o);
         }
-        Ok(Frame { header, coef, palette, offsets, sections: Sections { coef_table, palette_table, modes, qmap, directory, data }, bytes: b })
+        Ok(Frame {
+            header,
+            coef,
+            palette,
+            idx,
+            edge,
+            offsets,
+            sections: Sections { coef_table, palette_table, tables3, modes, qmap, directory, data },
+            bytes: b,
+        })
     }
 
     /// Tile `t`'s mode (v1: always DCT).
@@ -420,7 +520,19 @@ impl<'a> Frame<'a> {
         if self.header.version < VERSION_2 {
             return TileMode::Dct;
         }
-        self.bytes.get(self.sections.modes + t as usize).and_then(|&m| TileMode::from_byte(m)).unwrap_or(TileMode::Dct)
+        let m = self.bytes.get(self.sections.modes + t as usize).copied();
+        if self.header.version >= VERSION_3 {
+            return m.and_then(|m| TileMode::from_byte3(m, self.header.alpha)).map_or(TileMode::Dct, |m| m.0);
+        }
+        m.and_then(TileMode::from_byte).unwrap_or(TileMode::Dct)
+    }
+
+    /// Tile `t`'s alpha mode (before v3: always the colour mode's own).
+    pub fn alpha_mode(&self, t: u32) -> AlphaMode {
+        if self.header.version < VERSION_3 {
+            return AlphaMode::Own;
+        }
+        self.bytes.get(self.sections.modes + t as usize).and_then(|&m| TileMode::from_byte3(m, self.header.alpha)).map_or(AlphaMode::Own, |m| m.1)
     }
 
     /// The quantiser index of luma block `b` (raster, `0..16`) of tile `t`.
@@ -454,11 +566,11 @@ impl<'a> Rans<'a> {
     }
     #[inline]
     fn sym(&mut self, t: &FreqTable) -> u16 {
-        let slot = self.x & (PROB_SCALE - 1);
+        let slot = self.x & ((1 << t.bits) - 1);
         let s = t.slot2sym.get(slot as usize).copied().unwrap_or(0);
         let f = u32::from(t.freq.get(s as usize).copied().unwrap_or(1));
         let c = t.cum.get(s as usize).copied().unwrap_or(0);
-        self.x = f.wrapping_mul(self.x >> PROB_BITS).wrapping_add(slot).wrapping_sub(c);
+        self.x = f.wrapping_mul(self.x >> t.bits).wrapping_add(slot).wrapping_sub(c);
         for _ in 0..4 {
             if self.x >= RANS_L {
                 break;
@@ -624,6 +736,10 @@ fn decode_tile(f: &Frame<'_>, t: u32, out: &mut RowOut<'_>) {
             PlaneKind::Cg => (&mut *out.cg, out.chroma_stride, 0),
             PlaneKind::A => (&mut *out.a, out.stride, 512),
         };
+        if kind == PlaneKind::A && f.alpha_mode(t) == AlphaMode::Palette {
+            alpha_palette(f, t, plane, stride);
+            continue;
+        }
         visit_stream(f, t, kind, |x0, y0, d| {
             idct(d, offset, &mut s);
             put_block(plane, stride, x0, y0, &s);
@@ -642,12 +758,15 @@ fn decode_tile(f: &Frame<'_>, t: u32, out: &mut RowOut<'_>) {
 /// Missing bytes read as 0. Without an alpha plane the alpha of every pixel is 255.
 pub fn direct_tile(f: &Frame<'_>, t: u32) -> Vec<[u8; 4]> {
     let h = &f.header;
+    if h.version >= VERSION_3 {
+        return direct_tile3(f, t);
+    }
     let s = f.stream((t * h.planes()) as usize);
     let at = |i: usize| s.get(i).copied().unwrap_or(0);
     let n_px = (TILE * TILE) as usize;
     let mut px = vec![[0u8; 4]; n_px];
     match f.mode(t) {
-        TileMode::Dct => {}
+        TileMode::Dct | TileMode::Quad => {}
         TileMode::Flat => px.fill([at(0), at(1), at(2), at(3)]),
         TileMode::Palette => {
             let n = usize::from(at(0)).clamp(1, PALETTE_SYMBOLS);
@@ -672,6 +791,139 @@ pub fn direct_tile(f: &Frame<'_>, t: u32) -> Vec<[u8; 4]> {
         px.iter_mut().for_each(|p| p[3] = 255);
     }
     px
+}
+
+/// v3: one palette index, context-coded. `l`: the left index (column 0: the index above; the
+/// region's first pixel: 0); `a`: above (row 0: `l`); `ar`, `al`: above-right and above-left
+/// (outside the region: `a`). The table is `4 (l == a) + 2 (a == ar) + (al == l)`; symbol 0 is
+/// `l`, 1 is `a`, `s >= 2` is `(l + s - 1) mod n`.
+fn index3(r: &mut Rans<'_>, f: &Frame<'_>, n: usize, l: usize, a: usize, ar: usize, al: usize) -> usize {
+    let c = usize::from(l == a) * 4 + usize::from(a == ar) * 2 + usize::from(al == l);
+    match f.idx.get(c).map_or(0, |t| r.sym(t)) {
+        0 => l,
+        1 => a,
+        s => (l + usize::from(s) - 1) % n,
+    }
+}
+
+/// v3: the indices of a `size x size` region in raster order ([`index3`]), each through
+/// `pixel(i, index)`.
+fn indices3(r: &mut Rans<'_>, f: &Frame<'_>, n: usize, size: usize, mut pixel: impl FnMut(&mut Rans<'_>, usize, usize)) {
+    let mut idx = vec![0usize; size * size];
+    for i in 0..size * size {
+        let (x, y) = (i % size, i / size);
+        let l = if x > 0 {
+            idx[i - 1]
+        } else if y > 0 {
+            idx[i - size]
+        } else {
+            0
+        };
+        let a = if y > 0 { idx[i - size] } else { l };
+        let ar = if y > 0 && x + 1 < size { idx[i - size + 1] } else { a };
+        let al = if y > 0 && x > 0 { idx[i - size - 1] } else { a };
+        // l, a, ar, al < n, so the index is too.
+        idx[i] = index3(r, f, n, l, a, ar, al);
+        pixel(r, i, idx[i]);
+    }
+}
+
+/// v3: a palette header at `s[at..]`: `n` (1..=64; 0 reads as 1, above 64 as 64), then `n` RGBA8
+/// colours. Returns the colours and the offset after them.
+fn palette3_header(s: &[u8], at: usize) -> (Vec<[u8; 4]>, usize) {
+    let b = |i: usize| s.get(i).copied().unwrap_or(0);
+    let n = usize::from(b(at)).clamp(1, PAL3_MAX);
+    ((0..n).map(|i| [b(at + 1 + 4 * i), b(at + 2 + 4 * i), b(at + 3 + 4 * i), b(at + 4 + 4 * i)]).collect(), at + 1 + 4 * n)
+}
+
+/// v3: whether a colour takes an edge-alpha residual (`0 < A < 255`).
+fn partial(c: [u8; 4]) -> bool {
+    c[3] != 0 && c[3] != 255
+}
+
+/// v3 direct tiles, from stream 0 (normative):
+///
+/// - Flat: bytes 0..4 are R, G, B, A.
+/// - Palette: a palette header ([`palette3_header`]), then one rANS stream: per pixel in raster
+///   order its index ([`indices3`]), and with [`AlphaMode::Edge`], when its colour has
+///   `0 < A < 255`, one edge-alpha symbol `s`: `A = (A + s) mod 256`.
+/// - Quad: four 16x16 sub-tiles (top-left, top-right, bottom-left, bottom-right), each a kind byte
+///   (0: flat, then 4 colour bytes; otherwise palette, then a palette header); then one rANS
+///   stream: the sub-tiles in order, each pixel (raster in the sub-tile) as in a palette tile —
+///   a flat sub-tile's pixels have no index symbol, only their edge-alpha symbol.
+///
+/// Missing bytes read as 0. Without an alpha plane every alpha is 255.
+fn direct_tile3(f: &Frame<'_>, t: u32) -> Vec<[u8; 4]> {
+    let h = &f.header;
+    let s = f.stream((t * h.planes()) as usize);
+    let at = |i: usize| s.get(i).copied().unwrap_or(0);
+    let tl = TILE as usize;
+    let edge = f.alpha_mode(t) == AlphaMode::Edge;
+    let mut px = vec![[0u8; 4]; tl * tl];
+    // (origin, size, colours; one colour and no index symbols for a flat region) in stream order.
+    let mut regions: Vec<(usize, usize, Vec<[u8; 4]>, bool)> = Vec::new();
+    let mut o = 0usize;
+    match f.mode(t) {
+        TileMode::Dct => {}
+        TileMode::Flat => px.fill([at(0), at(1), at(2), at(3)]),
+        TileMode::Palette => {
+            let (pal, n) = palette3_header(s, 0);
+            regions.push((0, tl, pal, false));
+            o = n;
+        }
+        TileMode::Quad => {
+            for q in 0..4usize {
+                let origin = (q / 2) * 16 * tl + (q % 2) * 16;
+                if at(o) == 0 {
+                    regions.push((origin, 16, vec![[at(o + 1), at(o + 2), at(o + 3), at(o + 4)]], true));
+                    o += 5;
+                } else {
+                    let (pal, n) = palette3_header(s, o + 1);
+                    regions.push((origin, 16, pal, false));
+                    o = n;
+                }
+            }
+        }
+    }
+    if !regions.is_empty() {
+        let mut r = Rans::new(s.get(o..).unwrap_or_default());
+        for (origin, size, pal, flat) in &regions {
+            let mut put = |r: &mut Rans<'_>, i: usize, v: usize| {
+                let mut c = pal.get(v).copied().unwrap_or([0; 4]);
+                if edge && partial(c) {
+                    c[3] = c[3].wrapping_add(r.sym(&f.edge) as u8);
+                }
+                if let Some(p) = px.get_mut(origin + (i / size) * tl + i % size) {
+                    *p = c;
+                }
+            };
+            if *flat {
+                (0..size * size).for_each(|i| put(&mut r, i, 0));
+            } else {
+                indices3(&mut r, f, pal.len(), *size, put);
+            }
+        }
+    }
+    if !h.alpha {
+        px.iter_mut().for_each(|p| p[3] = 255);
+    }
+    px
+}
+
+/// v3 [`AlphaMode::Palette`] (a DCT tile's alpha, its A stream): byte 0 is `n` (1..=64; 0 reads
+/// as 1, above 64 as 64), then `n` alpha levels, then one rANS stream of the 1024 indices
+/// ([`indices3`]); A = `4 *` the pixel's level.
+fn alpha_palette(f: &Frame<'_>, t: u32, plane: &mut [i32], stride: u32) {
+    let s = f.stream((t * f.header.planes() + 3) as usize);
+    let n = usize::from(s.first().copied().unwrap_or(0)).clamp(1, PAL3_MAX);
+    let mut r = Rans::new(s.get(1 + n..).unwrap_or_default());
+    let tx = t % f.header.tiles_x().max(1);
+    indices3(&mut r, f, n, TILE as usize, |_, i, v| {
+        let (x, y) = (i as u32 % TILE, i as u32 / TILE);
+        if let Some(d) = plane.get_mut((y * stride + tx * TILE + x) as usize) {
+            *d = i32::from(s.get(1 + v).copied().unwrap_or(0)) * 4;
+        }
+    });
 }
 
 /// Write a direct tile into its tile row: Y samples hold the packed RGBA8; Co and Cg the exact

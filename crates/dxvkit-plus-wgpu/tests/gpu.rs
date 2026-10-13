@@ -239,10 +239,17 @@ fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
             reversed[data..].reverse();
             variants.push(reversed);
             if fr.header.version >= dxvkit_plus_core::lmbx::VERSION_2 {
-                // Every tile a random mode over random data.
+                // Every tile a random valid mode over random data (v3: every colour and alpha mode).
+                let valid: &[u8] = if fr.header.version == dxvkit_plus_core::lmbx::VERSION_2 {
+                    &[0, 1, 2]
+                } else if fr.header.alpha {
+                    &[0x00, 0x20, 0x01, 0x02, 0x12, 0x03, 0x13]
+                } else {
+                    &[0x00, 0x01, 0x02, 0x03]
+                };
                 let mut m = variants[0].clone();
                 for t in 0..fr.header.tile_count() as usize {
-                    m[fr.sections.modes + t] = ((rng(&mut state) >> 60) % 3) as u8;
+                    m[fr.sections.modes + t] = valid[(rng(&mut state) % valid.len() as u64) as usize];
                 }
                 variants.push(m);
             }
@@ -255,7 +262,7 @@ fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
         }
     }
     eprintln!("LMBX GPU == CPU: {frames} vector frames, {hostile} hostile frames");
-    assert!(frames >= 20 && hostile >= 68, "{frames} / {hostile}");
+    assert!(frames >= 30 && hostile >= 108, "{frames} / {hostile}");
     // Negative control: a malformed header is refused before anything reaches the GPU.
     let bad = Decoded::Planes {
         index: 0,
@@ -265,6 +272,90 @@ fn lmbx_gpu_decode_is_bit_exact_with_the_cpu() {
         planes: vec![Plane { format: PixelFormat::LmbxBitstream, width: 64, height: 64, data: b"LMXS-not-a-frame".to_vec() }],
     };
     assert!(matches!(a.upload(&g.device, &g.queue, &bad), Err(GpuError::Invalid(_))));
+}
+
+/// The LMBX v3 GPU decode is bit-exact with the CPU on encoded frames of every v3 tool (context-
+/// coded palettes up to 64 colours, edge alpha, quad tiles, DCT colour with an alpha palette),
+/// both chroma modes, with and without alpha, coarse and fine — and on hostile v3 frames (random
+/// data; random valid mode bytes over random data; every stream empty).
+#[test]
+fn lmbx_v3_gpu_decode_is_bit_exact_with_the_cpu() {
+    use dxvkit_plus_core::lmbx::{Chroma, Frame};
+    use dxvkit_plus_lmbd_enc::lmbx::{LmbxParams, encode_frame};
+    let Some(g) = gpu() else { return };
+    let mut a = FrameRenderer::new(&g.device);
+    let (mut frames, mut hostile) = (0, 0);
+    let mut state = 0x7777u64;
+    let mut seen: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+    let check = |blob: Vec<u8>, w: u32, h: u32, what: &str, a: &mut FrameRenderer| {
+        let planes = vec![Plane { format: PixelFormat::LmbxBitstream, width: w, height: h, data: blob }];
+        let d = Decoded::Planes { index: 0, width: w, height: h, shading: Shading::Lmbx, planes };
+        assert_eq!(render(&g, a, &d), d.to_rgba().unwrap(), "{what}");
+    };
+    let params = [
+        ("default", LmbxParams::default()),
+        ("exact", LmbxParams { palette_lossy: false, ..LmbxParams::default() }),
+        ("no-guard", LmbxParams { colour_tol: None, ..LmbxParams::default() }),
+        ("no-alpha-palette", LmbxParams { alpha_palette: false, ..LmbxParams::default() }),
+    ];
+    let contents: Vec<(&str, u32, u32, Vec<u8>)> = vec![
+        ("card", 333, 185, dxvkit_plus_core::testpattern::graphics(1, 333, 185, false)),
+        ("card_alpha", 333, 185, dxvkit_plus_core::testpattern::graphics(1, 333, 185, true)),
+        ("card_alpha_big", 640, 360, dxvkit_plus_core::testpattern::graphics(7, 640, 360, true)),
+        ("plasma_alpha", 200, 130, dxvkit_plus_core::testpattern::plasma(2, 200, 130, true)),
+    ];
+    for (name, w, h, px) in &contents {
+        for (k, base) in &params {
+            for chroma in [Chroma::Full444, Chroma::Halo422] {
+                for q in [2.0, 40.0, 400.0] {
+                    let p = LmbxParams { chroma, quality: q, threads: 4, ..*base };
+                    let blob = encode_frame(px, *w, *h, &p).unwrap();
+                    let fr = Frame::parse(&blob, *w, *h).unwrap();
+                    assert_eq!(fr.header.version, dxvkit_plus_core::lmbx::VERSION_3);
+                    let (data, dir, modes, nt, alpha) =
+                        (fr.sections.data, fr.sections.directory, fr.sections.modes, fr.header.tile_count() as usize, fr.header.alpha);
+                    for t in 0..nt {
+                        *seen.entry(blob[modes + t]).or_insert(0usize) += 1;
+                    }
+                    check(blob.clone(), *w, *h, &format!("{name} {k} {chroma:?} q{q}"), &mut a);
+                    frames += 1;
+                    let mut rnd = blob.clone();
+                    for x in rnd[data..].iter_mut() {
+                        *x = (rng(&mut state) >> 56) as u8;
+                    }
+                    check(rnd.clone(), *w, *h, &format!("{name} {k} random data"), &mut a);
+                    let valid: &[u8] = if alpha { &[0x00, 0x20, 0x01, 0x02, 0x12, 0x03, 0x13] } else { &[0x00, 0x01, 0x02, 0x03] };
+                    for x in rnd[modes..modes + nt].iter_mut() {
+                        *x = valid[(rng(&mut state) % valid.len() as u64) as usize];
+                    }
+                    check(rnd, *w, *h, &format!("{name} {k} random modes"), &mut a);
+                    let mut empty = blob[..data].to_vec();
+                    for t in 0..fr.offsets.len() {
+                        empty[dir + 4 + t * 4..dir + 8 + t * 4].copy_from_slice(&0u32.to_le_bytes());
+                    }
+                    check(empty, *w, *h, &format!("{name} {k} empty"), &mut a);
+                    hostile += 3;
+                }
+            }
+        }
+    }
+    eprintln!("LMBX v3 GPU == CPU: {frames} encoded frames, {hostile} hostile frames; tile mode bytes seen {seen:02x?}");
+    // The encoded frames exercise DCT, DCT + alpha palette, flat, palette, palette + edge alpha
+    // and quad; quad + edge alpha also comes from the random-mode hostile frames.
+    for m in [0x00u8, 0x20, 0x01, 0x02, 0x12, 0x03] {
+        assert!(seen.contains_key(&m), "mode byte {m:02x} never encoded: {seen:02x?}");
+    }
+    // Negative control: one palette colour byte changes the CPU decode, so a GPU that ignored v3
+    // colour data would fail above.
+    let px = dxvkit_plus_core::testpattern::graphics(1, 333, 185, true);
+    let blob = encode_frame(&px, 333, 185, &LmbxParams::default()).unwrap();
+    let fr = Frame::parse(&blob, 333, 185).unwrap();
+    let t = (0..fr.header.tile_count()).find(|&t| fr.mode(t) == dxvkit_plus_core::lmbx::TileMode::Palette).unwrap();
+    let at = fr.sections.data + fr.offsets[(t * fr.header.planes()) as usize] as usize + 1;
+    let mut bad = blob.clone();
+    bad[at] ^= 0x55;
+    let dec = |b: &[u8]| dxvkit_plus_core::lmbx::decode_rgba8(b, 333, 185, false).unwrap();
+    assert_ne!(dec(&bad), dec(&blob));
 }
 
 /// HAP R (BC7) and HAP HDR (BC6H) movies render their colours (blocks built from the public BPTC

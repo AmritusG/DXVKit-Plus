@@ -23,6 +23,7 @@ fn pattern(name: &str, f: u32) -> (Vec<u8>, u32, u32) {
             (p, w, h)
         }
         "graphics" | "graphics_a" => (testpattern::graphics(f, 333, 185, name == "graphics_a"), 333, 185),
+        "graphics_big_a" => (testpattern::graphics(f, 640, 360, true), 640, 360),
         other => panic!("{other}"),
     }
 }
@@ -38,6 +39,10 @@ fn reencoding_the_vectors_is_deterministic_and_pinned() {
             continue;
         }
         let side = std::fs::read_to_string(dir.join(format!("{name}.attribution"))).unwrap();
+        // A hand-built vector has no encoder to re-run.
+        if side.lines().any(|l| l == "params: pattern=handbuilt chroma=422halo") {
+            continue;
+        }
         let params = side.lines().find_map(|l| l.strip_prefix("params: ")).unwrap();
         let kv = |k: &str| params.split(' ').find_map(|t| t.strip_prefix(&format!("{k}="))).unwrap_or_default().to_string();
         let modes = kv("modes");
@@ -64,5 +69,5 @@ fn reencoding_the_vectors_is_deterministic_and_pinned() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 9);
+    assert_eq!(checked, 13);
 }

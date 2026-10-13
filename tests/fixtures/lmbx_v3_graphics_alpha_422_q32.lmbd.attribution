@@ -1,0 +1,12 @@
+asset: tests/fixtures/lmbx_v3_graphics_alpha_422_q32.lmbd
+title: LMBX v3 conformance vector (4:2:2 halo, quality 32, edge alpha, quad tiles) — graphics card with alpha 333x185, 2 frames
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern
+source: Encoded by dxvkit-plus encode-lmbd --profile lmbx --chroma 422halo --quality 32 --threads 1 --modes flat,palette,lossy --compressor none (scripts/mint-lmbx-vectors.sh)
+license: CC0-1.0
+added: 2026-10-13
+sha256: e9c76c1b9442f8fabdb93175835fdc4e00d6af931975da17998f50019110394a
+params: pattern=graphics_a chroma=422halo quality=32 modes=flat,palette,lossy
+decoded_rgba_q_sha256 frame 0: c25e7027650eeb438afa7a626119b1da5f3aaa9703e5faebebb47d72e2a991d9
+decoded_rgba_q_sha256 frame 1: f4cf513e61316223c343e3e71d75fb64fb2435405f7a968235485de8eedb72b4
+reencoded_sha256: e9c76c1b9442f8fabdb93175835fdc4e00d6af931975da17998f50019110394a (the 0.7.0 encoder re-encoding this pattern with these params writes this file)
+notes: An LMBX (profile 0x10, bitstream v3: context-coded palette indices, palettes of up to 64 colours, exact edge alpha, quad tiles, DCT colour with an alpha palette) conformance vector covering palette tiles with and without edge alpha, quad tiles, flat tiles. decoded_rgba_q_sha256 is each frame's normative output — RGBA in quarter code values (0..=1020), width*height*4 u16 little endian, rows top first — as the reference decoder (dxvkit_plus_core::lmbx) produces it; every conforming decoder must reproduce it (docs/LMBD.md, "LMBX"). Our own procedural / hand-built content, no third-party content.
