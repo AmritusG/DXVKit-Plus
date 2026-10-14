@@ -483,6 +483,23 @@ and without edge alpha; and, with alpha, DCT colour with an alpha palette (the e
 from the first choice's; the tables are built from the chosen tiles. Writing is deterministic at
 any thread count (each tile's candidates are a pure function of its pixels).
 
+**Rate-distortion steps** (0.7.1, default on; `--rd-steps off` is 0.7.0's encoder, byte for byte).
+The step rule above picks a block's step from its luma AC energy alone. In 4:4:4 frames with tile
+modes the encoder now refines it, on every RDO pass against that pass's rate model: each 8x8 block
+of a DCT tile takes, of the rule's index and the one either side, the index of least
+`J = sum over planes of w * (AC squared error) + lambda * (AC bits)`, with RDOQ levels at each
+candidate step, v3's decision weights (`w` = 3, 1/2, 3/4 for Y, Co, Cg; 1 for A) and the tile's
+`lambda = 0.25 * mean(q^2)` of the rule's steps. The colour guard then runs on the chosen steps as
+before. Tiles with at most 64 colours (graphics, which an exact palette can code) keep the rule's
+steps, so graphics frames are 0.7.0's byte for byte; 4:2:2 frames are unchanged too. The q-map
+already carries a step per block, so the frames are plain v3 and every v3 decoder reads them.
+Rate control continues its bisection below 0.25, to 1/64, while its best frame is more than 3%
+under the budget: the rule's step walls (every smooth block's step going from 3 to 4 at quality
+21.875, for example) can otherwise leave it far under. Measured in W10 (as its 8x8 "control" arm)
+and W11: `docs/data/w11-lmbx-quality.txt`. W10 also measured adaptive transform sizes (8/16/32,
+a v4 prototype): +0.0 to +0.07 dB on real footage over these steps, for +17-24% GPU decode time;
+not adopted (branch `w10-explore`).
+
 ### 11.12 What version 2 measured (informative)
 
 W6 (`docs/data/w6-lmbx-v2-ab.txt`; every arm at LMB7's bytes per frame, Zstandard where the arm uses

@@ -133,10 +133,17 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
         Some("off") => None,
         Some(v) => Some(v.parse::<f64>().ok().filter(|t| t.is_finite() && *t > 0.0).ok_or_else(|| format!("--colour-tol: a positive number or off, got {v}"))?),
     };
+    // Rate-distortion quantiser steps (0.7.1, default on; `off` = 0.7.0's step rule).
+    let rd_steps = match args.value("rd-steps").unwrap_or("on") {
+        "on" => true,
+        "off" => false,
+        other => return Err(format!("--rd-steps: on or off, got {other}")),
+    };
     let p = LmbxParams {
         chroma,
         quality,
         colour_tol,
+        rd_steps,
         threads,
         zstd,
         flat: modes.contains(&"flat"),

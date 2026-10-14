@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.1 — 2026-10-14
+
+LMBX **encoder** improvement (W11, from W10's exploration). The bitstream (v3) and every decoder are
+unchanged: 0.7.0 decodes 0.7.1's files bit-exactly (CPU and GPU, checked against the v0.7.0 tag).
+
+- **Rate-distortion quantiser steps** (`LmbxParams::rd_steps`, default on; `--rd-steps on|off`). In
+  4:4:4 frames with tile modes, each 8x8 block of a DCT tile takes, of the AC-energy rule's step and
+  the one either side, the step of least `J` (AC error over every plane with v3's weights + lambda x
+  AC bits), re-chosen on every RDO pass; the colour guard runs on the result. Tiles of at most 64
+  colours and 4:2:2 frames keep 0.7.0's steps. Deterministic at any thread count.
+- At LMB7's bytes (shipped rate control): real detail shown 54.86 -> 55.58 dB, real alpha 55.32 ->
+  55.79, glow 42.99 -> 43.31, detail card 21.00 -> 21.60; graphics, graphics with alpha and film
+  grain byte-identical; synthetic alpha -0.06 dB at 0.7% fewer bytes. Colour guard holds (worst
+  flat-region error 0.00-0.01). Reproduces W10's control-arm numbers exactly
+  (`docs/data/w11-lmbx-quality.txt`).
+- Encode time per 1080p frame +4% (real detail) to +6-10% (glow).
+- Rate control (`encode_frame_to_size`) with RD steps keeps bisecting to 1/64 while its best frame
+  is more than 3% under the budget (the step rule's walls); with `--rd-steps off` it is 0.7.0's.
+- The two 4:4:4 plasma vectors' re-encode hashes are re-pinned (the committed vectors are
+  unchanged); every graphics vector re-encodes byte-identically.
+- Not adopted: adaptive transform sizes (8/16/32, a v4 prototype on branch `w10-explore`): +0.0 to
+  +0.07 dB on real footage over these steps, for +17-24% GPU decode time. BC7 tiles stay parked on
+  `w9-explore`.
+- `examples/lmbx_quality.rs`: `ladder` command and `rule` arm.
+
 ## 0.7.0 — 2026-10-13
 
 **LMBX bitstream v3** (W7 explored it, W8 made it fast and froze it; decision LMBX-D4: Amrit chose

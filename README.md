@@ -12,7 +12,11 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.7.0**: **LMBX bitstream v3** — context-coded palette indices, palettes of up to
+This is release **0.7.1**: an LMBX **encoder** improvement — each 8x8 block's quantiser step is now
+chosen by rate-distortion — that gains **+0.3 to +0.7 dB on real footage at the same bytes** (Amrit's
+real-detail, real-alpha and glow clips at LMB7's size). The bitstream is unchanged (plain v3, which
+0.7.0 decoders read bit-exactly), graphics files are byte-identical, and `--rd-steps off` gives
+0.7.0's encoder. 0.7.0 was **LMBX bitstream v3** — context-coded palette indices, palettes of up to
 64 colours, exact edge alpha and 16x16 quad tiles — codes graphics with alpha **losslessly in fewer
 bytes than LMB7** (the 1080p eye clip at 69% of LMB7's size), and its GPU decode was made faster
 before the format was frozen: natural footage decodes as fast as 0.6.1 or faster, graphics within
@@ -208,6 +212,10 @@ compressed bitstream is uploaded). It grew out of Amrit's LMBX prototypes and is
   copy-above or a literal, eight contexts from the neighbours), palettes hold up to 64 exact colours,
   a residual makes every partial alpha of an anti-aliased edge exact, a tile can split into four
   16x16 sub-tiles (flat or palette each), and a DCT tile can carry its alpha as a palette of levels.
+- **Rate-distortion steps** (0.7.1, encoder only). Each 8x8 block of a DCT tile takes, of the step
+  the AC-energy rule gives and the one either side, the step of least rate-distortion cost over all
+  planes; the colour guard still applies; tiles of at most 64 colours keep the rule's steps
+  (`--rd-steps off` = 0.7.0's encoder). About +5-10% encode time per frame.
 - **Colour guard** (0.6.1). A good PSNR can hide a shifted flat colour or a striped gradient; the
   encoder holds every flat region's mean within a tolerance (`--colour-tol`, default 1 code value,
   LMB7's own worst on the graphics card): smooth DCT blocks take a finer step only where their DC
@@ -220,6 +228,18 @@ dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --chroma 444 --frame-by
 dxvkit-plus encode-lmbd frames/ clip.lmbd --profile lmbx --modes dct --compressor none        # bitstream v1
 dxvkit-plus compare frames/ clip.lmbd --frame 3 [--float]
 ```
+
+**Rate-distortion steps at LMB7's size** (0.7.1 against 0.7.0, both bitstream v3; one frame each,
+`encode-lmbd --frame-bytes`, 4:4:4; `docs/data/w11-lmbx-quality.txt`):
+
+| Content | 0.7.0 | 0.7.1 |
+|---|---|---|
+| Amrit's real-detail crop (374 KB) | shown 54.86 | **shown 55.58** |
+| Amrit's real-alpha clip (354 KB) | 48.77, shown 55.32 | **49.35, shown 55.79** |
+| Amrit's glow-over-dark clip (753 KB) | 42.99 | **43.31** |
+| detail card (159 KB) | 21.00 | **21.60** |
+| synthetic alpha (396 KB) | **shown 50.85** (351 KB) | shown 50.79 (348 KB) |
+| graphics, graphics with alpha, film grain | lossless / lossless / 53.30 | the same files, byte for byte |
 
 **Bitstream v3 at LMB7's size** (0.7.0; one frame each, rate-controlled to LMB7's frame size,
 4:4:4, the W7 references; `docs/data/w8-lmbx-v3-quality.txt`):
