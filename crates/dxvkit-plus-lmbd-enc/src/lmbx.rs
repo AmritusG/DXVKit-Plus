@@ -68,6 +68,12 @@ pub struct LmbxParams {
     /// colour (`dc_guard`), and a flat or lossy-palette tile is not a candidate if it moves any
     /// region's colour ([`GUARD_CELLS`]) by more than this. Default 1.0: LMB7's own worst flat-region error on the graphics card (1.02).
     pub colour_tol: Option<f64>,
+    /// Rate-distortion quantiser steps (0.7.1; 4:4:4 frames with tile modes): each 8x8 block of a
+    /// DCT tile takes, of the step rule's index and one either side, the one of least `J` (its AC
+    /// terms over every plane at the tile's lambda), on every RDO pass; the colour guard then
+    /// applies as before. Tiles an exact palette could code (at most 64 colours) keep the rule's
+    /// steps. An encoder-only choice: the frame is plain v3. Off = 0.7.0's steps.
+    pub rd_steps: bool,
 }
 
 impl Default for LmbxParams {
@@ -87,6 +93,7 @@ impl Default for LmbxParams {
             palette_lossy: true,
             alpha_palette: true,
             colour_tol: Some(1.0),
+            rd_steps: true,
         }
     }
 }
@@ -515,6 +522,105 @@ fn all_symbols(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], rate: &[f64],
     (tiles.into_iter().flat_map(|t| t.0).collect(), sse)
 }
 
+/// Whether tile `t` has at most `PAL3_MAX` distinct colours (an exact v3 palette can code it).
+fn few_colours(s: &Source, t: u32) -> bool {
+    let h = &s.header;
+    let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+    let mut seen: Vec<[i32; 4]> = Vec::with_capacity(dxvkit_plus_core::lmbx::PAL3_MAX + 1);
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let i = ((ty * TILE + y) * s.y.w + tx * TILE + x) as usize;
+            let c = [s.y.v[i], s.co.v[i], s.cg.v[i], s.a.as_ref().map_or(0, |a| a.v[i])];
+            if !seen.contains(&c) {
+                if seen.len() == dxvkit_plus_core::lmbx::PAL3_MAX {
+                    return false;
+                }
+                seen.push(c);
+            }
+        }
+    }
+    true
+}
+
+/// Rate-distortion steps for DCT tile `t` (4:4:4; [`LmbxParams::rd_steps`], W10's control arm):
+/// per 8x8 block, of the rule's index `qi[b]` and one either side, the one of least
+/// `J = sum over planes of w * AC squared error + lambda * AC bits` (RDOQ against `rate`; v3's
+/// decision weights 3, 1/2, 3/4, 1; `lambda` the tile's: `p.lambda` times the mean squared rule
+/// step). The DC is left to the guard: its cost hardly depends on the step.
+fn rd_steps(m: &[[f64; 8]; 8], s: &Source, t: u32, qi: &[usize], rate: &[f64], p: &LmbxParams) -> Vec<usize> {
+    let h = &s.header;
+    let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+    let lam = p.lambda * qi.iter().map(|&i| f64::from(QT[i]).powi(2)).sum::<f64>() / qi.len() as f64;
+    let planes: Vec<(&Plane, i32, bool, f64)> = PLANES
+        .into_iter()
+        .take(h.planes() as usize)
+        .map(|k| match k {
+            PlaneKind::Y => (&s.y, 512, false, 3.0),
+            PlaneKind::Co => (&s.co, 0, true, 0.5),
+            PlaneKind::Cg => (&s.cg, 0, true, 0.75),
+            PlaneKind::A => (s.a.as_ref().unwrap_or(&s.y), 512, false, 1.0),
+        })
+        .collect();
+    let dm = f64::from(dxvkit_plus_core::lmbx::DEQUANT_MAX);
+    (0..TB * TB)
+        .map(|b| {
+            let (x0, y0) = (tx * TILE + (b % TB) * 8, ty * TILE + (b / TB) * 8);
+            let rule = qi[b as usize];
+            let coefs: Vec<([f64; 64], bool, f64)> = planes.iter().map(|&(pl, shift, chroma, w)| (fdct(m, &pl.block(x0, y0, shift)), chroma, w)).collect();
+            let mut opts = [rule.saturating_sub(1), rule, (rule + 1).min(QT.len() - 1)].to_vec();
+            opts.dedup();
+            opts.into_iter()
+                .map(|qx| {
+                    let j: f64 = coefs
+                        .iter()
+                        .map(|(c, chroma, w)| {
+                            let ql = u32::from(QT[qx]);
+                            let q = if *chroma { h.chroma_q(ql) } else { ql };
+                            let lev = quant_block(c, q, rate, p.lambda * f64::from(q) * f64::from(q), p, true);
+                            let se: f64 = (1..64).map(|k| (c[ZIGZAG[k] as usize] - (f64::from(lev[k]) * f64::from(q)).clamp(-dm, dm)).powi(2)).sum();
+                            let last = lev.iter().skip(1).rposition(|&v| v != 0).map_or(0, |l| l + 1);
+                            let bits: f64 = (1..=last).map(|k| rate[(lev[k] + LEVEL_OFFSET) as usize]).sum::<f64>() + rate[EOB as usize];
+                            w * se + lam * bits
+                        })
+                        .sum();
+                    (j, qx)
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map_or(rule, |b| b.1)
+        })
+        .collect()
+}
+
+/// Every DCT tile's steps for this pass ([`rd_steps`], then the colour guard), tile-parallel.
+fn all_rd_steps(m: &[[f64; 8]; 8], s: &Source, qidx: &[Vec<usize>], few: &[bool], rate: &[f64], p: &LmbxParams) -> Vec<Vec<usize>> {
+    let nt = s.header.tile_count();
+    let threads = p.threads.clamp(1, 64) as u32;
+    let per = nt.div_ceil(threads).max(1);
+    std::thread::scope(|sc| {
+        let handles: Vec<_> = (0..nt)
+            .step_by(per as usize)
+            .map(|start| {
+                sc.spawn(move || {
+                    (start..(start + per).min(nt))
+                        .map(|t| {
+                            let qi = &qidx[t as usize];
+                            if few[t as usize] {
+                                return qi.clone();
+                            }
+                            let rd = rd_steps(m, s, t, qi, rate, p);
+                            match p.colour_tol {
+                                Some(tol) => dc_guard(s, t, rd, tol),
+                                None => rd,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    })
+}
+
 /// Normalise a histogram to frequencies adding up to [`PROB_SCALE`], every present symbol >= 1
 /// (B1d `normalize`).
 pub(crate) fn normalize(hist: &[u64]) -> Vec<u16> {
@@ -640,15 +746,22 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
     // Bootstrap (deadzone only) -> rate model -> RDOQ passes.
     let mut rate = vec![0f64; COEF_SYMBOLS];
     let (mut syms, mut sse) = all_symbols(&m, &s, &qidx, &rate, p, false);
+    // Rate-distortion steps (v3 4:4:4): re-chosen on every RDO pass against that pass's rate model.
+    let rd = v3 && p.rd_steps && p.chroma == Chroma::Full444;
+    let few: Vec<bool> = if rd { (0..h.tile_count()).map(|t| few_colours(&s, t)).collect() } else { Vec::new() };
+    let mut qcur = qidx.clone();
     for _ in 0..p.rdo_passes {
         let f = normalize(&histogram(&syms));
         for (r, &v) in rate.iter_mut().zip(&f) {
             *r = -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2();
         }
-        (syms, sse) = all_symbols(&m, &s, &qidx, &rate, p, true);
+        if rd {
+            qcur = all_rd_steps(&m, &s, &qidx, &few, &rate, p);
+        }
+        (syms, sse) = all_symbols(&m, &s, &qcur, &rate, p, true);
     }
     if v3 {
-        return crate::v3::encode_v3(rgba, width, height, p, &s, &qidx, &syms, &sse);
+        return crate::v3::encode_v3(rgba, width, height, p, &s, &qcur, &syms, &sse);
     }
     // v1: DCT tiles only.
     let coef_f = normalize(&histogram(&syms));
@@ -687,7 +800,12 @@ pub fn encode_frame_to_size(rgba: &[u8], width: u32, height: u32, p: &LmbxParams
     if size(&best.0) > budget {
         return Ok(best);
     }
-    while hi - lo > 0.25 {
+    // With rate-distortion steps (0.7.1), past 0.25 apart while the best frame is more than 3%
+    // under the budget, to 1/64: the step rule's walls (a quality where many blocks' steps jump
+    // together, e.g. every smooth block's from 3 to 4 at 21.875) can leave the 0.25 bracket far
+    // under the budget (W11: glow 640 KB of 753 KB). Off: 0.7.0's search.
+    let refine = |hi: f64, lo: f64, best: &[u8]| p.rd_steps && hi - lo > 1.0 / 64.0 && size(best) * 100 < budget * 97;
+    while hi - lo > 0.25 || refine(hi, lo, &best.0) {
         let mid = (lo + hi) / 2.0;
         let f = at(mid)?;
         if size(&f) <= budget {
@@ -938,6 +1056,41 @@ mod tests {
                         assert!(e > 3.0, "{chroma:?}: without the guard the DC lattice shows ({e:.2})");
                     }
                 }
+            }
+        }
+    }
+
+    /// Rate-distortion steps (0.7.1): plain v3 that decodes; a different step map from the rule's;
+    /// the same frame at any thread count; 4:2:2 and graphics (tiles of at most 64 colours) are
+    /// 0.7.0's frames byte for byte.
+    #[test]
+    fn rd_steps_write_v3() {
+        let (w, h) = (200u32, 136u32);
+        for alpha in [false, true] {
+            let src = dxvkit_plus_core::testpattern::plasma(3, w, h, alpha);
+            let p = LmbxParams { quality: 12.0, ..Default::default() };
+            assert!(p.rd_steps, "on by default");
+            let (on, off) = (encode_frame(&src, w, h, &p).unwrap(), encode_frame(&src, w, h, &LmbxParams { rd_steps: false, ..p }).unwrap());
+            assert_eq!(Frame::parse(&on, w, h).unwrap().header.version, dxvkit_plus_core::lmbx::VERSION_3);
+            assert_ne!(on, off, "alpha {alpha}: no step changed");
+            for threads in [1, 3, 64] {
+                assert_eq!(encode_frame(&src, w, h, &LmbxParams { threads, ..p }).unwrap(), on, "alpha {alpha}: {threads} threads");
+            }
+            let (pon, poff) = (psnr(&src, &decode_rgba8(&on, w, h, true).unwrap()), psnr(&src, &decode_rgba8(&off, w, h, true).unwrap()));
+            assert!(pon > 35.0 && pon > poff - 1.0, "alpha {alpha}: on {pon:.2} dB ({} B), off {poff:.2} dB ({} B)", on.len(), off.len());
+            let p422 = LmbxParams { chroma: Chroma::Halo422, ..p };
+            assert_eq!(encode_frame(&src, w, h, &p422).unwrap(), encode_frame(&src, w, h, &LmbxParams { rd_steps: false, ..p422 }).unwrap());
+        }
+        let (w, h) = (333u32, 185u32);
+        for alpha in [false, true] {
+            let src = dxvkit_plus_core::testpattern::graphics(1, w, h, alpha);
+            for quality in [1.0, 16.0] {
+                let p = LmbxParams { quality, ..Default::default() };
+                assert_eq!(
+                    encode_frame(&src, w, h, &p).unwrap(),
+                    encode_frame(&src, w, h, &LmbxParams { rd_steps: false, ..p }).unwrap(),
+                    "alpha {alpha} q {quality}"
+                );
             }
         }
     }

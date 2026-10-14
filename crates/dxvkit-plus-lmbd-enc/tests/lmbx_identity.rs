@@ -3,7 +3,7 @@
 //! pinned by the sidecar's `reencoded_sha256`. The committed vectors are the 0.5.0 / 0.6.0
 //! encoders' output and stay as they are (decoder conformance); 0.6.1's encoder (W6b: the exact
 //! forward YCoCg-R and the colour guard) writes different, colour-accurate files from the same
-//! patterns.
+//! patterns, and 0.7.1's (W11: rate-distortion steps) different 4:4:4 natural-content files.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use dxvkit_plus_core::lmbd::{ChunkData, Compressor, Header, Writer, frame_payload};

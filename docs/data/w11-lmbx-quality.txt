@@ -1,0 +1,76 @@
+# W11: LMBX rate-distortion steps (0.7.1, encoder only, writes v3) — Mac Studio 2026-10-14; machine shared (load 8-37).
+# References re-created bit for bit as W9/W10 (ShroomiesKingdom_05 f150 crops, _31 f150 glow, lmbx_quality synth, w10_lab gfx).
+# Arms: rule = --rd-steps off = the 0.7.0 encoder; base = 0.7.1 defaults (RD steps on). Budgets = LMB7's bytes - 60.
+# colour = worst flat-region mean error in code values (guard tolerance 1.0).
+
+## A. ab (examples/lmbx_quality.rs fit: log-scale bisection, best probe <= budget). Every row equals W10's
+##    docs/data/w10-lmbx-quality.txt row: rule == W10 'base', base == W10 'ts+rdq8+max8' (the control arm), bytes and dB.
+gfx_a1        rule                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx_a1        base                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          rule                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+gfx1          base                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+detail        rule                     budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.15s
+detail        base                     budget  159416 bytes  154516 q   75.41 RGB  21.373 shown  21.373 A     inf colour  0.00 enc   1.20s
+realdetail    rule                     budget  374461 bytes  350801 q   15.82 RGB  48.125 shown  54.848 A  49.495 colour  0.00 enc   3.50s
+realdetail    base                     budget  374461 bytes  353398 q   15.82 RGB  48.798 shown  55.530 A  50.372 colour  0.00 enc   3.75s
+shroom_alpha  rule                     budget  354434 bytes  328812 q   15.82 RGB  48.745 shown  55.291 A  50.278 colour  0.00 enc   3.47s
+shroom_alpha  base                     budget  354434 bytes  328712 q   15.82 RGB  49.293 shown  55.723 A  50.865 colour  0.00 enc   3.62s
+alpha         rule                     budget  395833 bytes  350916 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   2.62s
+alpha         base                     budget  395833 bytes  348284 q   11.01 RGB  49.296 shown  50.790 A  77.954 colour  0.00 enc   2.73s
+film_grain    rule                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.12s
+film_grain    base                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.12s
+shroom_glow   rule                     budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc   4.86s
+shroom_glow   base                     budget  752754 bytes  640071 q   21.89 RGB  42.621 shown  42.621 A     inf colour  0.01 enc   5.29s
+22:26  up 32 days,  4:46, 8 users, load averages: 7.30 6.19 4.87
+
+## B. ladder (best frame <= budget over q = 0.6..1.7 x the fit's, x1.03 apart). Equals W10's ladder rows exactly.
+realdetail    rule                     budget  374461 bytes  352636 q   15.69 RGB  48.197 shown  54.989 A  49.641 colour  0.00 (best of the scan)
+realdetail    base                     budget  374461 bytes  354784 q   15.69 RGB  48.834 shown  55.563 A  50.411 colour  0.00 (best of the scan)
+shroom_alpha  rule                     budget  354434 bytes  330231 q   15.69 RGB  48.797 shown  55.344 A  50.333 colour  0.00 (best of the scan)
+shroom_alpha  base                     budget  354434 bytes  329800 q   15.69 RGB  49.337 shown  55.767 A  50.900 colour  0.00 (best of the scan)
+shroom_glow   rule                     budget  752754 bytes  747915 q   21.54 RGB  42.906 shown  42.906 A     inf colour  0.01 (best of the scan)
+shroom_glow   base                     budget  752754 bytes  751691 q   21.71 RGB  43.321 shown  43.321 A     inf colour  0.01 (best of the scan)
+alpha         rule                     budget  395833 bytes  350916 q    9.42 RGB  49.350 shown  50.845 A  77.954 colour  0.00 (best of the scan)
+alpha         base                     budget  395833 bytes  348284 q    9.42 RGB  49.296 shown  50.790 A  77.954 colour  0.00 (best of the scan)
+22:42  up 32 days,  5:02, 8 users, load averages: 19.96 37.17 30.43
+
+## C. the shipped rate control (dxvkit-plus encode-lmbd --frame-bytes <budget>, one-PNG folder; PSNR by dxvkit-plus compare).
+##    shown = premultiplied RGB. on == off byte-identical where stated.
+gfx_a1        off  budget 5144 bytes 4444 RGB inf shown inf A inf
+gfx_a1        on   budget 5144 bytes 4444 RGB inf shown inf A inf
+gfx_a1: on == off byte-identical
+gfx1          off  budget 5747 bytes 5223 RGB inf shown inf A inf
+gfx1          on   budget 5747 bytes 5223 RGB inf shown inf A inf
+gfx1: on == off byte-identical
+detail        off  budget 159416 bytes 159416 RGB 20.9969 shown 20.9969 A inf
+detail        on   budget 159416 bytes 157920 RGB 21.6032 shown 21.6032 A inf
+realdetail    off  budget 374461 bytes 351333 RGB 48.1359 shown 54.8589 A 49.507
+realdetail    on   budget 374461 bytes 355375 RGB 48.8538 shown 55.578 A 50.428
+shroom_alpha  off  budget 354434 bytes 329668 RGB 48.7719 shown 55.321 A 50.3144
+shroom_alpha  on   budget 354434 bytes 330402 RGB 49.3542 shown 55.7866 A 50.9152
+alpha         off  budget 395833 bytes 350916 RGB 49.3502 shown 50.8455 A 77.9535
+alpha         on   budget 395833 bytes 348284 RGB 49.296 shown 50.7897 A 77.9535
+film_grain    off  budget 384074 bytes 364242 RGB 53.3 shown 53.3 A inf
+film_grain    on   budget 384074 bytes 364242 RGB 53.3 shown 53.3 A inf
+film_grain: on == off byte-identical
+shroom_glow   off  budget 752754 bytes 752428 RGB 42.9949 shown 42.9949 A inf
+shroom_glow   on   budget 752754 bytes 751310 RGB 43.3142 shown 43.3142 A inf
+
+## D. encode time per 1080p frame (encode-lmbd --quality 16 --threads 12, wall incl. PNG load; 11 runs, median; two rounds)
+22:43  up 32 days,  5:03, 8 users, load averages: 16.43 30.95 28.69
+realdetail off median 0.35 s; runs: 0.35 0.36 0.33 0.35 0.36 0.43 0.63 0.37 0.34 0.35 0.33
+realdetail on median 0.36 s; runs: 0.37 0.37 0.35 0.35 0.36 0.36 0.35 0.36 0.37 0.37 0.38
+realdetail off median 0.34 s; runs: 0.34 0.35 0.35 0.37 0.35 0.33 0.36 0.37 0.33 0.34 0.34
+realdetail on median 0.36 s; runs: 0.38 0.38 0.39 0.36 0.38 0.35 0.38 0.38 0.34 0.36 0.36
+shroom_glow off median 0.46 s; runs: 0.47 0.45 0.49 0.47 0.44 0.46 0.46 0.46 0.46 0.45 0.5
+shroom_glow on median 0.51 s; runs: 0.54 0.51 0.53 0.54 0.5 0.59 0.54 0.53 0.5 0.49 0.5
+shroom_glow off median 0.48 s; runs: 0.46 0.53 0.57 0.51 0.48 0.47 0.53 0.47 0.53 0.46 0.48
+shroom_glow on median 0.64 s; runs: 0.52 0.54 0.83 0.98 1.16 0.9 0.69 0.64 0.61 0.55 0.64
+22:44  up 32 days,  5:04, 8 users, load averages: 16.45 28.76 27.99
+
+## E. 0.7.0 decoder check: files written by 0.7.1 (glow _31 f100-129 at --frame-bytes 752754; _05 4K f150-157 q16; _31 f100-107 q8),
+##    every frame decoded by the v0.7.0 tag's CLI on the CPU and on the GPU and by 0.7.1's CPU decoder: PNGs compared.
+frames identical (0.7.0 CPU == 0.7.0 GPU == 0.7.1 CPU): 46, differing: 0
+glow _31 f100-129 at 752754 B/frame: 0.7.1 file == W10 control-arm file (w10-explore --tsizes rd8), byte-identical: 22558992 B each
+  (so 0.7.1's extra rate-control refinement never fired on these 30 frames)
+glow _31 f150 at 752754: --rd-steps off file == v0.7.0 CLI file, byte-identical (752481 B)

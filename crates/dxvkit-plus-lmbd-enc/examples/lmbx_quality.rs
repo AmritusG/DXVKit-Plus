@@ -5,8 +5,9 @@
 //! ```text
 //! lmbx_quality synth <dir>                                  # alpha / film_grain / detail PNGs
 //! lmbx_quality crop <in.png> <out.png> <w> <h>              # centre crop
-//! lmbx_quality ab <name> <ref.png> <budget> <arm>...        # arms: base, 422, noapal, exact
+//! lmbx_quality ab <name> <ref.png> <budget> <arm>...        # arms: base, 422, noapal, exact, rule
 //! lmbx_quality match <name> <ref.png> rgb|shown <dB> <arm>... # bytes to reach a PSNR
+//! lmbx_quality ladder <name> <ref.png> <budget> <arm>...    # PSNR at the budget from a quality ladder
 //! ```
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
 
@@ -229,6 +230,44 @@ fn match_(name: &str, rp: &str, metric: &str, target: f64, arms: &[String]) {
     }
 }
 
+/// `ladder <name> <ref.png> <budget> <arm>...`: the best frame at or under `budget` stored bytes
+/// over a fine quality scan — base quantisers from 0.6x to 1.7x the `fit` one, x1.03 apart — by
+/// shown PSNR (= RGB without alpha): "at LMB7's bytes" without rate control's granularity (the
+/// per-block step choice jumps at some qualities, so `fit`'s bisection can land well under the
+/// budget, and the size is not monotonic in the quality). W10.
+fn ladder(name: &str, rp: &str, budget: usize, arms: &[String]) {
+    let (w, h, r) = source::load_image(std::path::Path::new(rp)).unwrap();
+    let header = dxvkit_plus_core::lmbd::Header::new_lmbx(w, h, 30, 1);
+    for a in arms {
+        let p = arm(a);
+        let (_, q0) = fit(&r, w, h, &p, budget);
+        let mut best: Option<(f64, usize, Score, f64)> = None;
+        let mut q = (q0 * 0.6).max(1.0);
+        while q <= (q0 * 1.7).min(600.0) {
+            let blob = dxvkit_plus_lmbd_enc::lmbx::encode_frame(&r, w, h, &LmbxParams { quality: q, ..p }).unwrap();
+            let bytes = frame_payload(&header, &blob, p.zstd).unwrap().len();
+            if bytes <= budget {
+                let d = dxvkit_plus_core::lmbx::decode_rgba8(&blob, w, h, true).unwrap();
+                let sc = score(&r, &d);
+                if best.as_ref().is_none_or(|b| sc.shown > b.2.shown) {
+                    best = Some((q, bytes, sc, colour_err(&r, &d, w, h)));
+                }
+            }
+            if q0 <= 1.0 {
+                break;
+            }
+            q *= 1.03;
+        }
+        match best {
+            Some((q, bytes, sc, col)) => println!(
+                "{name:13} {a:24} budget {budget:7} bytes {bytes:7} q {q:7.2} RGB {:7.3} shown {:7.3} A {:7.3} colour {col:5.2} (best of the scan)",
+                sc.rgb, sc.shown, sc.a
+            ),
+            None => println!("{name:13} {a:24} budget {budget:7} nothing fits"),
+        }
+    }
+}
+
 /// An arm: `base` (the defaults, Zstandard 19) and modifiers joined by `+`.
 fn arm(spec: &str) -> LmbxParams {
     let mut p = LmbxParams { zstd: Some(19), threads: 12, ..LmbxParams::default() };
@@ -238,6 +277,8 @@ fn arm(spec: &str) -> LmbxParams {
             "422" => p.chroma = dxvkit_plus_core::lmbx::Chroma::Halo422,
             "noapal" => p.alpha_palette = false,
             "exact" => p.palette_lossy = false,
+            // 0.7.0's step rule (no rate-distortion steps).
+            "rule" => p.rd_steps = false,
             l if l.starts_with("q=") => p.quality = l[2..].parse().unwrap(),
             other => panic!("unknown arm modifier {other}"),
         }
@@ -252,6 +293,7 @@ fn main() {
         "crop" => crop(&a[2], &a[3], a[4].parse().unwrap(), a[5].parse().unwrap()),
         "ab" => ab(&a[2], &a[3], a[4].parse().unwrap(), &a[5..]),
         "match" => match_(&a[2], &a[3], &a[4], a[5].parse().unwrap(), &a[6..]),
+        "ladder" => ladder(&a[2], &a[3], a[4].parse().unwrap(), &a[5..]),
         other => panic!("unknown command {other}"),
     }
 }
