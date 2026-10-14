@@ -175,6 +175,26 @@ fn planes(s: &Source) -> Vec<(&Plane, i32, bool, f64)> {
         .collect()
 }
 
+/// Whether tile `t` has at most 64 distinct colours (an exact v3 palette can code it).
+pub(crate) fn few_colours(s: &Source, t: u32) -> bool {
+    let h = &s.header;
+    let (tx, ty) = (t % h.tiles_x(), t / h.tiles_x());
+    let mut seen: Vec<[i32; 4]> = Vec::with_capacity(65);
+    for y in 0..TILE {
+        for x in 0..TILE {
+            let i = ((ty * TILE + y) * s.y.w + tx * TILE + x) as usize;
+            let c = [s.y.v[i], s.co.v[i], s.cg.v[i], s.a.as_ref().map_or(0, |a| a.v[i])];
+            if !seen.contains(&c) {
+                if seen.len() == dxvkit_plus_core::lmbx::PAL3_MAX {
+                    return false;
+                }
+                seen.push(c);
+            }
+        }
+    }
+    true
+}
+
 /// The quantiser index of an `n x n` region of tile `t` at 8x8 position (`bx`, `by`): by the 8x8
 /// rule (`pick_qidx`) on its AC energy per 8x8 area, or (`region_q_min`) the finest of its 8x8
 /// blocks' indices.

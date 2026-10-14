@@ -1,0 +1,54 @@
+# W10 eye clips (1080p, 60 frames, ProRes 4444 XQ with alpha, in _eye/). Every LMBX arm rate-controlled (encode-lmbd --frame-bytes)
+# to LMB7's bytes per frame - 60; LMB7 = encode-lmbd defaults. realdetail = ShroomiesKingdom_05 f150-209, 1920x1080 crop at (768,256)
+# (W9's); glow = ShroomiesKingdom_31 f100-159. lmbx w10 = --tsizes rd (adaptive transform sizes + RD steps). CPU (normative) decode.
+# PSNR / SSIM: dxvkit-plus compare on frames 0, 15, 30, 45, 59. Encode wall time at 12 threads (machine loaded):
+## realdetail LMB7 397154 B/frame, LMBX budget 397094
+real 458.84
+real 493.85
+## glow LMB7 723579 B/frame, LMBX budget 723519
+real 403.78
+real 669.07
+
+realdetail LMBX encode: 380736 B/frame
+realdetail LMBX encode: 381398 B/frame
+realdetail lmb7 f0  bytes  374521 RGB  46.462 premult  52.300 A 44.2966 SSIM 0.997233
+realdetail lmb7 f15 bytes  421978 RGB  46.450 premult  51.564 A 44.3426 SSIM 0.996962
+realdetail lmb7 f30 bytes  445441 RGB  45.882 premult  50.666 A 43.8286 SSIM 0.996754
+realdetail lmb7 f45 bytes  370474 RGB  45.221 premult  50.146 A 43.4236 SSIM 0.996889
+realdetail lmb7 f59 bytes  325037 RGB  45.169 premult  50.583 A 43.3047 SSIM 0.996876
+realdetail 070  f0  bytes  351333 RGB  48.136 premult  54.859 A 49.507 SSIM 0.997487
+realdetail 070  f15 bytes  396149 RGB  48.056 premult  54.102 A 49.7252 SSIM 0.997239
+realdetail 070  f30 bytes  396316 RGB  46.567 premult  52.271 A 47.8908 SSIM 0.996641
+realdetail 070  f45 bytes  381937 RGB  47.382 premult  53.175 A 48.7141 SSIM 0.997484
+realdetail 070  f59 bytes  344424 RGB  47.576 premult  54.036 A 48.8718 SSIM 0.997637
+realdetail w10  f0  bytes  351140 RGB  48.831 premult  55.547 A 50.4298 SSIM 0.997384
+realdetail w10  f15 bytes  393243 RGB  48.598 premult  54.370 A 50.1913 SSIM 0.997114
+realdetail w10  f30 bytes  395646 RGB  47.259 premult  52.858 A 48.8949 SSIM 0.9965
+realdetail w10  f45 bytes  382458 RGB  48.115 premult  53.868 A 49.7452 SSIM 0.997364
+realdetail w10  f59 bytes  348420 RGB  48.338 premult  54.951 A 50.0911 SSIM 0.997474
+glow LMBX encode: 667391 B/frame
+glow LMBX encode: 666305 B/frame
+glow       lmb7 f0  bytes  684924 RGB  41.369 premult  41.297 A 52.2059 SSIM 0.98662
+glow       lmb7 f15 bytes  708132 RGB  41.278 premult  41.227 A 52.8022 SSIM 0.985673
+glow       lmb7 f30 bytes  716210 RGB  41.589 premult  41.537 A 52.5893 SSIM 0.984565
+glow       lmb7 f45 bytes  746087 RGB  41.463 premult  41.430 A 54.1941 SSIM 0.982982
+glow       lmb7 f59 bytes  753697 RGB  41.369 premult  41.337 A 53.525 SSIM 0.982682
+glow       070  f0  bytes  722720 RGB  43.639 premult  43.639 A inf SSIM 0.991113
+glow       070  f15 bytes  723090 RGB  43.300 premult  43.300 A inf SSIM 0.99025
+glow       070  f30 bytes  598545 RGB  42.386 premult  42.386 A inf SSIM 0.985336
+glow       070  f45 bytes  616612 RGB  42.159 premult  42.159 A inf SSIM 0.983978
+glow       070  f59 bytes  624494 RGB  42.122 premult  42.122 A inf SSIM 0.983767
+glow       w10  f0  bytes  722307 RGB  44.100 premult  44.100 A inf SSIM 0.991284
+glow       w10  f15 bytes  723477 RGB  43.796 premult  43.796 A inf SSIM 0.990454
+glow       w10  f30 bytes  609621 RGB  42.898 premult  42.898 A inf SSIM 0.98673
+glow       w10  f45 bytes  628675 RGB  42.688 premult  42.688 A inf SSIM 0.985561
+glow       w10  f59 bytes  633490 RGB  42.625 premult  42.625 A inf SSIM 0.985263
+
+-rw-r--r--   1 amritrosell  staff  243706239 Oct 14 09:38 LMBX eye test w10 - glow - lmb7.mov
+-rw-r--r--   1 amritrosell  staff  131433726 Oct 14 09:38 LMBX eye test w10 - glow - lmbx 0.7.0.mov
+-rw-r--r--   1 amritrosell  staff  138238294 Oct 14 09:39 LMBX eye test w10 - glow - lmbx w10.mov
+-rw-r--r--   1 amritrosell  staff  202727036 Oct 14 09:39 LMBX eye test w10 - glow - source.mov
+-rw-r--r--   1 amritrosell  staff  117235289 Oct 14 09:19 LMBX eye test w10 - realdetail - lmb7.mov
+-rw-r--r--   1 amritrosell  staff  111574080 Oct 14 09:20 LMBX eye test w10 - realdetail - lmbx 0.7.0.mov
+-rw-r--r--   1 amritrosell  staff  114886175 Oct 14 09:20 LMBX eye test w10 - realdetail - lmbx w10.mov
+-rw-r--r--   1 amritrosell  staff  121178209 Oct 14 09:20 LMBX eye test w10 - realdetail - source.mov

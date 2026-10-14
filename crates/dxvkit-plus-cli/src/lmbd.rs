@@ -133,10 +133,23 @@ fn encode_lmbx(args: &Args) -> Result<(), String> {
         Some("off") => None,
         Some(v) => Some(v.parse::<f64>().ok().filter(|t| t.is_finite() && *t > 0.0).ok_or_else(|| format!("--colour-tol: a positive number or off, got {v}"))?),
     };
+    // W10 PROTOTYPE (writes LMBX bitstream v4, never frozen): adaptive transform sizes — `rule` with
+    // 0.7.0's step rule, `rd` with rate-distortion steps (W10's arm), `rd8` the steps alone (8x8, v3).
+    let (tsizes, rd_q, rd_q8, max_tsize) = match args.value("tsizes") {
+        None | Some("off") => (false, false, false, 32),
+        Some("rule") => (true, false, false, 32),
+        Some("rd") => (true, true, true, 32),
+        Some("rd8") => (true, false, true, 8),
+        Some(other) => return Err(format!("--tsizes: rule, rd, rd8 or off, got {other}")),
+    };
     let p = LmbxParams {
         chroma,
         quality,
         colour_tol,
+        tsizes,
+        rd_q,
+        rd_q8,
+        max_tsize,
         threads,
         zstd,
         flat: modes.contains(&"flat"),

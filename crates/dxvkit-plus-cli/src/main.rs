@@ -43,7 +43,8 @@ const USAGE: &str = "usage:
                           [--start F] [--frames N] [--quiet]
   dxvkit-plus encode-lmbd <source> <out.lmbd> --profile lmbx [--chroma 444|422halo]
                           [--quality Q | --frame-bytes N] [--modes dct|flat,palette,lossy]
-                          [--colour-tol T|off] [--compressor zstd|none] [--start F] [--frames N]
+                          [--colour-tol T|off] [--tsizes rule|rd|rd8] [--compressor zstd|none]
+                          [--start F] [--frames N]
                           [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:
@@ -248,6 +249,7 @@ fn main() -> ExitCode {
             "frame-bytes",
             "modes",
             "colour-tol",
+            "tsizes",
         ],
     );
     if let Some(a) = args.value("alpha-mode") {

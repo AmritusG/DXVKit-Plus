@@ -706,6 +706,13 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
                             (start..(start + per).min(nt))
                                 .map(|t| {
                                     let qi8 = &qidx[t as usize];
+                                    if crate::v4::few_colours(s, t) {
+                                        // Graphics: a tile an exact palette can code keeps 0.7.0's coding
+                                        // (large blocks at a fine step otherwise win J against the lossless
+                                        // palette and lose losslessness — measured, W10).
+                                        let (st, e) = crate::v4::tile_symbols(s, kit, t, qi8, 0, rate, p, true);
+                                        return (0, qi8.clone(), st, e);
+                                    }
                                     let (l, qi) = crate::v4::choose_layout(s, kit, t, qi8, rate, p);
                                     let qi = match p.colour_tol {
                                         Some(tol) => crate::v4::guard(s, t, qi, l, tol),

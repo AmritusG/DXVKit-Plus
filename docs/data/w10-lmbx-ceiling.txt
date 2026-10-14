@@ -1,0 +1,54 @@
+# W10 DIAGNOSE 2 — the honest B2 ceiling (crates/dxvkit-plus-lmbd-enc/examples/w10_lab.rs ceiling; Mac Studio, 2026-10-14).
+# W9's bsize estimate re-run closer to LMBX: all three YCoCg-R planes (4:4:4, chroma step 1.6x), zigzag + EOB symbols, one
+# coefficient table per frame (per-size: one per transform size), DC as a residual in the tile stream, the transform map
+# charged at its empirical entropy; per tile the Lagrangian best of the 17 layouts; deadzone 0.45, one step per frame.
+# PSNR = approximate RGB (LMBX's 3/0.5/0.75 plane weights). Gain = adaptive's PSNR at 8x8-only's bytes (log-linear).
+# W9's estimate (luma only, no signalling, per-size-and-band entropy): real detail +1.3..+1.8, glow +0.3..+0.7, grain +0.1 dB.
+realdetail.png step    3: 8x8 only    380291 B  53.37 dB | adaptive    344811 B (map   546 B)  53.49 dB | tiles 32: 1302, quadrants 16: 989, 8x8-quadrants: 1723
+realdetail.png step    6: 8x8 only    243032 B  48.21 dB | adaptive    211832 B (map   547 B)  48.38 dB | tiles 32: 1317, quadrants 16: 1077, 8x8-quadrants: 1575
+realdetail.png step   12: 8x8 only    137693 B  43.93 dB | adaptive    111413 B (map   514 B)  44.19 dB | tiles 32: 1364, quadrants 16: 1503, 8x8-quadrants: 961
+realdetail.png step   24: 8x8 only     75538 B  40.21 dB | adaptive     54973 B (map   367 B)  40.79 dB | tiles 32: 1543, quadrants 16: 1282, 8x8-quadrants: 466
+realdetail.png step   48: 8x8 only     40208 B  36.49 dB | adaptive     27102 B (map   293 B)  37.60 dB | tiles 32: 1614, quadrants 16: 1179, 8x8-quadrants: 285
+realdetail.png gain at equal bytes (per-size tables: false):   n/a, +1.61 dB at 243032 B, +1.64 dB at 137693 B, +2.11 dB at 75538 B, +2.90 dB at 40208 B
+realdetail.png step    3: 8x8 only    380291 B  53.37 dB | adaptive    339589 B (map   559 B)  53.47 dB | tiles 32: 1301, quadrants 16: 1144, 8x8-quadrants: 1572
+realdetail.png step    6: 8x8 only    243032 B  48.21 dB | adaptive    207383 B (map   560 B)  48.36 dB | tiles 32: 1310, quadrants 16: 1349, 8x8-quadrants: 1331
+realdetail.png step   12: 8x8 only    137693 B  43.93 dB | adaptive    109181 B (map   512 B)  44.19 dB | tiles 32: 1358, quadrants 16: 1593, 8x8-quadrants: 895
+realdetail.png step   24: 8x8 only     75538 B  40.21 dB | adaptive     54328 B (map   352 B)  40.80 dB | tiles 32: 1582, quadrants 16: 1120, 8x8-quadrants: 472
+realdetail.png step   48: 8x8 only     40208 B  36.49 dB | adaptive     26717 B (map   275 B)  37.61 dB | tiles 32: 1652, quadrants 16: 1047, 8x8-quadrants: 265
+realdetail.png gain at equal bytes (per-size tables: true):   n/a, +1.79 dB at 243032 B, +1.77 dB at 137693 B, +2.19 dB at 75538 B, +2.96 dB at 40208 B
+shroom_glow.png step    3: 8x8 only   1161143 B  47.48 dB | adaptive   1153988 B (map   591 B)  47.46 dB | tiles 32: 10, quadrants 16: 1149, 8x8-quadrants: 6731
+shroom_glow.png step    6: 8x8 only    626470 B  43.07 dB | adaptive    613668 B (map   916 B)  43.03 dB | tiles 32: 72, quadrants 16: 2552, 8x8-quadrants: 5080
+shroom_glow.png step   12: 8x8 only    313438 B  39.38 dB | adaptive    288749 B (map   857 B)  39.34 dB | tiles 32: 451, quadrants 16: 4099, 8x8-quadrants: 2017
+shroom_glow.png step   24: 8x8 only    156457 B  36.10 dB | adaptive    129817 B (map   553 B)  36.18 dB | tiles 32: 1086, quadrants 16: 2875, 8x8-quadrants: 701
+shroom_glow.png step   48: 8x8 only     77138 B  32.99 dB | adaptive     57892 B (map   366 B)  33.34 dB | tiles 32: 1394, quadrants 16: 2064, 8x8-quadrants: 280
+shroom_glow.png gain at equal bytes (per-size tables: false):   n/a, +0.10 dB at 626470 B, +0.36 dB at 313438 B, +0.82 dB at 156457 B, +1.36 dB at 77138 B
+shroom_glow.png step    3: 8x8 only   1161143 B  47.48 dB | adaptive   1147972 B (map   752 B)  47.43 dB | tiles 32: 41, quadrants 16: 1667, 8x8-quadrants: 6089
+shroom_glow.png step    6: 8x8 only    626470 B  43.07 dB | adaptive    604705 B (map   958 B)  42.99 dB | tiles 32: 266, quadrants 16: 2700, 8x8-quadrants: 4156
+shroom_glow.png step   12: 8x8 only    313438 B  39.38 dB | adaptive    284825 B (map   839 B)  39.34 dB | tiles 32: 676, quadrants 16: 3207, 8x8-quadrants: 2009
+shroom_glow.png step   24: 8x8 only    156457 B  36.10 dB | adaptive    128217 B (map   573 B)  36.20 dB | tiles 32: 1177, quadrants 16: 2345, 8x8-quadrants: 867
+shroom_glow.png step   48: 8x8 only     77138 B  32.99 dB | adaptive     57043 B (map   396 B)  33.35 dB | tiles 32: 1457, quadrants 16: 1660, 8x8-quadrants: 432
+shroom_glow.png gain at equal bytes (per-size tables: true):   n/a, +0.17 dB at 626470 B, +0.42 dB at 313438 B, +0.88 dB at 156457 B, +1.42 dB at 77138 B
+film_grain.png step    3: 8x8 only    243729 B  48.84 dB | adaptive    222450 B (map    27 B)  48.85 dB | tiles 32: 435, quadrants 16: 180, 8x8-quadrants: 0
+film_grain.png step    6: 8x8 only    174237 B  42.93 dB | adaptive    158312 B (map     3 B)  43.12 dB | tiles 32: 477, quadrants 16: 12, 8x8-quadrants: 0
+film_grain.png step   12: 8x8 only    113955 B  37.09 dB | adaptive     98874 B (map     5 B)  37.18 dB | tiles 32: 475, quadrants 16: 20, 8x8-quadrants: 0
+film_grain.png step   24: 8x8 only     56127 B  31.75 dB | adaptive     40838 B (map    -0 B)  31.82 dB | tiles 32: 480, quadrants 16: 0, 8x8-quadrants: 0
+film_grain.png step   48: 8x8 only      9756 B  29.74 dB | adaptive      4555 B (map   165 B)  29.95 dB | tiles 32: 197, quadrants 16: 880, 8x8-quadrants: 252
+film_grain.png gain at equal bytes (per-size tables: false):   n/a, +1.80 dB at 174237 B, +1.88 dB at 113955 B, +2.00 dB at 56127 B, +0.86 dB at 9756 B
+film_grain.png step    3: 8x8 only    243729 B  48.84 dB | adaptive    222474 B (map    36 B)  48.86 dB | tiles 32: 410, quadrants 16: 280, 8x8-quadrants: 0
+film_grain.png step    6: 8x8 only    174237 B  42.93 dB | adaptive    158381 B (map     9 B)  43.12 dB | tiles 32: 469, quadrants 16: 44, 8x8-quadrants: 0
+film_grain.png step   12: 8x8 only    113955 B  37.09 dB | adaptive     98937 B (map    14 B)  37.18 dB | tiles 32: 465, quadrants 16: 57, 8x8-quadrants: 3
+film_grain.png step   24: 8x8 only     56127 B  31.75 dB | adaptive     40838 B (map    -0 B)  31.82 dB | tiles 32: 480, quadrants 16: 0, 8x8-quadrants: 0
+film_grain.png step   48: 8x8 only      9756 B  29.74 dB | adaptive      3902 B (map   200 B)  29.93 dB | tiles 32: 138, quadrants 16: 937, 8x8-quadrants: 431
+film_grain.png gain at equal bytes (per-size tables: true):   n/a, +1.80 dB at 174237 B, +1.87 dB at 113955 B, +2.00 dB at 56127 B, +0.93 dB at 9756 B
+detail.png step    3: 8x8 only    925698 B  46.74 dB | adaptive    757829 B (map    25 B)  47.26 dB | tiles 32: 451, quadrants 16: 80, 8x8-quadrants: 36
+detail.png step    6: 8x8 only    753400 B  41.05 dB | adaptive    604385 B (map    18 B)  41.74 dB | tiles 32: 459, quadrants 16: 50, 8x8-quadrants: 34
+detail.png step   12: 8x8 only    585934 B  35.39 dB | adaptive    459056 B (map    15 B)  36.15 dB | tiles 32: 462, quadrants 16: 40, 8x8-quadrants: 32
+detail.png step   24: 8x8 only    437085 B  29.80 dB | adaptive    323994 B (map    15 B)  30.54 dB | tiles 32: 462, quadrants 16: 40, 8x8-quadrants: 32
+detail.png step   48: 8x8 only    298552 B  24.24 dB | adaptive    204662 B (map    15 B)  25.00 dB | tiles 32: 463, quadrants 16: 37, 8x8-quadrants: 31
+detail.png gain at equal bytes (per-size tables: false):   n/a, +6.07 dB at 753400 B, +5.72 dB at 585934 B, +5.56 dB at 437085 B, +5.31 dB at 298552 B
+detail.png step    3: 8x8 only    925698 B  46.74 dB | adaptive    735288 B (map   143 B)  47.28 dB | tiles 32: 283, quadrants 16: 518, 8x8-quadrants: 270
+detail.png step    6: 8x8 only    753400 B  41.05 dB | adaptive    586466 B (map   128 B)  41.75 dB | tiles 32: 288, quadrants 16: 592, 8x8-quadrants: 176
+detail.png step   12: 8x8 only    585934 B  35.39 dB | adaptive    453670 B (map    85 B)  36.15 dB | tiles 32: 368, quadrants 16: 347, 8x8-quadrants: 101
+detail.png step   24: 8x8 only    437085 B  29.80 dB | adaptive    321960 B (map    69 B)  30.54 dB | tiles 32: 387, quadrants 16: 302, 8x8-quadrants: 70
+detail.png step   48: 8x8 only    298552 B  24.24 dB | adaptive    204339 B (map    21 B)  25.01 dB | tiles 32: 457, quadrants 16: 56, 8x8-quadrants: 36
+detail.png gain at equal bytes (per-size tables: true):   n/a,   n/a, +6.34 dB at 585934 B, +5.75 dB at 437085 B, +5.38 dB at 298552 B
