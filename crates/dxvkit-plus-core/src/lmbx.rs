@@ -54,6 +54,93 @@ pub const PAL3_CTX: usize = 8;
 pub const ALPHA_SYMBOLS: usize = 256;
 /// v3 precision of the index and edge-alpha tables: their frequencies add up to `1 << IDX_BITS`.
 pub const IDX_BITS: u32 = 10;
+/// PROTOTYPE bitstream version 4 (W10 exploration, never frozen): v3 plus a transform map — DCT
+/// tiles may code 16x16 and 32x32 blocks ([`Frame::tmap`], [`idct_n`]).
+pub const VERSION_4: u16 = 4;
+/// v4 transform-map byte of a tile coded as one 32x32 block (else bit `q` set = quadrant `q`,
+/// raster, is one 16x16 block; clear = four 8x8 blocks).
+pub const TMAP_32: u8 = 16;
+/// `round(2048 cos(j pi / 64))`, `j = 0..=32`: every integer DCT basis entry (8, 16, 32 points)
+/// is one of these, signed ([`basis_entry`]). Normative (v4; the 8x8 entries are [`IDCT_MATRIX`]).
+pub const COS64: [i32; 33] = [
+    2048, 2046, 2038, 2026, 2009, 1987, 1960, 1928, 1892, 1851, 1806, 1757, 1703, 1645, 1583, 1517, 1448, 1375, 1299, 1220, 1138, 1053, 965, 876, 784, 690,
+    595, 498, 400, 301, 201, 100, 0,
+];
+
+/// The integer DCT-II basis of `n` points (8, 16, 32), frequency `k`, sample `i`: `1448` for
+/// `k = 0`, else `round(2048 cos((2i + 1) k pi / 2n))` from [`COS64`] by symmetry.
+pub fn basis_entry(n: u32, k: u32, i: u32) -> i32 {
+    if k == 0 {
+        return 1448;
+    }
+    let mut j = ((2 * i + 1) * k * (32 / n)) % 128;
+    if j > 64 {
+        j = 128 - j;
+    }
+    if j > 32 { -COS64[(64 - j) as usize] } else { COS64[j as usize] }
+}
+
+/// v4: the dequantised-coefficient bound of an `n x n` block (`4095 n / 8`: the DC of a full-range
+/// chroma block, `n * 255`, fits).
+pub fn dequant_max(n: u32) -> i32 {
+    DEQUANT_MAX * (n / 8) as i32
+}
+
+/// The zigzag scan of an `n x n` block (JPEG's, generalised; [`ZIGZAG`] for 8): raster position
+/// (`row * n + column`) of each scan position. Anti-diagonal `d = row + column` in turn; odd `d`
+/// with the row increasing, even `d` decreasing.
+pub fn zigzag_n(n: u32) -> Vec<u16> {
+    let mut z = Vec::with_capacity((n * n) as usize);
+    for d in 0..2 * n - 1 {
+        let rows = d.saturating_sub(n - 1)..=d.min(n - 1);
+        if d % 2 == 1 {
+            z.extend(rows.map(|r| (r * n + d - r) as u16));
+        } else {
+            z.extend(rows.rev().map(|r| (r * n + d - r) as u16));
+        }
+    }
+    z
+}
+
+fn zigzags() -> &'static [Vec<u16>; 3] {
+    static Z: std::sync::OnceLock<[Vec<u16>; 3]> = std::sync::OnceLock::new();
+    Z.get_or_init(|| [zigzag_n(8), zigzag_n(16), zigzag_n(32)])
+}
+
+fn bases() -> &'static [Vec<i32>; 3] {
+    static B: std::sync::OnceLock<[Vec<i32>; 3]> = std::sync::OnceLock::new();
+    B.get_or_init(|| [8u32, 16, 32].map(|n| (0..n * n).map(|x| basis_entry(n, x / n, x % n)).collect()))
+}
+
+/// Size index of an `n`-point block: 0 (8), 1 (16), 2 (32).
+fn size_index(n: u32) -> usize {
+    match n {
+        8 => 0,
+        16 => 1,
+        _ => 2,
+    }
+}
+
+/// v4: the blocks of a tile with transform-map byte `tm`, in stream order — the raster of the
+/// tile's sixteen 8x8 positions, each block at its top-left one: `(x8, y8, n)` (`tm = 0`: v3's
+/// sixteen 8x8 blocks in raster).
+pub fn tile_blocks(tm: u8) -> Vec<(u32, u32, u32)> {
+    if tm == TMAP_32 {
+        return vec![(0, 0, 32)];
+    }
+    let mut v = Vec::with_capacity(16);
+    for by in 0..TB {
+        for bx in 0..TB {
+            let q = (by / 2) * 2 + bx / 2;
+            if tm & (1 << q) == 0 {
+                v.push((bx, by, 8));
+            } else if bx % 2 == 0 && by % 2 == 0 {
+                v.push((bx, by, 16));
+            }
+        }
+    }
+    v
+}
 
 /// How a tile is coded (v2, v3; every v1 tile is [`TileMode::Dct`]). `#[repr(u32)]` = the byte in
 /// the v2 tile mode map, the low nibble of the v3 one.
@@ -281,7 +368,7 @@ impl FreqTable {
 /// The fixed frame header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct FrameHeader {
-    /// [`VERSION`] (1), [`VERSION_2`] or [`VERSION_3`].
+    /// [`VERSION`] (1), [`VERSION_2`], [`VERSION_3`] or the prototype [`VERSION_4`].
     pub version: u16,
     pub chroma: Chroma,
     /// An alpha plane is coded (otherwise alpha is 1).
@@ -355,6 +442,8 @@ pub struct Sections {
     /// v3: the eight index tables and the edge-alpha table (0 before v3).
     pub tables3: [usize; 9],
     pub modes: usize,
+    /// v4: the transform map, one byte per tile (0 before v4).
+    pub tmap: usize,
     /// The quantiser map: [`QMAP_BYTES`] per tile, tile-major; block `b` (raster in the tile's 4x4
     /// luma blocks) is the low nibble of byte `b / 2` for even `b`, the high nibble for odd.
     pub qmap: usize,
@@ -408,10 +497,11 @@ impl<'a> Frame<'a> {
             return Err(lmbx(format!("bad frame magic {magic:02X?}")));
         }
         let version = le16(b, 4).ok_or_else(short)?;
-        if version != u32::from(VERSION) && version != u32::from(VERSION_2) && version != u32::from(VERSION_3) {
-            return Err(MediaError::Unsupported(format!("LMBX frame version {version} (this decoder knows versions {VERSION} to {VERSION_3})")));
+        if version != u32::from(VERSION) && version != u32::from(VERSION_2) && version != u32::from(VERSION_3) && version != u32::from(VERSION_4) {
+            return Err(MediaError::Unsupported(format!("LMBX frame version {version} (this decoder knows versions {VERSION} to {VERSION_4})")));
         }
-        let v3 = version == u32::from(VERSION_3);
+        let v4 = version == u32::from(VERSION_4);
+        let v3 = version == u32::from(VERSION_3) || v4;
         let v2 = version == u32::from(VERSION_2) || v3;
         let chroma = match byte(b, 6).ok_or_else(short)? {
             0 => Chroma::Full444,
@@ -445,7 +535,7 @@ impl<'a> Frame<'a> {
         let coef_table = HEADER_BYTES;
         let (coef, after) = FreqTable::parse(b, coef_table, COEF_SYMBOLS)?;
         let single = || FreqTable::from_freq(vec![PROB_SCALE as u16]);
-        let (mut idx, mut edge, mut tables3) = (Vec::new(), single()?, [0usize; 9]);
+        let (mut idx, mut edge, mut tables3, mut tmap) = (Vec::new(), single()?, [0usize; 9], 0usize);
         let (palette, palette_table, modes, qmap) = if v3 {
             let mut at = after;
             for (k, slot) in tables3.iter_mut().enumerate() {
@@ -458,11 +548,25 @@ impl<'a> Frame<'a> {
                 }
                 at = n;
             }
-            let map = b.get(at..at + header.tile_count() as usize).ok_or_else(short)?;
+            let nt = header.tile_count() as usize;
+            let map = b.get(at..at + nt).ok_or_else(short)?;
             if let Some(i) = map.iter().position(|&x| TileMode::from_byte3(x, header.alpha).is_none()) {
                 return Err(lmbx(format!("tile {i} mode byte {}", map.get(i).copied().unwrap_or(0))));
             }
-            (single()?, after, at, at + header.tile_count() as usize)
+            if v4 {
+                // The transform map: 0..=15 or 32x32, non-zero only on DCT tiles, all zero in 4:2:2.
+                let tm = b.get(at + nt..at + 2 * nt).ok_or_else(short)?;
+                let bad = tm.iter().zip(map).position(|(&x, &m)| {
+                    x != 0 && ((x > 15 && x != TMAP_32) || m & 15 != TileMode::Dct as u8 || header.chroma == Chroma::Halo422)
+                });
+                if let Some(i) = bad {
+                    return Err(lmbx(format!("tile {i} transform byte {}", tm.get(i).copied().unwrap_or(0))));
+                }
+                tmap = at + nt;
+                (single()?, after, at, at + 2 * nt)
+            } else {
+                (single()?, after, at, at + nt)
+            }
         } else if v2 {
             let (palette, m) = FreqTable::parse(b, after, PALETTE_SYMBOLS)?;
             let map = b.get(m..m + header.tile_count() as usize).ok_or_else(short)?;
@@ -510,7 +614,7 @@ impl<'a> Frame<'a> {
             idx,
             edge,
             offsets,
-            sections: Sections { coef_table, palette_table, tables3, modes, qmap, directory, data },
+            sections: Sections { coef_table, palette_table, tables3, modes, tmap, qmap, directory, data },
             bytes: b,
         })
     }
@@ -533,6 +637,14 @@ impl<'a> Frame<'a> {
             return AlphaMode::Own;
         }
         self.bytes.get(self.sections.modes + t as usize).and_then(|&m| TileMode::from_byte3(m, self.header.alpha)).map_or(AlphaMode::Own, |m| m.1)
+    }
+
+    /// v4: tile `t`'s transform-map byte (0 = sixteen 8x8 blocks, before v4 always).
+    pub fn tmap(&self, t: u32) -> u8 {
+        if self.sections.tmap == 0 {
+            return 0;
+        }
+        self.bytes.get(self.sections.tmap + t as usize).copied().unwrap_or(0)
     }
 
     /// The quantiser index of luma block `b` (raster, `0..16`) of tile `t`.
@@ -608,6 +720,51 @@ pub fn idct(d: &[i32; 64], offset: i32, out: &mut [i32; 64]) {
     }
 }
 
+/// v4: integer inverse DCT of an `n x n` block (`n` = 8, 16, 32) of dequantised raster
+/// coefficients `d` (`n * n`) into quarter-unit samples `out` (`n * n`), plus `offset`. Normative.
+/// `n = 8` is [`idct`]. For 16 and 32, with the basis `M` of [`basis_entry`] (orthonormal times
+/// `2048 sqrt(n / 2)`):
+///
+/// ```text
+/// t[i][j]   = clamp((sum over k of M[k][i] * D[k][j] + 2^(s1-1)) >> s1, -T, T)
+/// out[i][j] = ((sum over l of t[i][l] * M[l][j] + 2^13) >> 14) + offset
+/// ```
+///
+/// with `s1 = 9, T = 65536` (16) and `s1 = 10, T = 32768` (32): `|D| <= 4095 n / 8` and the
+/// largest column sum of `|M|` (21269, 42139) keep both sums inside i32 (16: 1.75e8 and 1.40e9; 32:
+/// 6.9e8 and 1.39e9); the clamp on `t` only bites on coefficients no picture produces (a full-range
+/// block's `t` stays below `T / 2`).
+pub fn idct_n(n: u32, d: &[i32], offset: i32, out: &mut [i32]) {
+    if n == 8 {
+        if let (Ok(d8), Some(o8)) = (<&[i32; 64]>::try_from(d), out.first_chunk_mut::<64>()) {
+            idct(d8, offset, o8);
+        }
+        return;
+    }
+    let (s1, tmax) = if n == 16 { (9u32, 65536i32) } else { (10, 32768) };
+    let m = &bases()[size_index(n)];
+    let nu = n as usize;
+    let mut t = vec![0i32; nu * nu];
+    for i in 0..nu {
+        for j in 0..nu {
+            let mut s = 0i32;
+            for k in 0..nu {
+                s += m[k * nu + i] * d[k * nu + j];
+            }
+            t[i * nu + j] = ((s + (1 << (s1 - 1))) >> s1).clamp(-tmax, tmax);
+        }
+    }
+    for i in 0..nu {
+        for j in 0..nu {
+            let mut s = 0i32;
+            for l in 0..nu {
+                s += t[i * nu + l] * m[l * nu + j];
+            }
+            out[i * nu + j] = ((s + (1 << 13)) >> 14) + offset;
+        }
+    }
+}
+
 /// Decoded sample planes of one frame (quarter units), at the coded size.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Planes {
@@ -630,6 +787,31 @@ pub struct Planes {
 /// up to +-2040 (Y, A) or +-4080 (Co, Cg) — always fits a level of +-1023.
 pub fn dc_step(q: u32, chroma: bool) -> u32 {
     q.max(if chroma { 4 } else { 2 })
+}
+
+/// v4: the DC step of an `n x n` block: [`dc_step`] scaled with the DC's range (`n / 8`).
+pub fn dc_step_n(q: u32, chroma: bool, n: u32) -> u32 {
+    q.max(if chroma { 4 } else { 2 } * (n / 8))
+}
+
+/// v4: [`read_block`] of an `n x n` block: `n * n` coefficients in [`zigzag_n`] order, clamped to
+/// [`dequant_max`]; the DC predicted from `dc` (kept at 8x8 scale) times `n / 8`, and `dc` becomes
+/// the block's DC divided by `n / 8` (an arithmetic shift).
+fn read_block_n(r: &mut Rans<'_>, coef: &FreqTable, n: u32, q: i32, qdc: i32, dc: &mut i32, d: &mut [i32]) {
+    let s = size_index(n) as u32;
+    let lim = dequant_max(n);
+    d.fill(0);
+    let pred = *dc << s;
+    d[0] = pred;
+    for (k, &z) in zigzags()[size_index(n)].iter().enumerate() {
+        let sy = r.sym(coef);
+        if sy == EOB {
+            break;
+        }
+        let v = if k == 0 { pred + (i32::from(sy) - LEVEL_OFFSET) * qdc } else { (i32::from(sy) - LEVEL_OFFSET) * q };
+        d[z as usize] = v.clamp(-lim, lim);
+    }
+    *dc = d[0] >> s;
 }
 
 /// Read one block's coefficients and dequantise them with step `q` into raster order. The DC
@@ -685,7 +867,40 @@ pub enum PlaneKind {
 /// function of the stream's bytes, the quantiser map and the frame header and table. The plane must
 /// be coded (`A` only with alpha).
 pub fn visit_stream(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMut(u32, u32, &[i32; 64])) {
+    visit_stream_n(f, t, kind, |x0, y0, _n, d| {
+        if let Ok(d8) = <&[i32; 64]>::try_from(d) {
+            visit(x0, y0, d8);
+        }
+    });
+}
+
+/// [`visit_stream`] of any frame (v4: blocks of 8, 16 and 32, [`tile_blocks`]): `visit(x0, y0, n,
+/// coefficients)` with the block's `n * n` dequantised raster coefficients.
+pub fn visit_stream_n(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMut(u32, u32, u32, &[i32])) {
     let h = &f.header;
+    let tm = f.tmap(t);
+    if tm != 0 {
+        // v4 large blocks (4:4:4 only): every plane in the tile's layout; the step is the
+        // quantiser index of the block's top-left 8x8 position.
+        let k = match kind {
+            PlaneKind::Y => 0,
+            PlaneKind::Co => 1,
+            PlaneKind::Cg => 2,
+            PlaneKind::A => 3,
+        };
+        let tx = t % h.tiles_x().max(1);
+        let mut r = Rans::new(f.stream((t * h.planes() + k) as usize));
+        let chroma = matches!(kind, PlaneKind::Co | PlaneKind::Cg);
+        let (mut d, mut dc) = (vec![0i32; 1024], 0i32);
+        for (bx, by, n) in tile_blocks(tm) {
+            let ql = u32::from(h.qt[f.qidx(t, by * TB + bx)]);
+            let q = if chroma { h.chroma_q(ql) } else { ql };
+            let blk = &mut d[..(n * n) as usize];
+            read_block_n(&mut r, &f.coef, n, q as i32, dc_step_n(q, chroma, n) as i32, &mut dc, blk);
+            visit(tx * TILE + bx * 8, by * 8, n, blk);
+        }
+        return;
+    }
     let tx = t % h.tiles_x().max(1);
     let k = match kind {
         PlaneKind::Y => 0,
@@ -702,7 +917,7 @@ pub fn visit_stream(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMu
                 for bx in 0..TB {
                     let q = q_of(by, bx);
                     read_block(&mut r, &f.coef, q as i32, dc_step(q, false) as i32, &mut dc, &mut d);
-                    visit(tx * TILE + bx * 8, by * 8, &d);
+                    visit(tx * TILE + bx * 8, by * 8, 8, &d);
                 }
             }
         }
@@ -713,7 +928,7 @@ pub fn visit_stream(f: &Frame<'_>, t: u32, kind: PlaneKind, mut visit: impl FnMu
                     let lbx = if h.chroma == Chroma::Halo422 { 2 * bx } else { bx };
                     let q = h.chroma_q(q_of(by, lbx));
                     read_block(&mut r, &f.coef, q as i32, dc_step(q, true) as i32, &mut dc, &mut d);
-                    visit(tx * cw + bx * 8, by * 8, &d);
+                    visit(tx * cw + bx * 8, by * 8, 8, &d);
                 }
             }
         }
@@ -740,9 +955,22 @@ fn decode_tile(f: &Frame<'_>, t: u32, out: &mut RowOut<'_>) {
             alpha_palette(f, t, plane, stride);
             continue;
         }
-        visit_stream(f, t, kind, |x0, y0, d| {
-            idct(d, offset, &mut s);
-            put_block(plane, stride, x0, y0, &s);
+        visit_stream_n(f, t, kind, |x0, y0, n, d| {
+            if n == 8 {
+                if let Ok(d8) = <&[i32; 64]>::try_from(d) {
+                    idct(d8, offset, &mut s);
+                    put_block(plane, stride, x0, y0, &s);
+                }
+                return;
+            }
+            let mut o = vec![0i32; (n * n) as usize];
+            idct_n(n, d, offset, &mut o);
+            for i in 0..n {
+                let at = ((y0 + i) * stride + x0) as usize;
+                if let (Some(dst), Some(src)) = (plane.get_mut(at..at + n as usize), o.get((i * n) as usize..((i + 1) * n) as usize)) {
+                    dst.copy_from_slice(src);
+                }
+            }
         });
     }
 }
@@ -1105,6 +1333,48 @@ mod tests {
         idct(&d, 0, &mut s);
         let d = core::array::from_fn(|i| if i % 2 == 0 { DEQUANT_MAX } else { -DEQUANT_MAX });
         idct(&d, 512, &mut s);
+    }
+
+    /// v4: the generalised zigzag and basis reproduce v1's 8x8 tables; the 16 and 32 point
+    /// inverses map a DC block to a flat block, stay inside i32 for every valid input (checked in
+    /// i64), and track the float inverse to about a quarter code value.
+    #[test]
+    fn v4_transforms() {
+        assert_eq!(zigzag_n(8).iter().map(|&v| v as u8).collect::<Vec<_>>(), ZIGZAG.to_vec());
+        for k in 0..8 {
+            for i in 0..8 {
+                assert_eq!(basis_entry(8, k, i), IDCT_MATRIX[k as usize][i as usize]);
+            }
+        }
+        for n in [16u32, 32] {
+            let nu = n as usize;
+            let z = zigzag_n(n);
+            let mut seen = vec![false; nu * nu];
+            z.iter().for_each(|&p| seen[p as usize] = true);
+            assert!(seen.iter().all(|&s| s) && z[1] == 1 && z[2] == n as u16, "zigzag {n} is a permutation starting 0, 1, n");
+            let mut d = vec![0i32; nu * nu];
+            d[0] = n as i32 * 100;
+            let mut o = vec![0i32; nu * nu];
+            idct_n(n, &d, 512, &mut o);
+            assert!(o.iter().all(|&v| v == 912), "{n}: flat 100 + offset");
+            // The bounds of the doc comment, in i64: the largest |first sum| with |D| at its bound,
+            // the clamped t, the largest |second sum|.
+            let m = |k: usize, i: usize| i64::from(basis_entry(n, k as u32, i as u32));
+            let colsum = (0..nu).map(|i| (0..nu).map(|k| m(k, i).abs()).sum::<i64>()).max().unwrap_or(0);
+            let tmax = if n == 16 { 65536 } else { 32768 };
+            assert!(colsum * i64::from(dequant_max(n)) < i64::from(i32::MAX), "{n}: first sum");
+            assert!(colsum * tmax < i64::from(i32::MAX), "{n}: second sum");
+            // Worst-case patterns run (overflow checks on in debug builds).
+            for pat in 0..3 {
+                let lim = dequant_max(n);
+                let d: Vec<i32> = (0..nu * nu).map(|x| match pat {
+                    0 => lim,
+                    1 => if x % 2 == 0 { lim } else { -lim },
+                    _ => if (x / nu + x % nu).is_multiple_of(3) { -lim } else { lim },
+                }).collect();
+                idct_n(n, &d, 512, &mut o);
+            }
+        }
     }
 
     #[test]

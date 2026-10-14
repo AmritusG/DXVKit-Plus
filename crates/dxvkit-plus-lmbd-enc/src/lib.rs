@@ -27,6 +27,7 @@ pub mod lmbx;
 pub mod rdo;
 mod tables;
 mod v3;
+mod v4;
 
 pub use bc7enc::Bc7Params;
 pub use rdo::RdoParams;
