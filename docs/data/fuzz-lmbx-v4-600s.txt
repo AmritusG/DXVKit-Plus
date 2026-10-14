@@ -1,0 +1,4 @@
+# W10 fuzz: crates/dxvkit-plus-core/examples/fuzz.rs lmbx, FUZZ_EXTRA = 4 prototype LMBX v4 files (plasma 200x130 alpha
+# --tsizes rd q4/q24, plasma 333x141 --tsizes rule q4/q24) next to the committed v1-v3 vectors. Machine heavily loaded.
+fuzz: 600 s, 6 threads, corpus 36 (hap frames 0, dxv packets 0, files 0, lmbd 36), execs 2417594 (4029/s), crashes 0, hangs 0, slowest input 280.1 ms
+exit 0

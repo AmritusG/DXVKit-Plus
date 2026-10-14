@@ -13,7 +13,8 @@
 //! and their frame bitstreams (container + bitstream parser + decoder, parallel and sequential
 //! decodes compared); `dxv` to DXV packets and
 //! DXV movies. With `DXVKIT_DIR=<a DXVKit checkout>` its full vector streams join the corpus (the
-//! Resolume-encoder streams carry the entropy-coded HQ opcodes; never committed here).
+//! Resolume-encoder streams carry the entropy-coded HQ opcodes; never committed here); with
+//! `FUZZ_EXTRA=<dir>`, the movies and LMBD files in that directory.
 //!
 //! Corpus: every committed fixture (whole files, their HAP frames, the LMBD vectors) plus synthetic
 //! HAP R (BC7, all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
@@ -313,6 +314,10 @@ fn main() {
     let mut dirs = vec![root];
     if let Ok(d) = std::env::var("DXVKIT_DIR") {
         dirs.push(Path::new(&d).join("test_vectors/streams"));
+    }
+    // Extra seed files (e.g. W10's prototype LMBX v4 frames, never committed).
+    if let Ok(d) = std::env::var("FUZZ_EXTRA") {
+        dirs.push(PathBuf::from(d));
     }
     let mut all = corpus(&dirs);
     match only {

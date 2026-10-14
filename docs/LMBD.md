@@ -532,6 +532,52 @@ pixel (no second sweep), escapes removed, and 10-bit index tables. Rejected afte
 row-copy / row-run symbol (+10% bytes, slower), a row-start context (−1.5% bytes, +4% time),
 index tables in workgroup memory (occupancy), splitting the tables pass.
 
+### 11.12c PROTOTYPE version 4: adaptive transform sizes (W10, not frozen)
+
+Branch `w10-explore` only; nothing merged or released. A conforming 0.7.0 decoder refuses version 4
+as a future version; v1, v2 and v3 decode exactly as above (their vectors still match). The
+prototype decoders (`dxvkit_plus_core::lmbx`, the GPU passes) define it as follows.
+
+- **Layout.** As v3, plus a **transform map** right after the tile mode map: one byte per tile,
+  raster. `0`: sixteen 8x8 blocks (v3's coding); `1..=15`: bit `q` set = quadrant `q` (raster:
+  top-left, top-right, bottom-left, bottom-right) is one 16x16 block, else four 8x8; `16`: one 32x32
+  block. Valid only on DCT tiles (colour mode 0; with or without an alpha palette) of 4:4:4 frames;
+  any other non-zero byte, or a non-zero byte on another tile or in a 4:2:2 frame, is invalid
+  (§11.9). The quantiser map follows the transform map.
+- **Blocks in a stream.** In the raster of the tile's sixteen 8x8 positions, each block at its
+  top-left position (`tmap = 0` gives v3's order). Every coded plane of the tile (Y, Co, Cg, and A
+  unless it is an alpha palette) uses the tile's layout. A block's step is the quantiser index of its
+  top-left 8x8 position (chroma: §11.4's ratio). An `n x n` block holds `n * n` coefficients in the
+  generalised zigzag (anti-diagonals `d = row + column` in turn; odd `d` with the row increasing,
+  even `d` decreasing — §11.5's table for 8), then EOB unless all `n * n` were read.
+- **Dequantisation.** Levels as §11.5, clamped to `±4095 n / 8`. The DC: the stream's `dc` is kept
+  at 8x8 scale; an `n x n` block predicts `pred = dc << s` (`s = log2(n / 8)`), `D[0] = clamp(pred +
+  level * dcstep)` with `dcstep = max(step, 2 n / 8)` (Y, A) or `max(step, 4 n / 8)` (Co, Cg) — an
+  immediate EOB gives `D[0] = pred` — and `dc` becomes `D[0] >> s`.
+- **Inverse transform.** Basis `M[k][i]` = `1448` for `k = 0`, else `round(2048 cos((2i + 1) k pi /
+  2n))`, every entry one of `C[j] = round(2048 cos(j pi / 64))`, `j = 0..=32`:
+  `2048 2046 2038 2026 2009 1987 1960 1928 1892 1851 1806 1757 1703 1645 1583 1517 1448 1375 1299
+  1220 1138 1053 965 876 784 690 595 498 400 301 201 100 0` (with `j = (2i + 1) k (32 / n) mod 128`,
+  folded: `j > 64` → `128 - j`; `j > 32` → `-C[64 - j]`). 8x8 is §11.7. 16x16 and 32x32:
+
+  ```
+  t[i][j]   = clamp((sum over k of M[k][i] * D[k][j] + 2^(s1-1)) >> s1, -T, T)
+  out[i][j] = ((sum over l of t[i][l] * M[l][j] + 8192) >> 14) + offset
+  ```
+
+  with `s1 = 9, T = 65536` (16) and `s1 = 10, T = 32768` (32). Bounds (largest column sum of `|M|`:
+  21269 and 42139): first sums at most 1.75e8 and 6.9e8, second sums at most 1.40e9 and 1.39e9 —
+  inside i32 for every valid input. The clamp on `t` is the only one a picture never reaches (a
+  full-range block's `t` stays under `T / 2`); it exists so the bound holds for every bitstream.
+  Precision against the float inverse on chroma-range blocks: RMS 0.33 (16) and 0.36 (32) quarter
+  code values (8x8: 0.43).
+- **Prior art (ideas only, no code):** HEVC's integer core transforms (larger sizes from scaled
+  cosine bases, a clip after the first stage), AV1's and JPEG XL's variable DCT sizes per block.
+  Nothing was copied; the basis rule is v1's.
+
+The encoder side, the measurements and the decision are in `docs/handoffs/w10.md` and
+`docs/data/w10-*.txt`.
+
 ### 11.13 Why 32x32 tiles with a stream per plane (informative)
 
 Measured on the Mac Studio (`docs/data/w5-lmbx-tile-ab.txt`): at the same picture, 32x32 tiles

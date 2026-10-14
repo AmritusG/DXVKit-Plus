@@ -1,0 +1,146 @@
+# W10 quality at LMB7's bytes (examples/lmbx_quality.rs; Mac Studio 2026-10-14; machine heavily loaded, enc = wall time of the whole fit).
+# Same references as W9, re-created bit for bit (the 0.7.0 'base' rows reproduce docs/data/w9-lmbx-A.txt exactly).
+# Arms: base = 0.7.0; ts = adaptive transform sizes (v4) with 0.7.0's step rule; ts+rdq8+max8 = CONTROL: 8x8 only, each block's
+# step by rate-distortion among the rule's and one either side (writes v3: an encoder-only change); ts+rdq+rdq8 = W10's arm:
+# sizes + RD steps (large blocks also try the finest/coarsest covered step). Tiles of <= 64 colours keep 0.7.0's coding.
+# colour = worst flat-region mean error (code values; the guard's tolerance is 1.0).
+
+## A. ab (W7-W9 method: fit = largest probe <= budget, q bisected on a log scale)
+gfx_a1        base                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.11s
+gfx_a1        ts                       budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.08s
+gfx_a1        ts+rdq8+max8             budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.06s
+gfx_a1        ts+rdq+rdq8              budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.06s
+gfx1          base                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.04s
+gfx1          ts                       budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          ts+rdq8+max8             budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          ts+rdq+rdq8              budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+detail        base                     budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.35s
+detail        ts                       budget  159416 bytes  156177 q   37.93 RGB  25.960 shown  25.960 A     inf colour  0.00 enc   1.95s | tiles 32x32 310, quadrants 16x16 30, 8x8 6
+detail        ts+rdq8+max8             budget  159416 bytes  154516 q   75.41 RGB  21.373 shown  21.373 A     inf colour  0.00 enc   2.05s
+detail        ts+rdq+rdq8              budget  159416 bytes  158826 q   45.75 RGB  26.268 shown  26.268 A     inf colour  0.00 enc   2.51s | tiles 32x32 305, quadrants 16x16 35, 8x8 29
+realdetail    base                     budget  374461 bytes  350801 q   15.82 RGB  48.125 shown  54.848 A  49.495 colour  0.00 enc   5.01s
+realdetail    ts                       budget  374461 bytes  338073 q   15.82 RGB  47.930 shown  54.634 A  49.303 colour  0.00 enc   7.88s | tiles 32x32 9, quadrants 16x16 590, 8x8 1406
+realdetail    ts+rdq8+max8             budget  374461 bytes  353398 q   15.82 RGB  48.798 shown  55.530 A  50.372 colour  0.00 enc   6.17s
+realdetail    ts+rdq+rdq8              budget  374461 bytes  350778 q   15.82 RGB  48.823 shown  55.536 A  50.421 colour  0.00 enc   8.95s | tiles 32x32 2, quadrants 16x16 728, 8x8 1424
+shroom_alpha  base                     budget  354434 bytes  328812 q   15.82 RGB  48.745 shown  55.291 A  50.278 colour  0.00 enc   5.08s
+shroom_alpha  ts                       budget  354434 bytes  315935 q   15.82 RGB  48.452 shown  54.900 A  49.966 colour  0.00 enc   5.59s | tiles 32x32 8, quadrants 16x16 555, 8x8 1281
+shroom_alpha  ts+rdq8+max8             budget  354434 bytes  328712 q   15.82 RGB  49.293 shown  55.723 A  50.865 colour  0.00 enc   6.25s
+shroom_alpha  ts+rdq+rdq8              budget  354434 bytes  325208 q   15.82 RGB  49.275 shown  55.696 A  50.904 colour  0.00 enc   6.48s | tiles 32x32 5, quadrants 16x16 680, 8x8 1284
+alpha         base                     budget  395833 bytes  350916 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.76s
+alpha         ts                       budget  395833 bytes  314246 q   11.01 RGB  49.344 shown  50.819 A  69.628 colour  0.00 enc   4.64s | tiles 32x32 258, quadrants 16x16 869, 8x8 139
+alpha         ts+rdq8+max8             budget  395833 bytes  348284 q   11.01 RGB  49.296 shown  50.790 A  77.954 colour  0.00 enc   5.56s
+alpha         ts+rdq+rdq8              budget  395833 bytes  312879 q   11.01 RGB  49.314 shown  50.788 A  69.179 colour  0.00 enc   5.52s | tiles 32x32 259, quadrants 16x16 871, 8x8 133
+film_grain    base                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.15s
+film_grain    ts                       budget  384074 bytes  340745 q    1.00 RGB  53.412 shown  53.412 A     inf colour  0.00 enc   0.22s | tiles 32x32 372, quadrants 16x16 552, 8x8 0
+film_grain    ts+rdq8+max8             budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.22s
+film_grain    ts+rdq+rdq8              budget  384074 bytes  340745 q    1.00 RGB  53.412 shown  53.412 A     inf colour  0.00 enc   0.26s | tiles 32x32 372, quadrants 16x16 552, 8x8 0
+shroom_glow   base                     budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc  11.75s
+shroom_glow   ts                       budget  752754 bytes  752043 q   19.32 RGB  43.114 shown  43.114 A     inf colour  0.00 enc  14.06s | tiles 32x32 30, quadrants 16x16 1783, 8x8 5381
+shroom_glow   ts+rdq8+max8             budget  752754 bytes  640071 q   21.89 RGB  42.621 shown  42.621 A     inf colour  0.01 enc  14.47s
+shroom_glow   ts+rdq+rdq8              budget  752754 bytes  628708 q   21.89 RGB  42.627 shown  42.627 A     inf colour  0.01 enc  17.14s | tiles 32x32 49, quadrants 16x16 2196, 8x8 5296
+ 7:56  up 31 days, 14:16, 8 users, load averages: 68.37 35.11 23.02
+
+## B. ladder (best frame <= budget over q = 0.6..1.7 x the fit's, x1.03 apart): removes rate control's step walls
+realdetail    base                     budget  374461 bytes  352636 q   15.69 RGB  48.197 shown  54.989 A  49.641 (best of the scan)
+realdetail    ts+rdq8+max8             budget  374461 bytes  354784 q   15.69 RGB  48.834 shown  55.563 A  50.411 (best of the scan)
+realdetail    ts+rdq+rdq8              budget  374461 bytes  352076 q   15.69 RGB  48.865 shown  55.582 A  50.462 (best of the scan) | tiles 32x32 2, quadrants 16x16 722, 8x8 1430
+shroom_alpha  base                     budget  354434 bytes  330231 q   15.69 RGB  48.797 shown  55.344 A  50.333 (best of the scan)
+shroom_alpha  ts+rdq8+max8             budget  354434 bytes  329800 q   15.69 RGB  49.337 shown  55.767 A  50.900 (best of the scan)
+shroom_alpha  ts+rdq+rdq8              budget  354434 bytes  326755 q   15.69 RGB  49.324 shown  55.740 A  50.942 (best of the scan) | tiles 32x32 4, quadrants 16x16 671, 8x8 1301
+shroom_glow   base                     budget  752754 bytes  747915 q   21.54 RGB  42.906 shown  42.906 A     inf (best of the scan)
+shroom_glow   ts+rdq8+max8             budget  752754 bytes  751691 q   21.71 RGB  43.321 shown  43.321 A     inf (best of the scan)
+shroom_glow   ts+rdq+rdq8              budget  752754 bytes  751985 q   21.71 RGB  43.388 shown  43.388 A     inf (best of the scan) | tiles 32x32 11, quadrants 16x16 1912, 8x8 5368
+alpha         base                     budget  395833 bytes  350916 q    9.42 RGB  49.350 shown  50.845 A  77.954 (best of the scan)
+alpha         ts+rdq8+max8             budget  395833 bytes  348284 q    9.42 RGB  49.296 shown  50.790 A  77.954 (best of the scan)
+alpha         ts+rdq+rdq8              budget  395833 bytes  312879 q    9.42 RGB  49.314 shown  50.788 A  69.179 (best of the scan) | tiles 32x32 259, quadrants 16x16 871, 8x8 133
+ 8:05  up 31 days, 14:25, 8 users, load averages: 122.56 86.90 53.79
+
+## C. first run of A WITHOUT the <= 64-colour rule (graphics lost losslessness -> rule added; natural rows for the record)
+gfx_a1        base                     budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.08s
+gfx_a1        ts                       budget    5144 bytes    4578 q    1.00 RGB  67.804 shown  67.804 A     inf colour  0.00 enc   0.13s | tiles 32x32 34, quadrants 16x16 32, 8x8 0
+gfx_a1        ts+rdq8+max8             budget    5144 bytes    4444 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.15s
+gfx_a1        ts+rdq+rdq8              budget    5144 bytes    4578 q    1.00 RGB  67.804 shown  67.804 A     inf colour  0.00 enc   0.18s | tiles 32x32 34, quadrants 16x16 32, 8x8 0
+gfx1          base                     budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.05s
+gfx1          ts                       budget    5747 bytes    5205 q    1.00 RGB  67.158 shown  67.158 A     inf colour  0.00 enc   0.12s | tiles 32x32 51, quadrants 16x16 32, 8x8 0
+gfx1          ts+rdq8+max8             budget    5747 bytes    5223 q    1.00 RGB     inf shown     inf A     inf colour  0.00 enc   0.13s
+gfx1          ts+rdq+rdq8              budget    5747 bytes    5205 q    1.00 RGB  67.038 shown  67.038 A     inf colour  0.00 enc   0.15s | tiles 32x32 51, quadrants 16x16 32, 8x8 0
+detail        base                     budget  159416 bytes  159058 q   55.87 RGB  20.991 shown  20.991 A     inf colour  0.00 enc   1.55s
+detail        ts                       budget  159416 bytes  156177 q   37.93 RGB  25.960 shown  25.960 A     inf colour  0.00 enc   2.25s | tiles 32x32 310, quadrants 16x16 30, 8x8 6
+detail        ts+rdq8+max8             budget  159416 bytes  154516 q   75.41 RGB  21.373 shown  21.373 A     inf colour  0.00 enc   2.18s
+detail        ts+rdq+rdq8              budget  159416 bytes  158826 q   45.75 RGB  26.268 shown  26.268 A     inf colour  0.00 enc   2.38s | tiles 32x32 305, quadrants 16x16 35, 8x8 29
+realdetail    base                     budget  374461 bytes  350801 q   15.82 RGB  48.125 shown  54.848 A  49.495 colour  0.00 enc   4.09s
+realdetail    ts                       budget  374461 bytes  341364 q   15.82 RGB  48.027 shown  54.799 A  49.511 colour  0.00 enc   6.26s | tiles 32x32 13, quadrants 16x16 716, 8x8 1288
+realdetail    ts+rdq8+max8             budget  374461 bytes  355615 q   15.82 RGB  48.819 shown  55.542 A  50.431 colour  0.00 enc   6.18s
+realdetail    ts+rdq+rdq8              budget  374461 bytes  359199 q   15.82 RGB  48.988 shown  55.707 A  50.648 colour  0.00 enc  10.02s | tiles 32x32 10, quadrants 16x16 934, 8x8 1194
+shroom_alpha  base                     budget  354434 bytes  328812 q   15.82 RGB  48.745 shown  55.291 A  50.278 colour  0.00 enc   3.75s
+shroom_alpha  ts                       budget  354434 bytes  318746 q   15.82 RGB  48.525 shown  55.037 A  50.114 colour  0.00 enc   5.98s | tiles 32x32 12, quadrants 16x16 696, 8x8 1136
+shroom_alpha  ts+rdq8+max8             budget  354434 bytes  330579 q   15.82 RGB  49.318 shown  55.737 A  50.920 colour  0.00 enc   6.03s
+shroom_alpha  ts+rdq+rdq8              budget  354434 bytes  333231 q   15.82 RGB  49.460 shown  55.899 A  51.133 colour  0.00 enc   8.20s | tiles 32x32 14, quadrants 16x16 883, 8x8 1057
+alpha         base                     budget  395833 bytes  350916 q   11.01 RGB  49.350 shown  50.845 A  77.954 colour  0.00 enc   3.48s
+alpha         ts                       budget  395833 bytes  314246 q   11.01 RGB  49.344 shown  50.819 A  69.628 colour  0.00 enc   5.82s | tiles 32x32 258, quadrants 16x16 869, 8x8 139
+alpha         ts+rdq8+max8             budget  395833 bytes  348284 q   11.01 RGB  49.296 shown  50.790 A  77.954 colour  0.00 enc   5.35s
+alpha         ts+rdq+rdq8              budget  395833 bytes  312879 q   11.01 RGB  49.314 shown  50.788 A  69.179 colour  0.00 enc   5.27s | tiles 32x32 259, quadrants 16x16 871, 8x8 133
+film_grain    base                     budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.17s
+film_grain    ts                       budget  384074 bytes  340745 q    1.00 RGB  53.412 shown  53.412 A     inf colour  0.00 enc   0.18s | tiles 32x32 372, quadrants 16x16 552, 8x8 0
+film_grain    ts+rdq8+max8             budget  384074 bytes  364242 q    1.00 RGB  53.300 shown  53.300 A     inf colour  0.00 enc   0.24s
+film_grain    ts+rdq+rdq8              budget  384074 bytes  340745 q    1.00 RGB  53.412 shown  53.412 A     inf colour  0.00 enc   0.23s | tiles 32x32 372, quadrants 16x16 552, 8x8 0
+shroom_glow   base                     budget  752754 bytes  752042 q   21.08 RGB  42.988 shown  42.988 A     inf colour  0.01 enc   8.95s
+shroom_glow   ts                       budget  752754 bytes  751422 q   18.84 RGB  43.173 shown  43.173 A     inf colour  0.03 enc  10.78s | tiles 32x32 58, quadrants 16x16 2238, 8x8 4974
+shroom_glow   ts+rdq8+max8             budget  752754 bytes  643654 q   21.89 RGB  42.646 shown  42.646 A     inf colour  0.04 enc   8.87s
+shroom_glow   ts+rdq+rdq8              budget  752754 bytes  751913 q   21.35 RGB  43.437 shown  43.437 A     inf colour  0.03 enc  10.40s | tiles 32x32 34, quadrants 16x16 2345, 8x8 5059
+
+## D. realdetail rate-distortion curves (q ladder x1.25; arms as above; flatq = one step for every block, the ceiling's quantiser;
+##    rdq = sizes + RD step on large blocks only; these ran before the v4 RDO-pass fix: v4 arms then had 2 extra RDO passes,
+##    worth ~0 at equal bytes — ts+max8 vs base below shows the fix: identical PSNR)
+curve realdetail ts+rdq q 6.000 bytes 727352 rgb 56.1568 shown 63.4098 a 59.1439
+curve realdetail ts+rdq q 7.500 bytes 672917 rgb 54.8397 shown 62.0079 a 57.3568
+curve realdetail ts+rdq q 9.375 bytes 531384 rgb 52.5385 shown 59.5479 a 54.5048
+curve realdetail ts+rdq q 11.719 bytes 483550 rgb 51.1818 shown 58.1066 a 53.0128
+curve realdetail ts+rdq q 14.648 bytes 425896 rgb 49.6446 shown 56.4981 a 51.4231
+curve realdetail ts+rdq q 18.311 bytes 324349 rgb 47.5811 shown 54.1484 a 49.0724
+curve realdetail ts+rdq q 22.888 bytes 238550 rgb 45.8291 shown 52.0359 a 47.0650
+curve realdetail ts+rdq q 28.610 bytes 184874 rgb 44.5646 shown 50.6259 a 45.9059
+curve realdetail ts+rdq q 35.763 bytes 149493 rgb 43.5321 shown 49.4199 a 44.7777
+curve realdetail base+flatq q 6.000 bytes 229778 rgb 46.3264 shown 52.4900 a 47.7750
+curve realdetail base+flatq q 7.500 bytes 177862 rgb 44.7330 shown 50.5585 a 45.9504
+curve realdetail base+flatq q 9.375 bytes 177862 rgb 44.7330 shown 50.5585 a 45.9504
+curve realdetail base+flatq q 11.719 bytes 125150 rgb 42.7074 shown 48.0134 a 43.4902
+curve realdetail base+flatq q 14.648 bytes 99905 rgb 41.3987 shown 46.4267 a 42.0331
+curve realdetail base+flatq q 18.311 bytes 99905 rgb 41.3987 shown 46.4267 a 42.0331
+curve realdetail base+flatq q 22.888 bytes 74004 rgb 39.6114 shown 44.2765 a 39.8737
+curve realdetail base+flatq q 28.610 bytes 60113 rgb 38.3269 shown 42.8407 a 38.3524
+curve realdetail base+flatq q 35.763 bytes 60113 rgb 38.3269 shown 42.8407 a 38.3524
+curve realdetail ts+flatq q 6.000 bytes 231528 rgb 46.6142 shown 53.0295 a 48.1990
+curve realdetail ts+flatq q 7.500 bytes 176682 rgb 45.0596 shown 51.2678 a 46.5505
+curve realdetail ts+flatq q 9.375 bytes 176682 rgb 45.0596 shown 51.2678 a 46.5505
+curve realdetail ts+flatq q 11.719 bytes 121871 rgb 43.1428 shown 48.9198 a 44.2949
+curve realdetail ts+flatq q 14.648 bytes 95059 rgb 41.8569 shown 47.3837 a 42.8433
+curve realdetail ts+flatq q 18.311 bytes 95059 rgb 41.8569 shown 47.3837 a 42.8433
+curve realdetail ts+flatq q 22.888 bytes 68497 rgb 40.0949 shown 45.2850 a 40.7537
+curve realdetail ts+flatq q 28.610 bytes 53457 rgb 38.7857 shown 43.8635 a 39.2598
+curve realdetail ts+flatq q 35.763 bytes 53457 rgb 38.7857 shown 43.8635 a 39.2598
+curve realdetail ts+rdq8+max8 q 9.375 bytes 521319 rgb 52.5198 shown 59.3879 a 54.3393
+curve realdetail ts+rdq8+max8 q 11.719 bytes 475827 rgb 51.3346 shown 58.1781 a 53.0411
+curve realdetail ts+rdq8+max8 q 14.648 bytes 424275 rgb 49.9434 shown 56.7513 a 51.6359
+curve realdetail ts+rdq8+max8 q 18.311 bytes 328046 rgb 47.9586 shown 54.6484 a 49.5276
+curve realdetail ts+rdq8+max8 q 22.888 bytes 250946 rgb 46.1270 shown 52.3329 a 47.3065
+curve realdetail ts+rdq8+max8 q 28.610 bytes 202066 rgb 44.8882 shown 50.8170 a 45.9016
+curve realdetail ts+rdq8+max8 q 35.763 bytes 167192 rgb 43.8928 shown 49.5105 a 44.7517
+curve realdetail ts+rdq+rdq8 q 9.375 bytes 524433 rgb 52.7228 shown 59.6367 a 54.5855
+curve realdetail ts+rdq+rdq8 q 11.719 bytes 478103 rgb 51.5330 shown 58.3698 a 53.2581
+curve realdetail ts+rdq+rdq8 q 14.648 bytes 424478 rgb 50.0839 shown 56.8537 a 51.8327
+curve realdetail ts+rdq+rdq8 q 18.311 bytes 327734 rgb 48.0720 shown 54.7763 a 49.7285
+curve realdetail ts+rdq+rdq8 q 22.888 bytes 245289 rgb 46.1444 shown 52.4774 a 47.5785
+curve realdetail ts+rdq+rdq8 q 28.610 bytes 189386 rgb 44.7787 shown 50.8516 a 46.0884
+curve realdetail ts+rdq+rdq8 q 35.763 bytes 152187 rgb 43.7275 shown 49.6540 a 44.9908
+curve realdetail ts+rdq+max16 q 9.375 bytes 531285 rgb 52.5436 shown 59.5464 a 54.5005
+curve realdetail ts+rdq+max16 q 11.719 bytes 483179 rgb 51.1648 shown 58.0950 a 52.9964
+curve realdetail ts+rdq+max16 q 14.648 bytes 426856 rgb 49.6453 shown 56.5125 a 51.4443
+curve realdetail ts+rdq+max16 q 18.311 bytes 323488 rgb 47.5640 shown 54.1312 a 49.0472
+curve realdetail ts+rdq+max16 q 22.888 bytes 238162 rgb 45.8089 shown 52.0158 a 47.0371
+curve realdetail ts+rdq+max16 q 28.610 bytes 187313 rgb 44.5881 shown 50.6345 a 45.8917
+curve realdetail ts+rdq+max16 q 35.763 bytes 151817 rgb 43.5494 shown 49.3913 a 44.7502
+
+## E. one 1080p encode (q 16, 12 threads; wall time incl. PNG load, decode, scoring)
+realdetail base           0.48 s   ts+rdq8+max8 0.60 s   ts+rdq+rdq8 0.61 s   (q16: 348709 / 351789 / 349230 B; shown 54.75 / 55.48 / 55.47)
+shroom_glow base          0.73 s   ts+rdq8+max8 0.84 s   ts+rdq+rdq8 0.98 s   (q16: 798459 / 812482 / 814195 B; RGB 43.90 / 44.28 / 44.36)
