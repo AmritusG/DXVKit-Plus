@@ -248,7 +248,7 @@ fn refusals() {
     p[..4].copy_from_slice(b"LMXS");
     assert!(matches!(parse(&p), Some(MediaError::Unsupported(_))), "prototype bitstream");
     let mut v = good.clone();
-    v[4] = 4;
+    v[4] = 5; // (4 is the W10 prototype)
     assert!(matches!(parse(&v), Some(MediaError::Unsupported(_))), "future version");
     for (at, val, what) in [(6usize, 2u8, "chroma"), (7, 2, "flags"), (8, 0, "width"), (18, 1, "reserved"), (20, 0, "q step 0")] {
         let mut c = good.clone();

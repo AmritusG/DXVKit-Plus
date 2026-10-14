@@ -19,7 +19,7 @@
 use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::lmbx::{
     COEF_SYMBOLS, Chroma, EOB, Frame, FrameHeader, FreqTable, LEVEL_OFFSET, PLANES, PROB_BITS, PROB_SCALE, PlaneKind, RANS_L, TILE, TileMode, ZIGZAG,
-    visit_stream,
+    visit_stream_n,
 };
 
 /// 8x8 blocks per tile edge.
@@ -68,6 +68,26 @@ pub struct LmbxParams {
     /// colour (`dc_guard`), and a flat or lossy-palette tile is not a candidate if it moves any
     /// region's colour ([`GUARD_CELLS`]) by more than this. Default 1.0: LMB7's own worst flat-region error on the graphics card (1.02).
     pub colour_tol: Option<f64>,
+    /// PROTOTYPE (W10, writes bitstream v4; 4:4:4 with tile modes only): adaptive transform sizes —
+    /// per DCT tile the rate-distortion choice of one 32x32 block, or per 16x16 quadrant one 16x16
+    /// or four 8x8 (`crate::v4`). Off by default.
+    pub tsizes: bool,
+    /// With `tsizes`: a large block's step is the finest of the 8x8 blocks' it covers (default: by
+    /// its own AC energy, the 8x8 rule scaled).
+    pub region_q_min: bool,
+    /// With `tsizes`: a large block's step by rate-distortion (`J` of its AC terms at the tile's
+    /// lambda) among the 8x8 rule's, the finest and the coarsest of the 8x8 blocks' it covers, and
+    /// one step either side of the rule's.
+    pub rd_q: bool,
+    /// With `tsizes`: 8x8 blocks' steps by rate-distortion too (the rule's index or one either side;
+    /// a control for `rd_q`).
+    pub rd_q8: bool,
+    /// With `tsizes`: the largest transform the layout choice may use (8, 16 or 32; 8 = the control
+    /// arm, a v4 frame of 8x8 blocks only).
+    pub max_tsize: u32,
+    /// Diagnostic (W10): every block's step is the one nearest the base quantiser (no AC-energy
+    /// adaptation) — the B2 ceiling's quantiser, to separate the transform size from the step rule.
+    pub flat_q: bool,
 }
 
 impl Default for LmbxParams {
@@ -87,6 +107,12 @@ impl Default for LmbxParams {
             palette_lossy: true,
             alpha_palette: true,
             colour_tol: Some(1.0),
+            tsizes: false,
+            region_q_min: false,
+            rd_q: false,
+            rd_q8: false,
+            max_tsize: 32,
+            flat_q: false,
         }
     }
 }
@@ -284,9 +310,9 @@ fn idct_f(m: &[[f64; 8]; 8], d: &[f64; 64]) -> [f64; 64] {
 }
 
 /// A plane of integer samples (quarter code values, YCoCg-R) at the coded size.
-struct Plane {
-    w: u32,
-    v: Vec<i32>,
+pub(crate) struct Plane {
+    pub(crate) w: u32,
+    pub(crate) v: Vec<i32>,
 }
 
 impl Plane {
@@ -304,10 +330,10 @@ impl Plane {
 
 pub(crate) struct Source {
     pub(crate) header: FrameHeader,
-    y: Plane,
-    co: Plane,
-    cg: Plane,
-    a: Option<Plane>,
+    pub(crate) y: Plane,
+    pub(crate) co: Plane,
+    pub(crate) cg: Plane,
+    pub(crate) a: Option<Plane>,
 }
 
 /// RGBA8 → YCoCg-R planes in quarter units at the coded size (edge-replicated), chroma
@@ -359,6 +385,12 @@ fn prepare(rgba: &[u8], width: u32, height: u32, chroma: Chroma, chroma_ratio: u
 }
 
 const AC_REF: f64 = 380.0;
+
+/// The quantiser index whose step is nearest `q` (rounded, 1..=96).
+pub(crate) fn nearest_qidx(q: f64) -> usize {
+    let qy = q.round().clamp(1.0, 96.0);
+    QT.iter().enumerate().min_by(|a, b| (f64::from(*a.1) - qy).abs().total_cmp(&(f64::from(*b.1) - qy).abs())).map_or(0, |(i, _)| i)
+}
 
 /// B1d's per-block quantiser: the step nearest `base * clamp(AC energy / 380, 0.16, 2.6)`.
 fn pick_qidx(m: &[[f64; 8]; 8], y: &Plane, x0: u32, y0: u32, base: f64) -> usize {
@@ -630,7 +662,9 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
     let qidx: Vec<Vec<usize>> = (0..h.tile_count())
         .map(|ti| {
             let (tx, ty) = (ti % h.tiles_x(), ti / h.tiles_x());
-            (0..TB * TB).map(|b| pick_qidx(&m, &s.y, tx * TILE + (b % TB) * 8, ty * TILE + (b / TB) * 8, p.quality)).collect()
+            (0..TB * TB)
+                .map(|b| if p.flat_q { nearest_qidx(p.quality) } else { pick_qidx(&m, &s.y, tx * TILE + (b % TB) * 8, ty * TILE + (b / TB) * 8, p.quality) })
+                .collect()
         })
         .collect();
     let qidx: Vec<Vec<usize>> = match p.colour_tol {
@@ -640,15 +674,65 @@ pub fn encode_frame(rgba: &[u8], width: u32, height: u32, p: &LmbxParams) -> Res
     // Bootstrap (deadzone only) -> rate model -> RDOQ passes.
     let mut rate = vec![0f64; COEF_SYMBOLS];
     let (mut syms, mut sse) = all_symbols(&m, &s, &qidx, &rate, p, false);
-    for _ in 0..p.rdo_passes {
+    let v4 = v3 && p.tsizes && p.chroma == Chroma::Full444;
+    // (v4 runs its own RDO passes, each with the layout choice, after the same bootstrap.)
+    for _ in 0..if v4 { 0 } else { p.rdo_passes } {
         let f = normalize(&histogram(&syms));
         for (r, &v) in rate.iter_mut().zip(&f) {
             *r = -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2();
         }
         (syms, sse) = all_symbols(&m, &s, &qidx, &rate, p, true);
     }
+    if v4 {
+        // v4 (prototype): per tile the layout of transform sizes, re-chosen on every RDO pass
+        // against the rate model of the pass before (the first from the 8x8 bootstrap above).
+        let kit = crate::v4::Kit::new();
+        let nt = h.tile_count();
+        let mut layouts = vec![0u8; nt as usize];
+        let mut qfin = qidx.clone();
+        for _ in 0..p.rdo_passes.max(1) {
+            let f = normalize(&histogram(&syms));
+            for (r, &v) in rate.iter_mut().zip(&f) {
+                *r = -(f64::from(v.max(1)) / f64::from(PROB_SCALE)).log2();
+            }
+            let threads = p.threads.clamp(1, 64) as u32;
+            let per = nt.div_ceil(threads).max(1);
+            let (kit, s, qidx, rate) = (&kit, &s, &qidx, &rate);
+            let tiles: Vec<(u8, Vec<usize>, Vec<Symbols>, [f64; 4])> = std::thread::scope(|sc| {
+                let hs: Vec<_> = (0..nt)
+                    .step_by(per as usize)
+                    .map(|start| {
+                        sc.spawn(move || {
+                            (start..(start + per).min(nt))
+                                .map(|t| {
+                                    let qi8 = &qidx[t as usize];
+                                    let (l, qi) = crate::v4::choose_layout(s, kit, t, qi8, rate, p);
+                                    let qi = match p.colour_tol {
+                                        Some(tol) => crate::v4::guard(s, t, qi, l, tol),
+                                        None => qi,
+                                    };
+                                    let (st, e) = crate::v4::tile_symbols(s, kit, t, &qi, l, rate, p, true);
+                                    (l, qi, st, e)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                hs.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            });
+            syms = Vec::with_capacity(tiles.len() * h.planes() as usize);
+            sse = Vec::with_capacity(tiles.len());
+            for (t, (l, qi, st, e)) in tiles.into_iter().enumerate() {
+                layouts[t] = l;
+                qfin[t] = qi;
+                syms.extend(st);
+                sse.push(e);
+            }
+        }
+        return crate::v3::encode_v3(rgba, width, height, p, &s, &qfin, &syms, &sse, Some(&layouts));
+    }
     if v3 {
-        return crate::v3::encode_v3(rgba, width, height, p, &s, &qidx, &syms, &sse);
+        return crate::v3::encode_v3(rgba, width, height, p, &s, &qidx, &syms, &sse, None);
     }
     // v1: DCT tiles only.
     let coef_f = normalize(&histogram(&syms));
@@ -706,11 +790,13 @@ pub fn float_reference_rgba8(b: &[u8], width: u32, height: u32) -> Result<Vec<u8
     let f = Frame::parse(b, width, height)?;
     let h = f.header;
     let m = basis();
+    let kit = crate::v4::Kit::new();
     let (cw, ch) = h.coded_size();
     let chw = h.chroma.plane_width(cw);
     let (mut y, mut co, mut cg, mut a) =
         (vec![0f64; (cw * ch) as usize], vec![0f64; (chw * ch) as usize], vec![0f64; (chw * ch) as usize], vec![255f64; (cw * ch) as usize]);
     let mut direct = std::collections::HashMap::new();
+    let mut normative: Option<Vec<u8>> = None;
     for ti in 0..h.tile_count() {
         let ty = ti / h.tiles_x();
         if f.mode(ti) != TileMode::Dct {
@@ -718,17 +804,32 @@ pub fn float_reference_rgba8(b: &[u8], width: u32, height: u32) -> Result<Vec<u8
             continue;
         }
         for kind in PLANES.into_iter().take(h.planes() as usize) {
+            if kind == PlaneKind::A && f.alpha_mode(ti) == dxvkit_plus_core::lmbx::AlphaMode::Palette {
+                // v3 alpha palette: no transform — the normative alpha.
+                let norm = normative.get_or_insert_with(|| dxvkit_plus_core::lmbx::decode_rgba8(b, width, height, true).unwrap_or_default());
+                let tx = ti % h.tiles_x();
+                for yy in ty * TILE..((ty + 1) * TILE).min(height) {
+                    for xx in tx * TILE..((tx + 1) * TILE).min(width) {
+                        a[(yy * cw + xx) as usize] = f64::from(norm.get(((yy * width + xx) * 4 + 3) as usize).copied().unwrap_or(0));
+                    }
+                }
+                continue;
+            }
             let (plane, stride, shift) = match kind {
                 PlaneKind::Y => (&mut y, cw, 128.0),
                 PlaneKind::Co => (&mut co, chw, 0.0),
                 PlaneKind::Cg => (&mut cg, chw, 0.0),
                 PlaneKind::A => (&mut a, cw, 128.0),
             };
-            visit_stream(&f, ti, kind, |x0, y0, d| {
-                let s = idct_f(&m, &d.map(f64::from));
-                for i in 0..8 {
-                    for j in 0..8 {
-                        plane[((ty * TILE + y0 + i) * stride + x0 + j) as usize] = s[(i * 8 + j) as usize] + shift;
+            visit_stream_n(&f, ti, kind, |x0, y0, n, d| {
+                let s: Vec<f64> = if n == 8 {
+                    idct_f(&m, &std::array::from_fn(|i| f64::from(d[i]))).to_vec()
+                } else {
+                    crate::v4::idct_f_n(&kit, n as usize, &d.iter().map(|&v| f64::from(v)).collect::<Vec<_>>())
+                };
+                for i in 0..n {
+                    for j in 0..n {
+                        plane[((ty * TILE + y0 + i) * stride + x0 + j) as usize] = s[(i * n + j) as usize] + shift;
                     }
                 }
             });
@@ -847,6 +948,44 @@ mod tests {
             assert_eq!(Frame::parse(&v1, w, h).unwrap().header.version, dxvkit_plus_core::lmbx::VERSION);
         }
     }
+    /// W10 prototype (v4): adaptive transform sizes on smooth content choose 16x16 and 32x32
+    /// blocks, decode within the 8x8 coding's quality, sequential == parallel, and the float
+    /// reference agrees to within the integer transform's error; the colour guard still holds on
+    /// the graphics card; 4:2:2 stays v3.
+    #[test]
+    fn tsizes_v4() {
+        let (w, h) = (200u32, 136u32);
+        for alpha in [false, true] {
+            let src = dxvkit_plus_core::testpattern::plasma(3, w, h, alpha);
+            let p = LmbxParams { tsizes: true, quality: 12.0, ..Default::default() };
+            let b = encode_frame(&src, w, h, &p).unwrap();
+            let f = Frame::parse(&b, w, h).unwrap();
+            assert_eq!(f.header.version, dxvkit_plus_core::lmbx::VERSION_4);
+            let big = (0..f.header.tile_count()).filter(|&t| f.tmap(t) != 0).count();
+            assert!(big > 0, "alpha {alpha}: no large blocks on a plasma");
+            let out = decode_rgba8(&b, w, h, true).unwrap();
+            assert_eq!(out, decode_rgba8(&b, w, h, false).unwrap());
+            let v3 = decode_rgba8(&encode_frame(&src, w, h, &LmbxParams { quality: 12.0, ..Default::default() }).unwrap(), w, h, true).unwrap();
+            let (pv4, pv3) = (psnr(&src, &out), psnr(&src, &v3));
+            assert!(pv4 > pv3 - 1.0 && pv4 > 35.0, "alpha {alpha}: v4 {pv4:.2} dB, v3 {pv3:.2} dB");
+            let float = float_reference_rgba8(&b, w, h).unwrap();
+            assert!(psnr(&float, &out) > 45.0, "integer vs float {:.1} dB", psnr(&float, &out));
+            let p422 = LmbxParams { chroma: Chroma::Halo422, ..p };
+            assert_eq!(Frame::parse(&encode_frame(&src, w, h, &p422).unwrap(), w, h).unwrap().header.version, dxvkit_plus_core::lmbx::VERSION_3);
+        }
+        let (w, h) = (333u32, 185u32);
+        for alpha in [false, true] {
+            let src = dxvkit_plus_core::testpattern::graphics(1, w, h, alpha);
+            for (flat, palette) in [(false, true), (true, true)] {
+                // Palette on, flat off or on: DCT tiles of every layout next to direct ones.
+                let p = LmbxParams { tsizes: true, quality: 400.0, flat, palette, ..Default::default() };
+                let out = decode_rgba8(&encode_frame(&src, w, h, &p).unwrap(), w, h, true).unwrap();
+                let (e, c) = worst_region_error(&src, &out, w, h, None);
+                assert!(e <= 1.0, "alpha {alpha} flat {flat}: region {c:?} off by {e:.2}");
+            }
+        }
+    }
+
     /// The worst region-mean colour error (W6b): over every source colour with at least 64 pixels
     /// whose 5x5 neighbourhood is that colour (`block`: whose whole aligned block of that width x 8
     /// is — a chroma block's footprint), |mean

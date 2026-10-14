@@ -401,9 +401,13 @@ pub(crate) fn encode_v3(
     qidx: &[Vec<usize>],
     syms: &[Symbols],
     sse: &[[f64; 4]],
+    tmap: Option<&[u8]>,
 ) -> Result<Vec<u8>, MediaError> {
     let mut h = s.header;
-    h.version = VERSION_3;
+    // A transform map of 8x8 blocks only is v3's coding: write v3.
+    let tmap = tmap.filter(|tm| tm.iter().any(|&b| b != 0));
+    // With a transform map (W10 prototype, `crate::v4`): bitstream v4.
+    h.version = if tmap.is_some() { dxvkit_plus_core::lmbx::VERSION_4 } else { VERSION_3 };
     let np = h.planes() as usize;
     let nt = h.tile_count() as usize;
     let dct_rate = rates(&normalize(&histogram(syms)));
@@ -490,6 +494,10 @@ pub(crate) fn encode_v3(
         Choice::Direct(i) => cand[t][i].mode,
     };
     out.extend((0..nt).map(mode_byte));
+    if let Some(tm) = tmap {
+        // v4: the transform map, zero on tiles that are not DCT.
+        out.extend((0..nt).map(|t| if mode_byte(t) & 15 == TileMode::Dct as u8 { tm[t] } else { 0 }));
+    }
     for (t, q) in qidx.iter().enumerate() {
         if mode_byte(t) & 15 == TileMode::Dct as u8 {
             out.extend(q.chunks_exact(2).map(|q| (q[0] | (q[1] << 4)) as u8));

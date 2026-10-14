@@ -360,6 +360,79 @@ fn lmbx_v3_gpu_decode_is_bit_exact_with_the_cpu() {
 
 /// HAP R (BC7) and HAP HDR (BC6H) movies render their colours (blocks built from the public BPTC
 /// definition; no encoder we may use writes these variants).
+/// W10 prototype (LMBX v4, adaptive transform sizes): the GPU decode equals the CPU decoder on
+/// encoded frames (plasma and card contents, with and without alpha, odd sizes, fine to coarse) and
+/// on hostile ones built from them — random stream data (every symbol, levels at their clamps, the
+/// clamped first stage), random valid transform maps over random data (every layout), every DCT
+/// tile one 32x32 block, every stream empty.
+#[test]
+fn lmbx_v4_transform_sizes_gpu_decode_is_bit_exact_with_the_cpu() {
+    use dxvkit_plus_core::lmbx::{Frame, TileMode, VERSION_4};
+    use dxvkit_plus_lmbd_enc::lmbx::{LmbxParams, encode_frame};
+    let Some(g) = gpu() else { return };
+    let mut a = FrameRenderer::new(&g.device);
+    let mut state = 0x4444u64;
+    let (mut frames, mut hostile, mut large) = (0, 0, [0usize; 2]);
+    let check = |blob: Vec<u8>, w: u32, h: u32, what: &str, a: &mut FrameRenderer| {
+        let planes = vec![Plane { format: PixelFormat::LmbxBitstream, width: w, height: h, data: blob }];
+        let d = Decoded::Planes { index: 0, width: w, height: h, shading: Shading::Lmbx, planes };
+        assert_eq!(render(&g, a, &d), d.to_rgba().unwrap(), "{what}");
+    };
+    let contents: Vec<(&str, u32, u32, Vec<u8>)> = vec![
+        ("plasma", 333, 141, dxvkit_plus_core::testpattern::plasma(3, 333, 141, false)),
+        ("plasma_alpha", 200, 130, dxvkit_plus_core::testpattern::plasma(2, 200, 130, true)),
+        ("card_alpha", 333, 185, dxvkit_plus_core::testpattern::graphics(1, 333, 185, true)),
+        ("plasma_big", 640, 360, dxvkit_plus_core::testpattern::plasma(5, 640, 360, false)),
+    ];
+    for (name, w, h, px) in &contents {
+        for q in [2.0, 12.0, 40.0, 400.0] {
+            for rdq in [false, true] {
+                let p = LmbxParams { tsizes: true, rd_q: rdq, rd_q8: rdq, quality: q, threads: 4, ..LmbxParams::default() };
+                let blob = encode_frame(px, *w, *h, &p).unwrap();
+                let fr = Frame::parse(&blob, *w, *h).unwrap();
+                let what = format!("{name} q{q} rdq {rdq}");
+                check(blob.clone(), *w, *h, &what, &mut a);
+                frames += 1;
+                if fr.header.version != VERSION_4 {
+                    continue;
+                }
+                let nt = fr.header.tile_count();
+                for t in 0..nt {
+                    match fr.tmap(t) {
+                        0 => {}
+                        16 => large[1] += 1,
+                        _ => large[0] += 1,
+                    }
+                }
+                let (data, dir, tmap) = (fr.sections.data, fr.sections.directory, fr.sections.tmap);
+                let dct: Vec<usize> = (0..nt).filter(|&t| fr.mode(t) == TileMode::Dct).map(|t| t as usize).collect();
+                let mut rnd = blob.clone();
+                for x in rnd[data..].iter_mut() {
+                    *x = (rng(&mut state) >> 56) as u8;
+                }
+                check(rnd.clone(), *w, *h, &format!("{what} random data"), &mut a);
+                for &t in &dct {
+                    let v = (rng(&mut state) % 17) as u8;
+                    rnd[tmap + t] = if v == 16 { 16 } else { v };
+                }
+                check(rnd.clone(), *w, *h, &format!("{what} random layouts"), &mut a);
+                for &t in &dct {
+                    rnd[tmap + t] = 16;
+                }
+                check(rnd, *w, *h, &format!("{what} all 32x32"), &mut a);
+                let mut empty = blob[..data].to_vec();
+                for t in 0..fr.offsets.len() {
+                    empty[dir + 4 + t * 4..dir + 8 + t * 4].copy_from_slice(&0u32.to_le_bytes());
+                }
+                check(empty, *w, *h, &format!("{what} empty"), &mut a);
+                hostile += 4;
+            }
+        }
+    }
+    eprintln!("LMBX v4 GPU == CPU: {frames} encoded frames, {hostile} hostile frames; encoded tiles with 16x16 quadrants {}, 32x32 {}", large[0], large[1]);
+    assert!(large[0] > 0 && large[1] > 0, "the encoded frames use both large sizes: {large:?}");
+}
+
 #[test]
 fn hap_r_and_hap_hdr_render_their_colours() {
     let Some(g) = gpu() else { return };
