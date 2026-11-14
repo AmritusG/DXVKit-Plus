@@ -11,7 +11,7 @@
 //!
 //! Output is the raw block stream of each image, uploaded straight to a BC texture
 //! (`dxvkit-plus-wgpu`); scaled YCoCg is converted on the GPU (van Waveren & Castaño, "Real-Time
-//! YCoCg-DXT Compression", 2007, as the spec references) and on the CPU by [`ycocg_scaled_to_rgb`].
+//! YCoCg-DXT Compression", 2007, as the spec references) and on the CPU by [`ycocg_scaled_exact`].
 
 use crate::bytes::{byte, le24, le32};
 use crate::error::MediaError;
@@ -298,24 +298,39 @@ fn chunked(data: &[u8], out: &mut [u8], parallel: bool) -> Result<(), MediaError
     Ok(())
 }
 
-/// Scaled YCoCg (BC3-decoded RGBA, 0..255 per channel) to RGB, the CPU oracle of the GPU shader:
-/// `scale = B * 255/8 + 1`, `Co = (R - 128/255) / scale`, `Cg = (G - 128/255) / scale`, `Y = A`,
-/// `R = Y + Co - Cg`, `G = Y + Cg`, `B = Y - Co - Cg` (normalised units), rounded and clamped.
+/// Scaled YCoCg (BC3-decoded RGBA, 0..255 per channel) to RGB: [`ycocg_scaled_exact`] on 8-bit
+/// values.
 pub fn ycocg_scaled_to_rgb(px: [u8; 4]) -> [u8; 3] {
-    let n = |v: u8| f64::from(v) / 255.0;
-    ycocg_scaled_to_rgb_f([n(px[0]), n(px[1]), n(px[2]), n(px[3])])
+    ycocg_scaled_exact([u16::from(px[0]) * 3, u16::from(px[1]) * 3, u16::from(px[2]) * 3, u16::from(px[3]) * 35])
 }
 
-/// [`ycocg_scaled_to_rgb`] on normalised (0..1) channel values, e.g. from
-/// [`crate::bc::bc3_block_exact`].
-pub fn ycocg_scaled_to_rgb_f(px: [f64; 4]) -> [u8; 3] {
-    let scale = px[2] * (255.0 / 8.0) + 1.0;
-    let offset = 128.0 / 255.0;
-    let co = (px[0] - offset) / scale;
-    let cg = (px[1] - offset) / scale;
-    let y = px[3];
-    let to8 = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    [to8(y + co - cg), to8(y + cg), to8(y - co - cg)]
+/// Scaled YCoCg to RGB in exact integer arithmetic — the CPU oracle, and what `dxvkit-plus-wgpu`'s
+/// exact path computes in its shader, bit for bit. `px` is a BC3 texel with the exact palettes
+/// ([`crate::bc::bc3_block_exact`]): Co, Cg and the scale in thirds of a code value (0..=765), Y in
+/// 35ths (0..=8925). The transform is the HAP specification's (van Waveren & Castaño, "Real-Time
+/// YCoCg-DXT Compression", 2007), in normalised units
+/// `scale = B * 255/8 + 1`, `Co = (R - 128/255) / scale`, `Cg = (G - 128/255) / scale`, `Y = A`,
+/// `R = Y + Co - Cg`, `G = Y + Cg`, `B = Y - Co - Cg`; in code values over the common denominator
+/// `D = 35 * (b3 + 24)` that is `R = (y35 * (b3 + 24) + 280 * (r3 - g3)) / D`,
+/// `G = (y35 * (b3 + 24) + 280 * (g3 - 384)) / D`, `B = (y35 * (b3 + 24) - 280 * (r3 + g3 - 768)) / D`,
+/// each clamped to 0..=255 and rounded to nearest, halves up (no float: a float evaluation lands on
+/// either side of an exact half). Inputs above the ranges are clamped to them.
+pub fn ycocg_scaled_exact(px: [u16; 4]) -> [u8; 3] {
+    let [r3, g3, b3] = [px[0], px[1], px[2]].map(|v| i32::from(v.min(765)));
+    let k = b3.saturating_add(24);
+    let d = k.saturating_mul(35);
+    let y = i32::from(px[3].min(8925)).saturating_mul(k);
+    let chroma = |c: i32| y.saturating_add(c.saturating_mul(280));
+    let to8 = |n: i32| -> u8 {
+        if n <= 0 {
+            0
+        } else if n >= d.saturating_mul(255) {
+            255
+        } else {
+            u8::try_from(n.saturating_mul(2).saturating_add(d).checked_div(d.saturating_mul(2)).unwrap_or(0)).unwrap_or(255)
+        }
+    };
+    [to8(chroma(r3.saturating_sub(g3))), to8(chroma(g3.saturating_sub(384))), to8(chroma(768_i32.saturating_sub(r3).saturating_sub(g3)))]
 }
 
 /// The frame's GPU-ready planes and how they become RGBA. Block planes are padded to whole 4x4
@@ -336,7 +351,7 @@ pub fn planes(frame: HapFrame, width: u32, height: u32) -> Result<(Shading, Vec<
 
 /// CPU decode of a whole frame to straight RGBA8 (`width * 4` stride) — the oracle for the GPU path
 /// and for the fixture accuracy checks. BC1 is opaque (HAP's "RGB"); scaled YCoCg goes through
-/// [`ycocg_scaled_to_rgb`]; alpha-only shows the alpha as grey with alpha 255; BC7 (HAP R) through
+/// [`ycocg_scaled_exact`]; alpha-only shows the alpha as grey with alpha 255; BC7 (HAP R) through
 /// [`crate::bc7`]; HDR (BC6H) has no CPU decoder and is `Unsupported`.
 pub fn to_rgba(frame: &HapFrame, width: u32, height: u32) -> Result<Vec<u8>, MediaError> {
     let (shading, planes) = planes(frame.clone(), width, height)?;
@@ -434,5 +449,41 @@ mod tests {
     fn scaled_ycocg_grey_is_grey() {
         // Co = Cg = 128/255 (no chroma), scale byte 0: grey Y.
         assert_eq!(ycocg_scaled_to_rgb([128, 128, 0, 77]), [77, 77, 77]);
+    }
+
+    /// The integer transform is the specification's formula rounded half up: equal to an exact
+    /// rational evaluation (i128) on every input of a grid over the whole domain, on exact halves
+    /// too (where a float evaluation is not: the case below is one f64 rounds down).
+    #[test]
+    fn scaled_ycocg_is_the_exact_rational_rounded_half_up() {
+        let exact = |r3: i128, g3: i128, b3: i128, y35: i128| -> [u8; 3] {
+            let d = 35 * (b3 + 24);
+            let to8 = |n: i128| -> u8 {
+                // floor(n / d + 1/2), clamped
+                (2 * n + d).div_euclid(2 * d).clamp(0, 255) as u8
+            };
+            let y = y35 * (b3 + 24);
+            [to8(y + 280 * (r3 - g3)), to8(y + 280 * (g3 - 384)), to8(y - 280 * (r3 + g3 - 768))]
+        };
+        let mut n = 0u32;
+        for r3 in (0..=765u16).step_by(15) {
+            for g3 in (0..=765u16).step_by(9) {
+                for b3 in (0..=765u16).step_by(21) {
+                    for y35 in (0..=8925u16).step_by(175) {
+                        let want = exact(r3.into(), g3.into(), b3.into(), y35.into());
+                        assert_eq!(ycocg_scaled_exact([r3, g3, b3, y35]), want, "{r3} {g3} {b3} {y35}");
+                        n += 1;
+                    }
+                }
+            }
+        }
+        assert!(n > 8_000_000, "{n}");
+        // An exact half: G = 6230/35 + 8 * (633 - 384) / 48 = 178 + 41.5 = 219.5 -> 220.
+        assert_eq!(ycocg_scaled_exact([765, 633, 24, 6230]), [200, 220, 73]);
+        let f = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let (g, b, y) = (633.0 / 765.0, 24.0 / 765.0, 6230.0 / 8925.0);
+        assert_eq!(f(y + (g - 128.0 / 255.0) / (b * (255.0 / 8.0) + 1.0)), 219, "the float evaluation of the same texel");
+        // Out-of-range inputs clamp instead of overflowing.
+        assert_eq!(ycocg_scaled_exact([u16::MAX; 4]), ycocg_scaled_exact([765, 765, 765, 8925]));
     }
 }

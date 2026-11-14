@@ -14,6 +14,10 @@
 //! `--alpha-mode straight|premultiplied` (any command that opens clips): how the colour of DXV clips
 //! with alpha is read (default straight, Resolume Alley's convention).
 //!
+//! `--block-path sampled|exact` (decode, bench, verify): how BC1 / BC3 / BC4 frames are decoded on
+//! the GPU — by its fixed-function BC decoder (default, the fast path) or in the shader, bit-exact
+//! with the CPU decode (`dxvkit_plus_wgpu::BlockPath`).
+//!
 //! Every command prints JSON (one object per line) to stdout; errors go to stderr with exit status 1.
 #![forbid(unsafe_code)]
 
@@ -47,10 +51,28 @@ const USAGE: &str = "usage:
                           [--start F] [--frames N] [--quiet]
   dxvkit-plus compare <reference> <file> [--frame N] [--ref-frame M]
 options for commands that open clips:
-  --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)";
+  --alpha-mode straight|premultiplied   how DXV colour with alpha is read (default straight)
+  --block-path sampled|exact            GPU decode of BC1 / BC3 / BC4 frames: the GPU's own BC decoder
+                                        (default) or the shader decode, bit-exact with the CPU";
 
 /// The `--alpha-mode` choice for this run (set once in `main`).
 static ALPHA_MODE: std::sync::OnceLock<AlphaMode> = std::sync::OnceLock::new();
+
+/// The `--block-path` choice for this run (set once in `main`).
+static BLOCK_PATH: std::sync::OnceLock<dxvkit_plus_wgpu::BlockPath> = std::sync::OnceLock::new();
+
+/// The block path every renderer of this run is made with.
+pub fn block_path() -> dxvkit_plus_wgpu::BlockPath {
+    BLOCK_PATH.get().copied().unwrap_or_default()
+}
+
+/// [`block_path`] as the option spells it (printed in every bench and verify row).
+pub fn block_path_name() -> &'static str {
+    match block_path() {
+        dxvkit_plus_wgpu::BlockPath::Sampled => "sampled",
+        dxvkit_plus_wgpu::BlockPath::Exact => "exact",
+    }
+}
 
 /// The import options with this platform's backend.
 pub fn options() -> ImportOptions {
@@ -172,7 +194,11 @@ fn decode(args: &Args) -> Result<(), String> {
         (g.render_rgba(&d).map_err(|e| e.to_string())?, "gpu")
     };
     write_png(Path::new(out), w, h, &rgba)?;
-    json_line(&serde_json::json!({"decoded": path, "frame": d.index(), "width": w, "height": h, "route": route, "png": out}));
+    let mut row = serde_json::json!({"decoded": path, "frame": d.index(), "width": w, "height": h, "route": route, "png": out});
+    if let (true, Some(o)) = (route == "gpu", row.as_object_mut()) {
+        o.insert("block_path".into(), serde_json::json!(block_path_name()));
+    }
+    json_line(&row);
     Ok(())
 }
 
@@ -242,6 +268,7 @@ fn main() -> ExitCode {
             "frame",
             "ref-frame",
             "alpha-mode",
+            "block-path",
             "profile",
             "chroma",
             "quality",
@@ -261,6 +288,17 @@ fn main() -> ExitCode {
             }
         };
         let _ = ALPHA_MODE.set(mode);
+    }
+    if let Some(p) = args.value("block-path") {
+        let path = match p {
+            "sampled" => dxvkit_plus_wgpu::BlockPath::Sampled,
+            "exact" => dxvkit_plus_wgpu::BlockPath::Exact,
+            other => {
+                eprintln!("dxvkit-plus: --block-path {other}: expected sampled or exact");
+                return ExitCode::FAILURE;
+            }
+        };
+        let _ = BLOCK_PATH.set(path);
     }
     let r = match cmd.as_str() {
         "probe" => probe(&args),

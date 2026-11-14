@@ -1,12 +1,19 @@
 //! # dxvkit-plus-wgpu — DXVKit Plus frames on wgpu 30
 //!
-//! - **Block uploads.** CPU-decoded block planes (HAP: BC1 / BC3 / BC4 / BC7 / BC6H) go straight
-//!   into BC textures ([`create_bc_texture`] + [`write_bc`]): no CPU pixel decode on the playback
-//!   path. RGBA8 images upload as RGBA8.
+//! - **Block uploads.** CPU-decoded block planes (HAP, DXV, LMBD: BC1 / BC3 / BC4 / BC5 / BC7 /
+//!   BC6H) go straight to the GPU — into BC textures ([`create_bc_texture`] + [`write_bc`]) or as
+//!   integer texels, one per block: no CPU pixel decode on the playback path. RGBA8 images upload
+//!   as RGBA8.
 //! - **Conversion** ([`Converter`], WGSL [`CONVERT_WGSL`]) into a straight-alpha `Rgba8Unorm`
 //!   texture at the clip's own size, texel for texel: RGBA as stored (HAP "RGB" forced opaque), HAP
 //!   Q scaled YCoCg (+ BC4 alpha), HAP alpha-only, HDR BC6H (clamped), 4:2:0 YCbCr (BT.601 / 709 /
 //!   2020, video or full range) for native frames imported by a platform crate.
+//! - **Two block paths** ([`BlockPath`], per [`FrameRenderer`]). `Sampled` (the default) is the
+//!   above: the GPU's fixed-function decoder decodes BC1 / BC3 / BC4, measured within 1-3 / 255 of
+//!   the CPU decode on encoded footage. `Exact` uploads the same bytes as integer texels and decodes them in the shader
+//!   ([`BC_EXACT_WGSL`]) with the CPU decoders' integer arithmetic: DXV DXT1 / DXT5 / legacy DXT and
+//!   HAP Hap1 / Hap5 / HapY / HapM / HapA frames then equal `Decoded::to_rgba` bit for bit. DXV High
+//!   Quality is always decoded that way ([`DXV_HQ_WGSL`]).
 //! - [`FrameRenderer`] keeps the upload textures and the output across frames (a steady clip
 //!   reallocates nothing).
 //! - **Many layers** ([`Uploader`]): frames go up through persistent staging memory
@@ -26,7 +33,7 @@ mod lmbd;
 mod lmbx;
 mod staging;
 
-pub use convert::{CONVERT_WGSL, Converter, DirectView, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
+pub use convert::{BC_EXACT_WGSL, BlockPath, CONVERT_WGSL, Converter, DXV_HQ_WGSL, DirectView, FrameRenderer, NativePlanes, OUTPUT_FORMAT};
 pub use lmbd::LmbdTexture;
 pub use lmbx::{LMBX_OUT_WGSL, LMBX_WGSL, profile_passes};
 pub use staging::{StagedFrame, Uploader};

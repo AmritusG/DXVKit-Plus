@@ -2,7 +2,7 @@
 //! on one device. Each step decodes frame `f` on every layer (one thread per layer), uploads and
 //! converts every layer, and waits for the GPU. Reports wall time per step and a per-bucket
 //! breakdown (CPU wall clocks per phase; GPU time of the conversion passes from timestamp
-//! queries where the device has them).
+//! queries where the device has them). Every renderer is on the run's `--block-path`.
 
 use crate::bench::stats;
 use crate::json_line;
@@ -155,7 +155,7 @@ pub fn run(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu,
     for _ in 0..layers {
         srcs.push(source::open(info, &opts, false).map_err(|e| e.to_string())?);
     }
-    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::new(&gpu.device)).collect();
+    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::with_path(&gpu.device, crate::block_path())).collect();
     let stamps = Stamps::new(gpu, layers);
     let mut belt: Option<wgpu::util::StagingBelt> = None;
     let mut b = Buckets::default();
@@ -169,7 +169,7 @@ pub fn run(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu,
             let td = ms(t);
             let decoded: Vec<Decoded> = decoded.into_iter().collect::<Result<_, _>>()?;
             if decoded.iter().any(|d| matches!(d, Decoded::Native(_))) {
-                return Err("the layer benchmark runs block codecs (HAP, LMBD) only".into());
+                return Err("the layer benchmark runs block codecs (HAP, DXV, LMBD) only".into());
             }
             let (mut up, mut en, mut sb) = (0.0, 0.0, 0.0);
             let new_encoder = || gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render") });
@@ -248,7 +248,7 @@ pub fn run(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu,
         }
     }
     let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
-    "variant": variant.name(), "mode": "step", "sustained_fps": fps(&b.step),
+    "variant": variant.name(), "block_path": crate::block_path_name(), "mode": "step", "sustained_fps": fps(&b.step),
     "decode_all_layers": stats(b.decode.clone()), "step_decode_upload_convert": stats(b.step.clone()),
     "breakdown_p50_ms": {
         "cpu_decode": p50(&b.decode), "cpu_upload": p50(&b.upload_cpu), "cpu_encode": p50(&b.encode),
@@ -282,7 +282,7 @@ fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu:
     for _ in 0..layers {
         srcs.push(source::open(info, &opts, false).map_err(|e| e.to_string())?);
     }
-    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::new(&gpu.device)).collect();
+    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::with_path(&gpu.device, crate::block_path())).collect();
     let (mut interval, mut latency, mut wait_dec, mut decode, mut up, mut en, mut sb) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut measured_ms = 0.0;
     std::thread::scope(|s| -> Result<(), String> {
@@ -323,7 +323,7 @@ fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu:
             let dec = frames.iter().map(|f| f.1).fold(0.0, f64::max);
             let decoded: Vec<Decoded> = frames.into_iter().map(|f| f.2).collect();
             if decoded.iter().any(|d| matches!(d, Decoded::Native(_))) {
-                return Err("the layer benchmark runs block codecs (HAP, LMBD) only".into());
+                return Err("the layer benchmark runs block codecs (HAP, DXV, LMBD) only".into());
             }
             let uploader = uploader.get_or_insert_with(|| Uploader::new(&gpu.device, decoded.iter().map(|d| d.cpu_bytes() as u64).sum(), depth));
             let mut enc = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render") });
@@ -372,7 +372,7 @@ fn run_pipelined(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu:
     })?;
     let sustained = if measured_ms > 0.0 { (f64::from(n) * 1000.0 / measured_ms * 10.0).round() / 10.0 } else { 0.0 };
     let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
-    "variant": variant.name(), "mode": "sustained", "sustained_fps": sustained,
+    "variant": variant.name(), "block_path": crate::block_path_name(), "mode": "sustained", "sustained_fps": sustained,
     "step_interval": stats(interval.clone()), "step_decode_upload_convert": stats(interval),
     "latency_decode_start_to_texture_ready": stats(latency),
     "decode_all_layers": stats(decode.clone()),
@@ -401,7 +401,7 @@ fn run_into(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu
         srcs.push(source::open(info, &opts, false).map_err(|e| e.to_string())?);
     }
     let layout = srcs.first().and_then(|s| s.layout()).ok_or("this clip has no fixed frame layout (decode_into needs one)")?;
-    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::new(&gpu.device)).collect();
+    let mut renderers: Vec<FrameRenderer> = (0..layers).map(|_| FrameRenderer::with_path(&gpu.device, crate::block_path())).collect();
     let step_bytes: u64 = layout.planes.iter().filter_map(|p| p.bytes()).map(|b| b as u64).sum::<u64>().saturating_mul(u64::from(layers));
     let mut uploader = Uploader::new(&gpu.device, step_bytes, 2);
     let (mut interval, mut latency, mut wait_dec, mut decode, mut up, mut en, mut sb) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
@@ -494,7 +494,7 @@ fn run_into(path: &str, info: &source::MediaInfo, layers: u32, n: u32, gpu: &Gpu
     })?;
     let sustained = if measured_ms > 0.0 { (f64::from(n) * 1000.0 / measured_ms * 10.0).round() / 10.0 } else { 0.0 };
     let mut row = json!({"file": path, "codec": info.codec, "width": info.width, "height": info.height, "measure": "layers", "layers": layers,
-    "variant": variant.name(), "mode": "sustained", "sustained_fps": sustained,
+    "variant": variant.name(), "block_path": crate::block_path_name(), "mode": "sustained", "sustained_fps": sustained,
     "step_interval": stats(interval.clone()), "step_decode_upload_convert": stats(interval),
     "latency_decode_start_to_texture_ready": stats(latency),
     "decode_all_layers": stats(decode.clone()),

@@ -91,6 +91,75 @@ fn every_command_works_on_every_fixture() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// `--block-path exact`: every CPU-decoded fixture verifies with nothing allowed between the CPU and
+/// the GPU (both alpha modes for DXV), `decode` writes the CPU decode's pixels, and bench rows name
+/// the path. The default stays the sampled path.
+#[test]
+fn block_path_exact_verifies_with_zero_tolerance() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures");
+    let mut files: Vec<PathBuf> =
+        fixtures().into_iter().filter(|f| ["tiles_hap", "tiles_dxt", "tiles_y", "synthetic_hap7"].iter().any(|n| f.to_str().unwrap().contains(n))).collect();
+    for group in ["glenc", "synthetic"] {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(dir.join("dxvkit/streams").join(group))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("mov"))
+            .collect();
+        v.sort();
+        files.extend(v);
+    }
+    assert_eq!(files.len(), 12 + 24);
+    for mode in ["straight", "premultiplied"] {
+        let rows = run(bin().args(["verify", "--block-path", "exact", "--alpha-mode", mode]).args(&files));
+        assert_eq!(rows.len(), files.len());
+        for r in &rows {
+            assert_eq!(r["pass"], true, "{r}");
+            assert_eq!(r["block_path"], "exact", "{r}");
+            assert_eq!(
+                (r["cpu_vs_gpu"]["max_rgb"].as_u64(), r["cpu_vs_gpu"]["max_alpha"].as_u64(), r["cpu_vs_gpu"]["allowed"].as_u64()),
+                (Some(0), Some(0), Some(0)),
+                "{r}"
+            );
+            assert!(r["cpu_vs_gpu"]["frames"].as_u64() >= Some(1), "{r}");
+            assert_eq!(r["upload_paths_vs_render"]["max_diff"], 0, "{r}");
+        }
+    }
+    // The default path is the sampled one, with its own tolerances.
+    let hapy = files.iter().find(|f| f.to_str().unwrap().contains("tiles_hapy")).unwrap();
+    let d = &run(bin().arg("verify").arg(hapy))[0];
+    assert_eq!((d["block_path"].as_str(), d["cpu_vs_gpu"]["allowed"].as_u64(), d["pass"].as_bool()), (Some("sampled"), Some(3), Some(true)), "{d}");
+    // decode: the exact path's PNG holds the CPU decode's pixels.
+    let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-exact-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let pixels = |png: &Path| {
+        let mut r = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(png).unwrap())).read_info().unwrap();
+        let mut buf = vec![0; r.output_buffer_size().unwrap()];
+        r.next_frame(&mut buf).unwrap();
+        buf
+    };
+    for f in files.iter().filter(|f| f.to_str().unwrap().contains("tiles_")) {
+        let (gpu, cpu) = (tmp.join("gpu.png"), tmp.join("cpu.png"));
+        let row = &run(bin().arg("decode").arg(f).arg("5").arg(&gpu).args(["--block-path", "exact"]))[0];
+        assert_eq!((row["route"].as_str(), row["block_path"].as_str()), (Some("gpu"), Some("exact")));
+        run(bin().arg("decode").arg(f).arg("5").arg(&cpu).arg("--cpu"));
+        assert!(pixels(&gpu) == pixels(&cpu), "{f:?}: the exact path's PNG differs from the CPU decode");
+        // Negative control: another frame's pixels are not these (the alpha-only clip's alpha does
+        // not move between frames).
+        if !f.to_str().unwrap().contains("hapa") {
+            run(bin().arg("decode").arg(f).arg("6").arg(&cpu).arg("--cpu"));
+            assert!(pixels(&gpu) != pixels(&cpu), "{f:?}: frame 6 must differ from frame 5");
+        }
+    }
+    let b = run(bin()
+        .args(["bench", "--frames", "2", "--layers", "2", "--layers-only", "--variants", "staged,pipelined2,into2", "--block-path", "exact"])
+        .arg(hapy));
+    assert_eq!(b.len(), 3);
+    assert!(b.iter().all(|x| x["block_path"] == "exact" && x["layers"] == 2), "{b:#?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+    let bad = bin().args(["verify", "--block-path", "sideways"]).arg(hapy).output().unwrap();
+    assert!(!bad.status.success() && !bad.stderr.is_empty());
+}
+
 #[test]
 fn errors_exit_nonzero_with_a_message() {
     for args in [vec!["probe", "/nonexistent.mov"], vec!["decode"], vec!["nope"], vec!["decode", "/nonexistent.mov", "x", "o.png"]] {

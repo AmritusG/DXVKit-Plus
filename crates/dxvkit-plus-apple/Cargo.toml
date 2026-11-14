@@ -31,6 +31,8 @@ arithmetic_side_effects = "warn"
 dbg_macro = "warn"
 too_many_arguments = "allow"
 type_complexity = "allow"
+# As in the workspace table (new in clippy 1.99, style only).
+chunks_exact_to_as_chunks = "allow"
 undocumented_unsafe_blocks = "deny"
 
 

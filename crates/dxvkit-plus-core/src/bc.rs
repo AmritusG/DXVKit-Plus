@@ -1,8 +1,9 @@
 //! CPU BCn block decoding — the CPU oracle for the GPU path (BC1 / BC3 / BC4 per the public S3TC and
 //! RGTC definitions). The integer conventions are DXVKit's (`src/pixels.c`, spec 8.1–8.3; DXVKit
 //! 1.0.0, MIT, Copyright (c) 2026 Amrit Rosell, `LICENSES/DXVKit-MIT.txt`): bit-replicated 565 expansion, truncating interpolation, BC3 colour always
-//! four-colour. A GPU decoder may differ by 1 in some values (spec 8: "a GPU or another CPU decoder
-//! may differ by 1"); comparisons against the GPU use a 1/255 tolerance where they do.
+//! four-colour. A GPU's fixed-function decoder may differ by 1 in some values (spec 8: "a GPU or
+//! another CPU decoder may differ by 1"); `dxvkit-plus-wgpu`'s exact path decodes the blocks in the
+//! shader with this module's arithmetic instead and agrees bit for bit.
 //
 // Lint note: every integer operand in this module is a byte (<= 255) or a palette weight (<= 7), so
 // no expression can exceed 255 * 35 * 2 and overflow is impossible by type; the arithmetic lint is
@@ -82,36 +83,35 @@ pub fn bc4_block_exact(blk: &[u8]) -> [u16; 16] {
     })
 }
 
-/// 16 RGBA pixels of a BC3 block with the exact (unrounded) palettes, normalised to 0..1: colour
-/// entries are exact thirds of the expanded endpoints (always four-colour in BC3), alpha entries
-/// exact sevenths / fifths. The HAP Q oracle uses this so the YCoCg transform sees the same values
-/// a float GPU decoder does (integer truncation would compound across three channels).
-pub fn bc3_block_exact(blk: &[u8]) -> [[f64; 4]; 16] {
-    let mut out = [[0f64; 4]; 16];
+/// 16 texels of a BC3 block with the exact (unrounded) palettes, as whole numbers: colour in thirds
+/// of a code value (0..=765; BC3 colour is always four-colour, so every entry is a whole number of
+/// thirds of the bit-replicated endpoints), alpha in 35ths (0..=8925, [`bc4_block_exact`]). The HAP Q
+/// oracle uses this so the YCoCg transform sees the palette a reference decoder defines, not one
+/// already truncated to 8 bits (truncation would compound across three channels). A short block
+/// decodes as zeros.
+pub fn bc3_block_exact(blk: &[u8]) -> [[u16; 4]; 16] {
+    let mut out = [[0u16; 4]; 16];
     let alpha = bc4_block_exact(blk);
     let c = blk.get(8..).unwrap_or_default();
     let (Some(c0), Some(c1), Some(mut idx)) = (le16(c, 0), le16(c, 2), le32(c, 4)) else { return out };
-    let expand = |c: u32| -> [f64; 3] {
+    let expand = |c: u32| -> [u32; 3] {
         let (r, g, b) = (c >> 11, (c >> 5) & 63, c & 31);
-        [f64::from((r << 3) | (r >> 2)), f64::from((g << 2) | (g >> 4)), f64::from((b << 3) | (b >> 2))]
+        [(r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2)]
     };
     let (p0, p1) = (expand(c0), expand(c1));
-    for (i, px) in out.iter_mut().enumerate() {
-        let w = f64::from(idx & 3);
-        idx >>= 2;
+    for (px, a) in out.iter_mut().zip(alpha) {
         // index 0 = c0, 1 = c1, 2 = (2 c0 + c1) / 3, 3 = (c0 + 2 c1) / 3
-        let t = match w as u32 {
-            0 => 0.0,
-            1 => 1.0,
-            2 => 1.0 / 3.0,
-            _ => 2.0 / 3.0,
+        let (w0, w1) = match idx & 3 {
+            0 => (3, 0),
+            1 => (0, 3),
+            2 => (2, 1),
+            _ => (1, 2),
         };
-        for k in 0..3 {
-            if let (Some(d), Some(a), Some(b)) = (px.get_mut(k), p0.get(k), p1.get(k)) {
-                *d = (a + (b - a) * t) / 255.0;
-            }
+        idx >>= 2;
+        for ((d, a), b) in px.iter_mut().zip(p0).zip(p1) {
+            *d = (w0 * a + w1 * b) as u16;
         }
-        px[3] = f64::from(alpha.get(i).copied().unwrap_or(0)) / (255.0 * 35.0);
+        px[3] = a;
     }
     out
 }
@@ -168,5 +168,26 @@ mod tests {
         let v6 = bc4_block(&six);
         assert_eq!((v6[0], v6[1]), (0, 255));
         assert_eq!(premul(255, 128), 128);
+    }
+
+    #[test]
+    fn bc3_exact_palette_is_in_thirds_and_35ths() {
+        // alpha 200 / 100 (indices 2, 1, 0), colour c0 = 0xF800 (red), c1 = 0x001F (blue), indices 0..3.
+        let blk = [200, 100, 0b0000_1010, 0, 0, 0, 0, 0, 0x00, 0xF8, 0x1F, 0x00, 0b1110_0100, 0, 0, 0];
+        let px = bc3_block_exact(&blk);
+        assert_eq!(px[0], [765, 0, 0, (6 * 200 + 100) * 5]);
+        assert_eq!(px[1], [0, 0, 765, 100 * 35]);
+        assert_eq!(px[2], [510, 0, 255, 200 * 35]);
+        assert_eq!(px[3], [255, 0, 510, 200 * 35]);
+        // The truncated decode is this palette divided down: thirds / 3, 35ths / 35.
+        let mut c = bc1_block(&blk[8..], true);
+        for (p, a) in c.iter_mut().zip(bc4_block(&blk)) {
+            p[3] = a;
+        }
+        for (e, t) in px.iter().zip(c) {
+            assert_eq!([e[0] / 3, e[1] / 3, e[2] / 3, e[3] / 35].map(|v| v as u8), t);
+        }
+        // Negative control: a short block is zeros, not a panic.
+        assert_eq!(bc3_block_exact(&blk[..11]), [[0; 4]; 16]);
     }
 }

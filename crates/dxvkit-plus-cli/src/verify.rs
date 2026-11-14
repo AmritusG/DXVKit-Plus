@@ -1,7 +1,10 @@
-//! `dxvkit-plus verify`: per file, every frame through the CPU and the GPU paths —
+//! `dxvkit-plus verify`: per file, every frame through the CPU and the GPU paths. With
+//! `--block-path exact` every CPU-decoded frame must equal the GPU's, every channel of every texel
+//! (HAP HDR has no CPU decode); on the default sampled path —
 //!
 //! - CPU vs GPU: HAP block codecs within 1/255 (the BC conventions allow a GPU to differ by 1),
-//!   HAP Q within 2/255 (the YCoCg conversion after a BC3 decode may round differently twice), DXV
+//!   HAP Q within 3/255 (the YCoCg conversion sums three channels of a BC3 decode that each round
+//!   differently; measured 3 on real 1080p clips on Apple M5 Max, 0.7.1 and 0.8.0 alike), DXV
 //!   DXT1 / DXT5 within 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating integer
 //!   convention, DXVKit spec 8.1; premultiplied colour compared as shown, premultiplied back), DXV
 //!   High Quality, LMBD (BC7) and BGRA native frames exactly (integer decode in the shader; BC7
@@ -18,10 +21,22 @@ use crate::gpu::{AltPaths, Session};
 use crate::{Args, json_line, probe_open};
 use dxvkit_plus_core::source::{Decoded, Shading, SourceKind};
 use dxvkit_plus_core::testpattern::{read_frame_id, tiles};
+use dxvkit_plus_wgpu::BlockPath;
 use serde_json::json;
 
 fn fnv(b: &[u8]) -> u64 {
     b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ u64::from(x)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// Max channel difference (RGB and A separately) over every channel of every texel — the exact
+/// path's comparison: colour under alpha 0 counts too.
+fn max_diff_strict(a: &[u8], b: &[u8]) -> (u8, u8) {
+    let (mut c, mut al) = (u8::from(a.len() != b.len()), 0u8);
+    for ([pr, pg, pb, pa], [qr, qg, qb, qa]) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
+        al = al.max(pa.abs_diff(*qa));
+        c = c.max(pr.abs_diff(*qr)).max(pg.abs_diff(*qg)).max(pb.abs_diff(*qb));
+    }
+    (c, al)
 }
 
 /// Max channel difference (RGB and A separately), ignoring colour where the reference alpha is 0.
@@ -38,13 +53,17 @@ fn max_diff(a: &[u8], b: &[u8]) -> (u8, u8) {
     (c, al)
 }
 
-/// Allowed CPU-vs-GPU channel difference, per source kind and frame shading: native (BGRA), LMBD
-/// (BC7) and DXV High Quality exact, HAP Q (HapY, HapM) and DXV DXT1 / DXT5 2/255, the other block
-/// codecs 1/255.
-fn cpu_tolerance(kind: SourceKind, shading: Option<Shading>) -> u8 {
+/// Allowed CPU-vs-GPU channel difference, per source kind and frame shading: on the exact path 0
+/// for everything; on the sampled path native (BGRA), LMBD (BC7) and DXV High Quality exact, HAP Q
+/// (HapY, HapM) 3/255, DXV DXT1 / DXT5 2/255, the other block codecs 1/255.
+fn cpu_tolerance(path: BlockPath, kind: SourceKind, shading: Option<Shading>) -> u8 {
+    if path == BlockPath::Exact {
+        return 0;
+    }
     match (kind, shading) {
         (SourceKind::Native | SourceKind::Lmbd, _) | (_, Some(Shading::DxvYcocg { .. })) => 0,
-        (_, Some(Shading::HapYcocg { .. })) | (SourceKind::Dxv, _) => 2,
+        (_, Some(Shading::HapYcocg { .. })) => 3,
+        (SourceKind::Dxv, _) => 2,
         _ => 1,
     }
 }
@@ -130,10 +149,17 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
             }
         }
         let shading = if let Decoded::Planes { shading, .. } = &d { Some(*shading) } else { None };
-        cpu_tol = cpu_tol.max(cpu_tolerance(info.kind, shading));
+        let exact = crate::block_path() == BlockPath::Exact && matches!(d, Decoded::Planes { .. });
+        cpu_tol = cpu_tol.max(cpu_tolerance(crate::block_path(), info.kind, shading));
         let hdr = shading == Some(Shading::Hdr);
         if !hdr && let Ok(c) = src.cpu_rgba(&d) {
-            let (dc, da) = if shading == Some(Shading::RgbaPremultiplied) { max_diff_shown(&g, &c) } else { max_diff(&g, &c) };
+            let (dc, da) = if exact {
+                max_diff_strict(&g, &c)
+            } else if shading == Some(Shading::RgbaPremultiplied) {
+                max_diff_shown(&g, &c)
+            } else {
+                max_diff(&g, &c)
+            };
             worst_c = worst_c.max(dc);
             worst_a = worst_a.max(da);
             cpu_checked = cpu_checked.saturating_add(1);
@@ -198,8 +224,8 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
     }
     Ok(json!({
         "file": path, "codec": info.codec, "kind": info.kind, "frames": n, "width": info.width, "height": info.height,
-        "pass": problems.is_empty(), "problems": problems,
-        "cpu_vs_gpu": {"frames": cpu_checked, "max_rgb": worst_c, "max_alpha": worst_a},
+        "pass": problems.is_empty(), "problems": problems, "block_path": crate::block_path_name(),
+        "cpu_vs_gpu": {"frames": cpu_checked, "max_rgb": worst_c, "max_alpha": worst_a, "allowed": cpu_tol},
         "upload_paths_vs_render": {"frames": alt_frames, "decode_into_frames": into_frames, "direct_view_frames": direct_frames, "max_diff": alt_worst},
         "seek_frames_checked": order.len(), "frame_identity": tiles_check,
         "source_max_diff": if src_tol.is_some() { json!(src_worst) } else { json!(null) },
@@ -213,13 +239,17 @@ fn verify_one(path: &str, tiles_check: bool, src_tol: Option<u32>) -> Result<ser
 mod tests {
     use super::*;
 
-    /// Pins the CPU-vs-GPU tolerances: HAP Q and DXV DXT1 / DXT5 2/255, other HAP 1/255, LMBD,
-    /// native and DXV High Quality exact.
+    /// Pins the CPU-vs-GPU tolerances: on the sampled path HAP Q 3/255, DXV DXT1 / DXT5 2/255, other
+    /// HAP 1/255, LMBD, native and DXV High Quality exact; on the exact path 0 for all of them.
     #[test]
     fn cpu_tolerance_per_shading() {
+        let cpu_tolerance = |kind, shading: Option<Shading>| {
+            assert_eq!(super::cpu_tolerance(BlockPath::Exact, kind, shading), 0);
+            super::cpu_tolerance(BlockPath::Sampled, kind, shading)
+        };
         let planes = |s| cpu_tolerance(SourceKind::Hap, Some(s));
-        assert_eq!(planes(Shading::HapYcocg { alpha: false }), 2);
-        assert_eq!(planes(Shading::HapYcocg { alpha: true }), 2);
+        assert_eq!(planes(Shading::HapYcocg { alpha: false }), 3);
+        assert_eq!(planes(Shading::HapYcocg { alpha: true }), 3);
         assert_eq!(planes(Shading::Rgba { opaque: false }), 1);
         assert_eq!(planes(Shading::Rgba { opaque: true }), 1);
         assert_eq!(planes(Shading::AlphaOnly), 1);
@@ -231,5 +261,9 @@ mod tests {
         assert_eq!(dxv(Shading::Rgba { opaque: false }), 2);
         assert_eq!(dxv(Shading::RgbaPremultiplied), 2);
         assert_eq!(cpu_tolerance(SourceKind::Native, None), 0);
+        // The strict comparison sees colour under alpha 0, which the sampled path's ignores.
+        let (a, b) = ([10u8, 20, 30, 0], [11u8, 20, 30, 0]);
+        assert_eq!(max_diff_strict(&a, &b), (1, 0));
+        assert_eq!(max_diff(&a, &b), (0, 0));
     }
 }

@@ -532,13 +532,13 @@ pub fn planes_to_rgba(shading: Shading, planes: &[Plane], width: u32, height: u3
                 Shading::Rgba { opaque: true } => px.iter_mut().for_each(|p| p[3] = 255),
                 Shading::Rgba { opaque: false } => {}
                 Shading::HapYcocg { alpha } => {
-                    // Exact (unrounded) BC3 palette, as a float GPU decoder sees it.
+                    // The exact (unrounded) BC3 palette, in whole thirds and 35ths.
                     let n = first.format.unit_bytes() as usize;
                     let s = block.saturating_mul(n);
                     let exact = crate::bc::bc3_block_exact(first.data.get(s..s.saturating_add(n)).unwrap_or_default());
                     let a = if alpha { planes.get(1).map(|p| block_rgba(p, block)).transpose()? } else { None };
                     for (i, p) in px.iter_mut().enumerate() {
-                        let [r, g, b] = hap::ycocg_scaled_to_rgb_f(exact.get(i).copied().unwrap_or_default());
+                        let [r, g, b] = hap::ycocg_scaled_exact(exact.get(i).copied().unwrap_or_default());
                         let al = a.as_ref().and_then(|a| a.get(i)).map(|q| q[0]).unwrap_or(255);
                         *p = [r, g, b, al];
                     }

@@ -1,5 +1,5 @@
-//! The GPU path against the CPU oracles, on the Mac Studio's GPU (skips without a GPU unless
-//! `DXVKIT_PLUS_REQUIRE_GPU=1`).
+//! The GPU path against the CPU oracles, on the default (sampled) block path — the exact path's
+//! tests are in `exact.rs` (skips without a GPU unless `DXVKIT_PLUS_REQUIRE_GPU=1`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use dxvkit_plus_core::bc::premul;
@@ -84,7 +84,8 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-/// Every HAP fixture frame on the GPU matches the CPU oracle within 1/255 and carries its index.
+/// Every HAP fixture frame on the GPU (sampled path) matches the CPU oracle within 1/255 and
+/// carries its index.
 #[test]
 fn hap_fixtures_gpu_match_the_cpu() {
     let Some(g) = gpu() else { return };

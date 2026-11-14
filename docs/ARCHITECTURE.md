@@ -19,9 +19,12 @@
                │ transport::Transport (which frame, at exact integer time)
                ▼                         ▼
    dxvkit-plus-wgpu::FrameRenderer   dxvkit-plus-apple::surface::import (zero-copy)
-   write_bc → BC texture             IOSurface plane(s) → MTLTexture → wgpu::Texture
+   BlockPath::Sampled: write_bc →    IOSurface plane(s) → MTLTexture → wgpu::Texture
+     BC texture (GPU decodes)
+   BlockPath::Exact: the same bytes
+     as integer texels (shader decodes)
                └──────────┬──────────────┘
-                 WGSL CONVERT pass → Rgba8Unorm at clip size
+                 WGSL conversion pass → Rgba8Unorm at clip size
 ```
 
 ## Crates
@@ -30,7 +33,7 @@
 |---|---|---|---|
 | `dxvkit-plus-core` | forbidden | none | demux, HAP, DXV, the LMBD container (LMB7 and LMBX), CPU block decoders, sources, cache, transport, time, the `Backend` trait; links libzstd for LMBD decode by default (`zstd-c`), or pure Rust (`zstd-rust`) |
 | `dxvkit-plus-lmbd-enc` | forbidden | none | the LMBD encoders: LMB7 (4-mode BC7 + RDO, Zstd; links libzstd through the `zstd` crate) and LMBX (DCT + RDOQ + rANS, rate control) |
-| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, staged uploads (`Uploader`, `StagedFrame`), the WGSL conversion and direct sampling (`DirectView`), read-back, `LmbdTexture` |
+| `dxvkit-plus-wgpu` | forbidden | wgpu 30 | BC textures, staged uploads (`Uploader`, `StagedFrame`), the WGSL conversion on two block paths (`BlockPath`: sampled, or exact — decoded in the shader) and direct sampling (`DirectView`), read-back, `LmbdTexture` |
 | `dxvkit-plus-apple` | **allowed** (every block has a `// SAFETY:` comment) | wgpu-hal Metal | AVFoundation / VideoToolbox decode, IOSurface → wgpu import |
 | `dxvkit-plus-cli` | forbidden | wgpu | the `dxvkit-plus` command |
 
@@ -45,7 +48,9 @@ opaque handle.
 caps: 64 MB `moov`, 2^24 samples, 300 MB per sample). `hap::decode` walks the section tree (4- or
 8-byte headers), decompresses Snappy or the chunk table (chunks decompress in parallel when asked),
 and returns each image's raw block stream, exactly `ceil(w/4) * ceil(h/4) * block_bytes` long. The
-blocks upload unchanged (`write_bc`); the GPU decodes them. No CPU pixel work on the playback path.
+blocks upload unchanged — into BC textures the GPU decodes (`write_bc`, the sampled path), or as
+integer texels the conversion shader decodes (the exact path, [below](#block-paths-080)). No CPU
+pixel work on the playback path.
 
 **DXV.** A safe-Rust port of DXVKit's C decoder (`core::dxv`, carried over from Loombda-rs, where
 it was ported line for line from DXVKit 1.0.0; DXVKit is itself written from its own
@@ -55,7 +60,8 @@ DXV3's block-copy layers (DXT1 / DXT5: 2-bit flags, back references, DXT5 alpha 
 opcode streams (stored, fill, or FSE entropy-coded opcodes; the two sections decode on two
 threads when asked), or a stored payload; and legacy `DXDI` (DXV1 / 2: LZF DXT1 / DXT5, or stored).
 Output is the normative block streams of the whole coded texture (display size rounded up to 16).
-DXT1 / DXT5 upload as BC textures and sample as stored (`direct_view` qualifies). DXV High
+DXT1 / DXT5 upload as BC textures and sample as stored (`direct_view` qualifies) on the sampled
+path, or are decoded in the shader on the exact path ([below](#block-paths-080)). DXV High
 Quality uploads the same bytes as integer texels — one `Rg32Uint` / `Rgba32Uint` texel per BC4 /
 BC5 block — and its own WGSL pass (`DXV_HQ_WGSL`) decodes the BC4 palettes exactly and converts
 YCoCg with DXVKit's spec 8.4 integer arithmetic (nearest chroma, midpoint 127.5, out-of-gamut
@@ -154,16 +160,98 @@ Milliseconds, mean of three runs (each 30 frames × 5 passes; raw lines in `docs
 
 Both routes produce identical pixels (tested on every native fixture frame).
 
+## Block paths (0.8.0)
+
+A `FrameRenderer` decodes BC1 / BC3 / BC4 frames — DXV DXT1 / DXT5 / legacy DXT, HAP Hap1 / Hap5 /
+HapY / HapM / HapA — on one of two paths, chosen per renderer (`BlockPath`,
+`FrameRenderer::with_path` / `set_path`; `#[repr(u32)]`, the default is `Sampled`, so a renderer made
+with `FrameRenderer::new` behaves as before 0.8.0 — its output is byte-identical to 0.7.1's).
+
+| | `BlockPath::Sampled` (default) | `BlockPath::Exact` |
+|---|---|---|
+| Upload | the blocks into a BC texture (`Bc1RgbaUnorm`, `Bc3RgbaUnorm`, `Bc4RUnorm`) | the same bytes, the same rows, into an integer texture: one `Rg32Uint` texel per 8-byte block, one `Rgba32Uint` texel per 16-byte block |
+| Decode | the GPU's fixed-function BC decoder, when `CONVERT_WGSL` reads the texel | `BC_EXACT_WGSL`: the CPU decoders' integer arithmetic, in the fragment shader |
+| Contract against `Decoded::to_rgba` | encoded footage within 1 / 255 (Hap1, Hap5, HapA), 2 / 255 (DXT1, DXT5), 3 / 255 (HAP Q) — measured, Apple M5 Max; arbitrary blocks up to 3 (HAP Q 6); un-premultiplied colour scales that step by 255 / alpha | **equal: every channel of every texel, at every tested size** |
+| `direct_view` (no conversion pass) | BC1 / BC3 / BC7 frames | BC7 frames only: integer texels cannot be sampled |
+| Use it for | many layers, the lowest GPU time | pictures that must equal a reference decode |
+
+Frames that are exact on both paths take the same route on both: DXV High Quality (always decoded
+in the shader, `DXV_HQ_WGSL`), BC7 (HAP R, LMB7 — the GPU's BC7 decode is exact integer arithmetic,
+tested against our CPU decoder), LMBX and RGBA8. HAP HDR (BC6H) has no CPU decoder and is always
+sampled. The exact pipeline is built on a renderer's first exact frame, so a renderer on the sampled
+path compiles nothing new.
+
+**What the exact shader computes, per variant** (the oracle is `core::bc` / `core::hap`, which follow
+the sources named):
+
+| Variant | Palette and rounding | Source |
+|---|---|---|
+| DXV DXT1, legacy DXT1, HAP Hap1 (BC1) | 5:6:5 endpoints widened by bit replication; thirds and halves **truncated**; three-colour mode's fourth entry black; alpha 255 | DXVKit spec 8.1, `src/pixels.c` (`bc::bc1_block`) |
+| DXV DXT5, legacy DXT5, HAP Hap5 (BC3) | colour always four-colour, thirds **truncated**; alpha sevenths / fifths **truncated** (six-value mode ends in 0 and 255) | DXVKit spec 8.2 (`bc::bc1_block`, `bc::bc4_block`) |
+| DXV DXT5 read premultiplied | as above, then `min(255, (c * 255 + a / 2) / a)`, a = 0 keeps c | `bc::unpremul` |
+| HAP HapA (BC4) | sevenths / fifths **truncated**, shown as grey, alpha 255 | `bc::bc4_block` |
+| HAP Q HapY, HapM (BC3 scaled YCoCg) | the **exact** palettes — colour in thirds, Y in 35ths of a code value — through the scaled-YCoCg transform 0.7.1 already used (offset 128 / 255, `scale = B * 255 / 8 + 1`) over one common denominator, **rounded to nearest, halves up**; HapM's alpha plane truncated like Hap5's | this library's reading of van Waveren & Castaño 2007, the paper the HAP specification references (`bc::bc3_block_exact`, `hap::ycocg_scaled_exact`) |
+
+HAP's own variants thus share DXVKit's truncating convention for plain BC1 / BC3 / BC4 (this
+library has one integer BC decoder), and only HAP Q keeps the untruncated palette, because
+truncating three channels before the YCoCg transform compounds. Until 0.8.0 the HAP Q oracle
+evaluated that transform in `f64`, which lands on either side of an exact half: it rounded down
+574 662 of 200 000 000 random texels that the exact value rounds up (2.1% of the HAP Q fixtures'
+texels, 7.0% of a real 1080p HAP Q Alpha clip's — always by 1). No shader can reproduce float noise,
+so the oracle is now the integer formula and the shader computes the same expression.
+
+**Rules the exact shader keeps so that every backend computes the same value** (wgpu 30.0.1 /
+naga 30.0.1; the MSL and HLSL naga writes for these shaders are checked in `wgpu/tests/exact.rs`):
+
+- *Integer texels, never sampled.* `texture_2d<u32>` + `textureLoad`: `Rg32Uint` / `Rgba32Uint` are
+  core WebGPU formats (no feature needed; `TEXTURE_BINDING | COPY_DST`), not filterable, and no
+  sampler is bound. naga writes `Texture2D<uint4>.Load` (HLSL) and `texture2d<uint>.read` (MSL).
+  The texel's words are the block's bytes as little-endian `u32`s, which is the byte order of
+  every wgpu target.
+- *Unsigned division only, never by zero.* naga wraps every integer `/` in `naga_div`
+  (`lhs / (rhs == 0 ? 1 : rhs)` in the MSL and the HLSL it writes), so `x / 0 = x` there; the shader divides
+  only by constants, by a non-zero alpha, and by `2 * 35 * (b3 + 24) >= 1680`. Signed values are
+  clamped at zero before they are divided, so no back end's rounding of a negative quotient matters.
+- *Shift counts below 32.* naga writes `<<` / `>>` as they are, and WGSL defines the count modulo
+  the bit width; the shader never relies on that: every count is a constant from 1 to 16, `2 * i`
+  (i < 16), or a BC4 bit position proven inside 0..31 by its branch.
+- *No overflow.* Apart from the blocks' own 32-bit words (only shifted and masked), every
+  arithmetic result is below 2^24 (the largest: `2 * n + 35 * (b3 + 24)` < 14.2 million).
+- *Texel address from the fragment position.* `vec2<u32>(position.xy)`: fragment centres are at
+  `.5` on every backend and naga's `f2u32` helper clamps then truncates; `xy / 4` is the block,
+  `(y & 3) * 4 + (x & 3)` the texel in it. The plane can be larger than the picture (HAP rounds up
+  to 4, DXV codes to 16); the padding is never addressed.
+- *Float only at the very end.* The result is a whole number 0..255 written as `n / 255.0` into
+  `Rgba8Unorm`. Whether a back end divides or multiplies by a reciprocal, the value is within
+  2^-22 of `n / 255`, far inside the half code value a unorm conversion needs.
+- *Not yet run on D3D12 or Vulkan.* naga validates the shaders and translates them to MSL and HLSL
+  in the test suite; no SPIR-V was generated and nothing was compiled by FXC / DXC. The
+  0-difference test itself has run on Metal only and runs on D3D12 at the Windows wave.
+
+**Cost** (release, Apple M5 Max, Resolume Arena running on the same GPU; raw:
+`docs/data/w1-exact-path-*`): the conversion pass of one 1080p layer takes 30-48 µs sampled and
+50-73 µs exact (HAP Q: 30-34 µs and 84-93 µs) — wall time from submission to the GPU being done,
+64 passes per submission, so an upper bound on GPU time. For 16 layers that is 0.5-0.8 ms per step
+sampled against 0.8-1.5 ms exact. Decode and upload are the same on both paths (the same bytes go
+up), so a pipelined player that converts every layer runs at the same speed within the run-to-run
+spread (exact / sampled: median 1.04, range 0.70-1.25 over 18 clip and layer-count cases). What the
+exact path gives up is `direct_view`, which lets a compositor skip the pass for plain BC1 / BC3
+frames: at 16 layers 1792 / 1006 / 1279 / 671 steps/s sampled directly (Hap1 / Hap5 / DXT1 / DXT5;
+`pipelined2_direct`) against 925 / 706 / 884 / 611 for the same variant on the exact path.
+
 ## Accuracy contracts
 
 | Path | Contract | Test |
 |---|---|---|
 | HAP Hap1 / Hap5 / HapA (CPU) | exact to the source pattern (0/255 measured; 1/255 allowed) | `core/tests/fixtures.rs` |
 | HAP Q HapY / HapM (CPU) | ≤ 2/255 to the source (chroma is lossy by design) | same |
-| GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1); HAP Q ≤ 2/255 | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| HAP Q transform (CPU) | the exact rational value rounded half up, on a grid of 8 604 128 inputs against `i128` arithmetic | `core/src/hap.rs` tests |
+| **Exact path** GPU vs CPU: DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied), HAP Hap1 / Hap5 / HapY / HapM / HapA | **bit-exact** (max 0, all four channels): every frame of the committed fixtures and vectors (488 frames, 348 of them BC1 / BC3 / BC4), and movies the test writes from random blocks at 1x1, 2x2, 3x3, 4x4, 5x7, 15x9, 17x33, 1920x1080, 3840x2160; through `write_texture`, staged uploads and decode-into-staging; one flipped bit fails it | `wgpu/tests/exact.rs`, `dxvkit-plus verify --block-path exact` |
+| Conversion shaders | naga validates each and translates it to MSL and HLSL | `wgpu/tests/exact.rs` |
+| Sampled path GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1; HAP Q measures 1 on the fixtures); `verify` allows HAP Q 3/255 (measured 3 on real 1080p clips, Apple M5 Max, on 0.7.1 and 0.8.0) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | DXV decode (CPU) vs DXVKit's test vectors | bit-exact: 334 rows (366 block streams, 287 RGBA, 47 rejects) with `DXVKIT_DIR`; the committed 74-row MIT subset always | `core/tests/dxv.rs` |
 | DXV decode vs DXVKit's C core (`dxvtool`) | bit-exact block streams, straight and premultiplied RGBA on every frame of the DXV fixtures and committed vectors (with `DXVTOOL`) | same |
-| DXV GPU vs CPU | High Quality (YCG6 / YG10) bit-exact, both alpha modes, every vector frame; DXT1 / DXT5 ≤ 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating convention, as Arena's GPU upload, DXVKit spec 8.1); premultiplied DXT5 ≤ 2/255 as shown | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
+| DXV GPU vs CPU, sampled path | High Quality (YCG6 / YG10) bit-exact, both alpha modes, every vector frame; DXT1 / DXT5 ≤ 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating convention, as Arena's GPU upload, DXVKit spec 8.1); premultiplied DXT5 ≤ 2/255 as shown | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | BC7 CPU decoder vs the GPU | bit-exact, 4096 random blocks per mode, all 8 modes | `wgpu/tests/gpu.rs` |
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
@@ -236,6 +324,7 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `Box<dyn FrameSource>`, `cache::Player`, `transport::Transport`, `FrameRenderer` | opaque handles (`*mut T` created and freed by the wrapper) |
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
 | `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}`, `lmbx::Chroma` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
+| `wgpu::BlockPath` | `#[repr(u32)]` (`Sampled` = 0, `Exact` = 1; pinned by `wgpu/tests/abi.rs`); `FrameRenderer::with_path` / `set_path` / `path` map to a create call taking the value and a setter / getter on the renderer handle |
 | `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
 | `Uploader`, `StagedFrame` | opaque handles; `decode_into` takes a source handle + a `StagedFrame` handle (the `PlaneSink` is implemented on the Rust side — no C callback) |
 | `source::FrameLayout`, `PlaneLayout`, `DirectView` | plain-data `#[repr(C)]` mirrors (`DirectView`'s view as a borrowed handle, valid until the next upload) |

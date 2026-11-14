@@ -32,3 +32,5 @@ pollster = { workspace = true }
 dxvkit-plus-core = { workspace = true }
 # The v3 GPU == CPU test encodes its frames.
 dxvkit-plus-lmbd-enc = { workspace = true }
+# The shader translation check (tests/exact.rs).
+naga = { workspace = true }

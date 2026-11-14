@@ -37,7 +37,8 @@ pub fn run(args: &Args) -> Result<(), String> {
     for path in &args.positional {
         let (info, mut src) = probe_open(path)?;
         let n = frames.min(info.frames.max(1));
-        let mut base = json!({"file": path, "codec": info.codec, "kind": info.kind, "width": info.width, "height": info.height, "frames": n});
+        let mut base = json!({"file": path, "codec": info.codec, "kind": info.kind, "width": info.width, "height": info.height, "frames": n,
+            "block_path": crate::block_path_name()});
         if let (SourceKind::Lmbd, Some(o)) = (info.kind, base.as_object_mut()) {
             o.insert("zstd_backend".into(), json!(crate::ZSTD_BACKEND));
         }

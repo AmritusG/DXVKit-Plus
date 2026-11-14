@@ -8,6 +8,32 @@ use dxvkit_plus_core::source::{Decoded, PixelFormat, Shading};
 /// The converter's output format (straight alpha, not sRGB: values are stored as decoded).
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+/// How a [`FrameRenderer`] turns BC1 / BC3 / BC4 block planes (DXV DXT1 / DXT5 / legacy DXT, HAP
+/// Hap1 / Hap5 / HapY / HapM / HapA) into pixels. Chosen per renderer ([`FrameRenderer::with_path`],
+/// [`FrameRenderer::set_path`]); the default is [`BlockPath::Sampled`]. `#[repr(u32)]` with fixed
+/// values (C ABI; pinned by `tests/abi.rs`; new variants only appended).
+///
+/// Frames that are exact on both paths take the same route on both: DXV High Quality (always
+/// decoded in the shader, [`DXV_HQ_WGSL`]), BC7 (HAP R, LMB7: the GPU's BC7 decode is exact integer
+/// arithmetic), LMBX and RGBA8. HAP HDR (BC6H) has no CPU oracle and is always sampled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum BlockPath {
+    /// The blocks upload into BC textures and the GPU's fixed-function decoder decodes them when
+    /// [`CONVERT_WGSL`] samples them: the fast many-layer path, and the only one with
+    /// [`FrameRenderer::direct_view`] for BC1 / BC3 frames. No exactness contract: GPUs round BC
+    /// palettes differently. Measured on Apple M5 Max against the CPU decode: encoded footage within
+    /// 1 / 255 (Hap1, Hap5, HapA), 2 / 255 (DXT1, DXT5) and 3 / 255 (HAP Q); arbitrary blocks up to
+    /// 3 (HAP Q 6); un-premultiplied colour scales that step by 255 / alpha.
+    #[default]
+    Sampled = 0,
+    /// The same bytes upload as integer texels — one `Rg32Uint` (8-byte block) or `Rgba32Uint`
+    /// (16-byte block) texel per block — and [`BC_EXACT_WGSL`] decodes them with the CPU decoders'
+    /// integer arithmetic. Contract: the output equals `Decoded::to_rgba`, every channel of every
+    /// texel. Every frame of these variants needs the conversion pass (no `direct_view`).
+    Exact = 1,
+}
+
 /// Decoded planes -> straight RGBA8 at the clip size, one texel per pixel.
 ///
 /// Modes: 0 RGBA as stored (flag 1 = force opaque); 2 HAP Q scaled YCoCg (van Waveren & Castaño,
@@ -16,7 +42,8 @@ pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// `R8` luma and an `RG8` chroma plane (BT.601 / 709 / 2020 matrix, video or full range). Flag 4
 /// (mode 0): the colour is stored premultiplied; it is un-premultiplied in integers
 /// (`min(255, round(c * 255 / a))`, a = 0 keeps c), as `dxvkit_plus_core::bc::unpremul`.
-/// DXV High Quality has its own pipeline ([`DXV_HQ_WGSL`]).
+/// DXV High Quality has its own pipeline ([`DXV_HQ_WGSL`]); so do BC1 / BC3 / BC4 frames on the
+/// exact path ([`BC_EXACT_WGSL`], [`BlockPath::Exact`]).
 pub const CONVERT_WGSL: &str = r#"
 struct U { mode: u32, flags: u32, matrix: u32, full_range: u32, size: vec2<u32>, pad: vec2<u32> };
 @group(0) @binding(0) var t0: texture_2d<f32>;
@@ -163,6 +190,156 @@ fn hq8(v: i32) -> i32 {
 }
 "#;
 
+/// The exact path ([`BlockPath::Exact`]): BC1 / BC3 / BC4 blocks -> straight RGBA8, bit-exact with
+/// the CPU decoders (`dxvkit_plus_core::bc`, `dxvkit_plus_core::hap::ycocg_scaled_exact`). The
+/// blocks are integer texels (`t0`, and `t1` for HAP Q Alpha's alpha plane): `.xy` are the two
+/// little-endian words of an 8-byte block, `.xyzw` the four of a 16-byte block (BC3: alpha block in
+/// `.xy`, colour block in `.zw`). Everything is `u32` / `i32` arithmetic on values below 2^24;
+/// every division has non-negative operands and a non-zero divisor, every shift count is below 32.
+///
+/// Modes (`U.mode`):
+/// - 0, BC1 (HAP Hap1, DXV DXT1, legacy DXT1): DXVKit's convention (spec 8.1) — 5:6:5 endpoints
+///   widened by bit replication, thirds and halves truncated, the three-colour palette's fourth
+///   entry black; alpha 255.
+/// - 1, BC3 (HAP Hap5, DXV DXT5, legacy DXT5): colour always four-colour, thirds truncated; alpha
+///   the BC4 palette in sevenths / fifths, truncated (spec 8.2). Flag 1: alpha forced to 255. Flag
+///   4: colour stored premultiplied, un-premultiplied in integers (`bc::unpremul`).
+/// - 2, HAP Q (HapY; HapM with flag 2): the BC3 palettes exact (colour in thirds, Y in 35ths), the
+///   HAP specification's scaled-YCoCg transform over the common denominator, rounded half up
+///   (`ycocg_scaled_exact`); HapM's alpha plane as mode 1's alpha.
+/// - 3, alpha only (HAP HapA): the BC4 palette truncated, shown as grey with alpha 255.
+pub const BC_EXACT_WGSL: &str = r#"
+struct U { mode: u32, flags: u32, matrix: u32, full_range: u32, size: vec2<u32>, pad: vec2<u32> };
+@group(0) @binding(0) var t0: texture_2d<u32>;
+@group(0) @binding(1) var t1: texture_2d<u32>;
+@group(0) @binding(2) var<uniform> u: U;
+
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(p * 2.0 - 1.0, 0.0, 1.0);
+}
+
+// A 5:6:5 endpoint widened to 8 bits per channel by bit replication.
+fn expand565(c: u32) -> vec3<u32> {
+    let r = c >> 11u;
+    let g = (c >> 5u) & 63u;
+    let b = c & 31u;
+    return vec3<u32>((r << 3u) | (r >> 2u), (g << 2u) | (g >> 4u), (b << 3u) | (b >> 2u));
+}
+
+// Texel i (0..15) of the BC1 colour block in words (lo = the endpoints, hi = the indices),
+// truncated to 8 bits. `four`: always the four-colour palette (the colour half of BC3).
+fn bc1(lo: u32, hi: u32, i: u32, four: bool) -> vec3<u32> {
+    let c0 = lo & 0xFFFFu;
+    let c1 = lo >> 16u;
+    let p0 = expand565(c0);
+    let p1 = expand565(c1);
+    let k = (hi >> (2u * i)) & 3u;
+    if (k == 0u) { return p0; }
+    if (k == 1u) { return p1; }
+    if (four || c0 > c1) {
+        if (k == 2u) { return (2u * p0 + p1) / 3u; }
+        return (p0 + 2u * p1) / 3u;
+    }
+    if (k == 2u) { return (p0 + p1) / 2u; }
+    return vec3<u32>(0u);
+}
+
+// Texel i of the same block with the exact four-colour palette, in thirds of a code value (0..765).
+fn bc1_thirds(lo: u32, hi: u32, i: u32) -> vec3<u32> {
+    let p0 = expand565(lo & 0xFFFFu);
+    let p1 = expand565(lo >> 16u);
+    let k = (hi >> (2u * i)) & 3u;
+    if (k == 0u) { return 3u * p0; }
+    if (k == 1u) { return 3u * p1; }
+    if (k == 2u) { return 2u * p0 + p1; }
+    return p0 + 2u * p1;
+}
+
+// The 3-bit palette index of texel i of the BC4 block in words (lo, hi).
+fn bc4_index(lo: u32, hi: u32, i: u32) -> u32 {
+    let bit = 16u + 3u * i;
+    if (bit + 3u <= 32u) { return (lo >> bit) & 7u; }
+    if (bit >= 32u) { return (hi >> (bit - 32u)) & 7u; }
+    return ((lo >> bit) | (hi << (32u - bit))) & 7u;
+}
+
+// Texel i of the BC4 block, palette truncated to 8 bits.
+fn bc4(lo: u32, hi: u32, i: u32) -> u32 {
+    let a0 = lo & 255u;
+    let a1 = (lo >> 8u) & 255u;
+    let k = bc4_index(lo, hi, i);
+    if (k == 0u) { return a0; }
+    if (k == 1u) { return a1; }
+    let j = k - 1u;
+    if (a0 > a1) { return ((7u - j) * a0 + j * a1) / 7u; }
+    if (k == 6u) { return 0u; }
+    if (k == 7u) { return 255u; }
+    return ((5u - j) * a0 + j * a1) / 5u;
+}
+
+// Texel i of the BC4 block, exact palette value in 35ths of a code value (0..8925).
+fn bc4_35ths(lo: u32, hi: u32, i: u32) -> u32 {
+    let a0 = lo & 255u;
+    let a1 = (lo >> 8u) & 255u;
+    let k = bc4_index(lo, hi, i);
+    if (k == 0u) { return a0 * 35u; }
+    if (k == 1u) { return a1 * 35u; }
+    let j = k - 1u;
+    if (a0 > a1) { return ((7u - j) * a0 + j * a1) * 5u; }
+    if (k == 6u) { return 0u; }
+    if (k == 7u) { return 8925u; }
+    return ((5u - j) * a0 + j * a1) * 7u;
+}
+
+// n / d rounded to nearest (halves up), clamped to 0..255; d > 0.
+fn round8(n: i32, d: i32) -> u32 {
+    if (n <= 0) { return 0u; }
+    if (n >= 255 * d) { return 255u; }
+    return (2u * u32(n) + u32(d)) / (2u * u32(d));
+}
+
+// HAP scaled YCoCg: c = (Co, Cg, scale) in thirds, y in 35ths (`ycocg_scaled_exact`).
+fn hap_ycocg(c: vec3<u32>, y35: u32) -> vec3<u32> {
+    let k = i32(c.z) + 24;
+    let d = 35 * k;
+    let y = i32(y35) * k;
+    let r3 = i32(c.x);
+    let g3 = i32(c.y);
+    return vec3<u32>(round8(y + 280 * (r3 - g3), d), round8(y + 280 * (g3 - 384), d), round8(y + 280 * (768 - r3 - g3), d));
+}
+
+@fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let xy = vec2<u32>(pos.xy);
+    let i = (xy.y & 3u) * 4u + (xy.x & 3u);
+    let at = vec2<i32>(xy / 4u);
+    let b = textureLoad(t0, at, 0);
+    var rgb = vec3<u32>(0u);
+    var a = 255u;
+    switch u.mode {
+        case 0u: { // BC1
+            rgb = bc1(b.x, b.y, i, false);
+        }
+        case 1u: { // BC3
+            rgb = bc1(b.z, b.w, i, true);
+            if ((u.flags & 1u) == 0u) { a = bc4(b.x, b.y, i); }
+        }
+        case 2u: { // HAP Q (+ BC4 alpha plane)
+            rgb = hap_ycocg(bc1_thirds(b.z, b.w, i), bc4_35ths(b.x, b.y, i));
+            if ((u.flags & 2u) != 0u) {
+                let ab = textureLoad(t1, at, 0);
+                a = bc4(ab.x, ab.y, i);
+            }
+        }
+        default: { // alpha only, shown as grey
+            rgb = vec3<u32>(bc4(b.x, b.y, i));
+        }
+    }
+    if ((u.flags & 4u) != 0u && a != 0u) { rgb = min((rgb * 255u + vec3<u32>(a / 2u)) / a, vec3<u32>(255u)); }
+    return vec4<f32>(vec3<f32>(rgb), f32(a)) / 255.0;
+}
+"#;
+
 /// WGSL uniforms (`U`).
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -238,18 +415,48 @@ fn convert_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, label
     })
 }
 
-/// Whether frames of `shading` upload their blocks as integer texels (decoded in [`DXV_HQ_WGSL`])
-/// instead of BC textures.
-fn raw_blocks(shading: Shading) -> bool {
-    matches!(shading, Shading::DxvYcocg { .. })
+/// The WGSL program a frame is converted with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Program {
+    /// [`CONVERT_WGSL`]: float textures (BC textures decoded by the GPU, RGBA8, native planes).
+    Sampled,
+    /// [`DXV_HQ_WGSL`]: DXV High Quality blocks as integer texels.
+    DxvHq,
+    /// [`BC_EXACT_WGSL`]: BC1 / BC3 / BC4 blocks as integer texels.
+    Exact,
 }
 
-/// The integer texture holding one block per texel: BC4 (8 bytes) -> `Rg32Uint`, BC5 (16 bytes) ->
-/// `Rgba32Uint`.
+impl Program {
+    /// Whether the program reads blocks uploaded as integer texels instead of BC textures.
+    fn raw(self) -> bool {
+        self != Program::Sampled
+    }
+}
+
+/// The program for frames of `shading` whose first plane is `first`, on `path`. DXV High Quality
+/// is always decoded in the shader; on the exact path so are the BC1 / BC3 / BC4 frames whose CPU
+/// decode is the integer conventions of `dxvkit_plus_core::bc`.
+fn program_for(path: BlockPath, shading: Shading, first: Option<PixelFormat>) -> Program {
+    let exact = path == BlockPath::Exact
+        && match shading {
+            Shading::Rgba { .. } => matches!(first, Some(PixelFormat::Bc1 | PixelFormat::Bc3)),
+            Shading::RgbaPremultiplied | Shading::HapYcocg { .. } => first == Some(PixelFormat::Bc3),
+            Shading::AlphaOnly => first == Some(PixelFormat::Bc4),
+            Shading::Hdr | Shading::Lmbx | Shading::DxvYcocg { .. } => false,
+        };
+    match shading {
+        Shading::DxvYcocg { .. } => Program::DxvHq,
+        _ if exact => Program::Exact,
+        _ => Program::Sampled,
+    }
+}
+
+/// The integer texture holding one block per texel: 8-byte blocks (BC1, BC4) -> `Rg32Uint`,
+/// 16-byte blocks (BC3, BC5) -> `Rgba32Uint`.
 fn raw_format(format: PixelFormat) -> Result<wgpu::TextureFormat, GpuError> {
     match format {
-        PixelFormat::Bc4 => Ok(wgpu::TextureFormat::Rg32Uint),
-        PixelFormat::Bc5 => Ok(wgpu::TextureFormat::Rgba32Uint),
+        PixelFormat::Bc1 | PixelFormat::Bc4 => Ok(wgpu::TextureFormat::Rg32Uint),
+        PixelFormat::Bc3 | PixelFormat::Bc5 => Ok(wgpu::TextureFormat::Rgba32Uint),
         other => Err(GpuError::Invalid(format!("{other:?} blocks are not uploaded as integer texels"))),
     }
 }
@@ -260,6 +467,9 @@ pub struct Converter {
     pipeline: wgpu::RenderPipeline,
     raw_layout: wgpu::BindGroupLayout,
     raw_pipeline: wgpu::RenderPipeline,
+    /// [`BC_EXACT_WGSL`] on `raw_layout`, built on the first exact frame (renderers on the sampled
+    /// path never compile it).
+    exact_pipeline: std::sync::OnceLock<wgpu::RenderPipeline>,
     sampler: wgpu::Sampler,
     dummy: wgpu::TextureView,
 }
@@ -282,7 +492,7 @@ impl Converter {
         });
         let pipeline = convert_pipeline(device, &layout, "dxvkit-plus-convert", CONVERT_WGSL);
         let raw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("dxvkit-plus-convert-dxv-hq"),
+            label: Some("dxvkit-plus-convert-blocks"),
             entries: &[uint_entry(0), uint_entry(1), uniform_entry(2)],
         });
         let raw_pipeline = convert_pipeline(device, &raw_layout, "dxvkit-plus-convert-dxv-hq", DXV_HQ_WGSL);
@@ -306,7 +516,7 @@ impl Converter {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        Converter { layout, pipeline, raw_layout, raw_pipeline, sampler, dummy }
+        Converter { layout, pipeline, raw_layout, raw_pipeline, exact_pipeline: std::sync::OnceLock::new(), sampler, dummy }
     }
 
     /// Record one conversion pass from `t0` (+ `t1`) into `target` (an [`OUTPUT_FORMAT`] view).
@@ -319,11 +529,16 @@ impl Converter {
         uniform: &wgpu::Buffer,
         target: &wgpu::TextureView,
         timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
-        raw: bool,
+        program: Program,
     ) {
-        let bind = if raw {
+        let pipeline = match program {
+            Program::Sampled => &self.pipeline,
+            Program::DxvHq => &self.raw_pipeline,
+            Program::Exact => self.exact_pipeline.get_or_init(|| convert_pipeline(device, &self.raw_layout, "dxvkit-plus-convert-bc-exact", BC_EXACT_WGSL)),
+        };
+        let bind = if program.raw() {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("dxvkit-plus-convert-dxv-hq"),
+                label: Some("dxvkit-plus-convert-blocks"),
                 layout: &self.raw_layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(t0) },
@@ -356,7 +571,7 @@ impl Converter {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        rp.set_pipeline(if raw { &self.raw_pipeline } else { &self.pipeline });
+        rp.set_pipeline(pipeline);
         rp.set_bind_group(0, &bind, &[]);
         rp.draw(0..3, 0..1);
     }
@@ -369,10 +584,13 @@ struct Pending {
     width: u32,
     height: u32,
     planes: usize,
+    /// The program the frame was uploaded for (it decides BC textures or integer texels).
+    program: Program,
 }
 
 /// An uploaded frame a compositor can sample as it is, skipping the conversion pass (see
-/// [`FrameRenderer::direct_view`]).
+/// [`FrameRenderer::direct_view`]). The texels are the GPU's own BC decode ([`BlockPath::Sampled`]'s
+/// contract; exact for BC7).
 #[derive(Clone, Copy, Debug)]
 pub struct DirectView<'a> {
     /// The frame's block texture (BC1 / BC3 / BC7, sampled as stored RGBA).
@@ -398,6 +616,7 @@ struct Upload {
 /// Renders one clip's frames: keeps its upload textures, uniform and output across frames.
 pub struct FrameRenderer {
     converter: Converter,
+    path: BlockPath,
     uploads: Vec<Upload>,
     uniform: wgpu::Buffer,
     last_uniform: Option<Uniform>,
@@ -411,7 +630,13 @@ pub struct FrameRenderer {
 }
 
 impl FrameRenderer {
+    /// A renderer on the default path ([`BlockPath::Sampled`]).
     pub fn new(device: &wgpu::Device) -> FrameRenderer {
+        FrameRenderer::with_path(device, BlockPath::default())
+    }
+
+    /// A renderer on `path`.
+    pub fn with_path(device: &wgpu::Device, path: BlockPath) -> FrameRenderer {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dxvkit-plus-convert-u"),
             size: std::mem::size_of::<Uniform>() as u64,
@@ -420,6 +645,7 @@ impl FrameRenderer {
         });
         FrameRenderer {
             converter: Converter::new(device),
+            path,
             uploads: Vec::new(),
             uniform,
             last_uniform: None,
@@ -430,6 +656,20 @@ impl FrameRenderer {
         }
     }
 
+    /// The path this renderer decodes BC1 / BC3 / BC4 frames on.
+    pub fn path(&self) -> BlockPath {
+        self.path
+    }
+
+    /// Change the path for the frames uploaded from now on. A frame uploaded before the change must
+    /// be uploaded again before it can be converted (its texture was made for the other path).
+    pub fn set_path(&mut self, path: BlockPath) {
+        if self.path != path {
+            self.path = path;
+            self.pending = None;
+        }
+    }
+
     /// After [`FrameRenderer::upload`] / [`FrameRenderer::upload_staged`]: the uploaded texture
     /// itself when the frame needs no conversion to be sampled — one RGBA block plane (LMBD
     /// LMB7, HAP R BC7, HAP RGBA BC3, HAP RGB BC1 with `opaque`). Sampling it gives the conversion
@@ -437,13 +677,14 @@ impl FrameRenderer {
     /// can skip [`FrameRenderer::encode_convert`] for these frames. `None` for frames that need
     /// the pass (HAP Q's and DXV HQ's YCoCg, premultiplied colour, alpha-only, HDR, RGBA8 images)
     /// or before an upload. DXV DXT1 / DXT5 (straight) qualify; their textures are the coded size
-    /// (rounded up to 16).
+    /// (rounded up to 16). On [`BlockPath::Exact`] BC1 / BC3 frames are integer texels that only the
+    /// conversion pass can read, so only BC7 frames have a direct view there.
     pub fn direct_view(&self) -> Option<DirectView<'_>> {
         let p = self.pending?;
         let Shading::Rgba { opaque } = p.shading else { return None };
         let up = self.uploads.first()?;
         let block = matches!(up.format, PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc7);
-        (p.planes == 1 && block).then_some(DirectView { view: &up.view, width: p.width, height: p.height, opaque })
+        (p.planes == 1 && block && !up.raw).then_some(DirectView { view: &up.view, width: p.width, height: p.height, opaque })
     }
 
     /// The output texture (`OUTPUT_FORMAT`, the clip's size) after a render.
@@ -498,7 +739,7 @@ impl FrameRenderer {
             dec.write(queue, blob)?;
             return Ok(());
         }
-        let (shading, width, height) = self.prepare_planes(device, decoded)?;
+        let (shading, width, height, program) = self.prepare_planes(device, decoded)?;
         let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
         let mut bytes = 0usize;
         for (up, p) in self.uploads.iter().zip(planes) {
@@ -510,7 +751,7 @@ impl FrameRenderer {
             bytes = bytes.saturating_add(p.data.len());
         }
         self.last_upload_bytes = bytes;
-        self.pending = Some(Pending { shading, width, height, planes: planes.len() });
+        self.pending = Some(Pending { shading, width, height, planes: planes.len(), program });
         Ok(())
     }
 
@@ -543,7 +784,7 @@ impl FrameRenderer {
             encoder.copy_buffer_to_buffer(&buffer, offset, bits, 0, size);
             return Ok(());
         }
-        let (shading, width, height) = self.prepare_planes(device, decoded)?;
+        let (shading, width, height, program) = self.prepare_planes(device, decoded)?;
         let Decoded::Planes { planes, .. } = decoded else { return Err(GpuError::Invalid("not planes".into())) };
         let mut bytes = 0usize;
         for (up, p) in self.uploads.iter().zip(planes) {
@@ -562,7 +803,7 @@ impl FrameRenderer {
             bytes = bytes.saturating_add(p.data.len());
         }
         self.last_upload_bytes = bytes;
-        self.pending = Some(Pending { shading, width, height, planes: planes.len() });
+        self.pending = Some(Pending { shading, width, height, planes: planes.len(), program });
         Ok(())
     }
 
@@ -573,19 +814,20 @@ impl FrameRenderer {
         let dec = self.lmbx.get_or_insert_with(|| crate::lmbx::LmbxDecoder::new(device, OUTPUT_FORMAT));
         dec.prepare(device, shape);
         self.last_upload_bytes = blob.len();
-        self.pending = Some(Pending { shading: Shading::Lmbx, width, height, planes: 1 });
+        self.pending = Some(Pending { shading: Shading::Lmbx, width, height, planes: 1, program: Program::Sampled });
         Ok(dec)
     }
 
-    /// Check a frame's planes and make sure this renderer has a texture of the right format and
-    /// size for each (reused across frames).
-    fn prepare_planes(&mut self, device: &wgpu::Device, decoded: &Decoded) -> Result<(Shading, u32, u32), GpuError> {
+    /// Check a frame's planes and make sure this renderer has a texture of the right kind, format
+    /// and size for each (reused across frames).
+    fn prepare_planes(&mut self, device: &wgpu::Device, decoded: &Decoded) -> Result<(Shading, u32, u32, Program), GpuError> {
         let Decoded::Planes { width, height, shading, planes, .. } = decoded else {
             return Err(GpuError::Invalid("native frames are rendered with render_native (after the platform import)".into()));
         };
         let shapes: Vec<(PixelFormat, u32, u32)> = planes.iter().map(|p| (p.format, p.width, p.height)).collect();
-        self.ensure_uploads(device, &shapes, raw_blocks(*shading))?;
-        Ok((*shading, *width, *height))
+        let program = program_for(self.path, *shading, shapes.first().map(|s| s.0));
+        self.ensure_uploads(device, &shapes, program.raw())?;
+        Ok((*shading, *width, *height, program))
     }
 
     fn ensure_uploads(&mut self, device: &wgpu::Device, shapes: &[(PixelFormat, u32, u32)], raw: bool) -> Result<(), GpuError> {
@@ -624,7 +866,8 @@ impl FrameRenderer {
         }
         let l = &staged.layout;
         let shapes: Vec<(PixelFormat, u32, u32)> = l.planes.iter().map(|p| (p.format, p.width, p.height)).collect();
-        self.ensure_uploads(device, &shapes, raw_blocks(l.shading))?;
+        let program = program_for(self.path, l.shading, shapes.first().map(|s| s.0));
+        self.ensure_uploads(device, &shapes, program.raw())?;
         let (shading, width, height, n) = (l.shading, l.width, l.height, l.planes.len());
         let mut bytes = 0usize;
         // Dropping each plane's mapped view before the copy is recorded; the belt unmaps on finish.
@@ -635,7 +878,7 @@ impl FrameRenderer {
             bytes = bytes.saturating_add(layout.tight_bytes());
         }
         self.last_upload_bytes = bytes;
-        self.pending = Some(Pending { shading, width, height, planes: n });
+        self.pending = Some(Pending { shading, width, height, planes: n, program });
         Ok(())
     }
 
@@ -650,31 +893,42 @@ impl FrameRenderer {
         encoder: &mut wgpu::CommandEncoder,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) -> Result<&wgpu::Texture, GpuError> {
-        let Pending { shading, width, height, planes } = self.pending.ok_or_else(|| GpuError::Invalid("encode_convert before upload".into()))?;
+        let Pending { shading, width, height, planes, program } = self.pending.ok_or_else(|| GpuError::Invalid("encode_convert before upload".into()))?;
         if shading == Shading::Lmbx {
             let target = self.ensure_output(device, width, height)?;
             let dec = self.lmbx.as_ref().ok_or_else(|| GpuError::Invalid("LMBX decode before upload".into()))?;
             dec.encode(device, queue, encoder, &target, timestamps)?;
             return self.output().ok_or_else(|| GpuError::Invalid("no output".into()));
         }
+        // RGBA as stored is mode 0 in `CONVERT_WGSL`; `BC_EXACT_WGSL` has one mode per block format.
+        let rgba = match (program, self.uploads.first().map(|u| u.format)) {
+            (Program::Exact, Some(PixelFormat::Bc3)) => 1,
+            _ => 0,
+        };
         let (mode, flags) = match shading {
-            Shading::Rgba { opaque } => (0, u32::from(opaque)),
+            Shading::Rgba { opaque } => (rgba, u32::from(opaque)),
             Shading::HapYcocg { alpha } => (2, if alpha { 2 } else { 0 }),
             Shading::AlphaOnly => (3, 0),
             Shading::Hdr => (4, 0),
-            Shading::RgbaPremultiplied => (0, 4),
+            Shading::RgbaPremultiplied => (rgba, 4),
             Shading::DxvYcocg { alpha, premultiplied } => (1, (u32::from(alpha) << 1) | (u32::from(premultiplied) << 2)),
             Shading::Lmbx => (0, 0), // decoded above
         };
-        let raw = raw_blocks(shading);
         self.set_uniform(queue, Uniform { mode, flags, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
         let target = self.ensure_output(device, width, height)?;
-        let t0 = &self.uploads.first().ok_or_else(|| GpuError::Invalid("no plane".into()))?.view;
+        let first = self.uploads.first().ok_or_else(|| GpuError::Invalid("no plane".into()))?;
+        if first.raw != program.raw() {
+            return Err(GpuError::Invalid("the frame was uploaded for the other block path".into()));
+        }
+        let t0 = &first.view;
         let t1 = if planes == 2 { self.uploads.get(1).map(|u| &u.view) } else { None };
-        if raw && t1.is_none() {
+        if program == Program::DxvHq && t1.is_none() {
             return Err(GpuError::Invalid("DXV High Quality frames have two planes".into()));
         }
-        self.converter.pass(device, encoder, t0, t1, &self.uniform, &target, timestamps, raw);
+        if program == Program::Exact && shading == (Shading::HapYcocg { alpha: true }) && t1.is_none() {
+            return Err(GpuError::Invalid("HAP Q Alpha frames have two planes".into()));
+        }
+        self.converter.pass(device, encoder, t0, t1, &self.uniform, &target, timestamps, program);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }
 
@@ -694,7 +948,7 @@ impl FrameRenderer {
         self.set_uniform(queue, Uniform { mode: 0, flags: 0, matrix: 1, full_range: 1, size: [width, height], pad: [0; 2] });
         let target = self.ensure_output(device, width, height)?;
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-view") });
-        self.converter.pass(device, &mut enc, view, None, &self.uniform, &target, None, false);
+        self.converter.pass(device, &mut enc, view, None, &self.uniform, &target, None, Program::Sampled);
         queue.submit([enc.finish()]);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }
@@ -716,7 +970,7 @@ impl FrameRenderer {
         let views: Vec<wgpu::TextureView> = native.textures.iter().map(|t| t.create_view(&Default::default())).collect();
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("dxvkit-plus-render-native") });
         let t0 = views.first().ok_or_else(|| GpuError::Invalid("no plane".into()))?;
-        self.converter.pass(device, &mut enc, t0, views.get(1), &self.uniform, &target, None, false);
+        self.converter.pass(device, &mut enc, t0, views.get(1), &self.uniform, &target, None, Program::Sampled);
         queue.submit([enc.finish()]);
         self.output().ok_or_else(|| GpuError::Invalid("no output".into()))
     }

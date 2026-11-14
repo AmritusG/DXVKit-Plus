@@ -12,7 +12,12 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.7.1**: an LMBX **encoder** improvement — each 8x8 block's quantiser step is now
+This is release **0.8.0**: an **exact path** for the GPU. DXV DXT1 / DXT5 / legacy DXT and HAP
+Hap1 / Hap5 / HapY / HapM / HapA frames can now be decoded in the conversion shader, from the blocks
+uploaded as integer texels, **bit-exact with the CPU decode** — every channel of every texel, at
+every tested size from 1x1 to 3840x2160 — instead of by the GPU's fixed-function BC decoder, which
+is 1-3 code values off on Apple silicon. It is chosen per renderer (`BlockPath::Exact`); the default is the
+sampled path, unchanged ([Exact path](#exact-path-080)). 0.7.1 was an LMBX **encoder** improvement — each 8x8 block's quantiser step is now
 chosen by rate-distortion — that gains **+0.3 to +0.7 dB on real footage at the same bytes** (Amrit's
 real-detail, real-alpha and glow clips at LMB7's size). The bitstream is unchanged (plain v3, which
 0.7.0 decoders read bit-exactly), graphics files are byte-identical, and `--rd-steps off` gives
@@ -46,11 +51,11 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 
 | Format | Decode | Output | Notes |
 |---|---|---|---|
-| HAP (`Hap1`) | ✅ pure Rust | BC1 blocks | Snappy and chunked frames (chunks decompress in parallel) |
-| HAP Alpha (`Hap5`) | ✅ pure Rust | BC3 blocks | |
-| HAP Q (`HapY`) | ✅ pure Rust | BC3 scaled YCoCg → RGB in WGSL | |
-| HAP Q Alpha (`HapM`) | ✅ pure Rust | BC3 YCoCg + BC4 alpha | |
-| HAP Alpha-Only (`HapA`) | ✅ pure Rust | BC4 | |
+| HAP (`Hap1`) | ✅ pure Rust | BC1 blocks | Snappy and chunked frames (chunks decompress in parallel); GPU: sampled ≤ 1/255 of the CPU, or exact |
+| HAP Alpha (`Hap5`) | ✅ pure Rust | BC3 blocks | GPU: sampled ≤ 1/255, or exact |
+| HAP Q (`HapY`) | ✅ pure Rust | BC3 scaled YCoCg → RGB in WGSL | GPU: sampled ≤ 3/255, or exact |
+| HAP Q Alpha (`HapM`) | ✅ pure Rust | BC3 YCoCg + BC4 alpha | GPU: sampled ≤ 3/255, or exact |
+| HAP Alpha-Only (`HapA`) | ✅ pure Rust | BC4 | GPU: sampled ≤ 1/255, or exact |
 | HAP R (`Hap7`) | ✅ pure Rust | BC7 blocks | CPU BC7 decoder bit-exact with the GPU |
 | HAP HDR (`HapH`) | ✅ pure Rust | BC6H blocks (unsigned and signed) | GPU only (no CPU BC6H decoder) |
 | H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020 |
@@ -58,13 +63,19 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
 | LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate; flat, palette and quad tiles, edge alpha) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec (v1, v2, v3) + conformance vectors |
-| DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit |
-| DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied |
+| DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit; GPU: sampled ≤ 2/255, or exact |
+| DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied; GPU: sampled ≤ 2/255, or exact |
 | DXV3 High Quality (`YCG6`) | ✅ pure Rust | Y BC4 + CoCg BC5 → RGB in WGSL, bit-exact with the CPU | FSE-coded opcode streams; the two sections decode in parallel |
 | DXV3 High Quality With Alpha (`YG10`) | ✅ pure Rust | Y + A BC5 + CoCg BC5 → RGB in WGSL | |
-| DXV1 / 2 (`DXDI`, LZF) | ✅ pure Rust | BC1 / BC3 blocks | |
+| DXV1 / 2 (`DXDI`, LZF) | ✅ pure Rust | BC1 / BC3 blocks | GPU: sampled ≤ 2/255, or exact |
 | Native codecs on Windows | 🔜 `Backend` stub | — | Media Foundation + DX12 import, designed |
 | PNG stills / sequences | ✅ | RGBA8 | |
+
+"GPU: sampled …, or exact": the two [block paths](#exact-path-080) of `dxvkit-plus-wgpu`. *Sampled*
+(the default) is the GPU's own BC decode; the distance from the CPU decode is what was measured on
+encoded footage on Apple M5 Max, not a guarantee (arbitrary blocks reach 3, HAP Q 6). *Exact*
+(`BlockPath::Exact`) decodes the same blocks in the shader and equals the CPU decode. The other
+rows are the same on both paths.
 
 Every decode path is frame-accurate: frame `n` is exactly frame `n`, also after seeks (tested on
 every frame of every fixture), and every error is a value — hostile files never panic (fuzzed).
@@ -75,7 +86,7 @@ every frame of every fixture), and every error is a value — hostile files neve
 |---|---|
 | [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, DXV, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
-| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30; persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
+| [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30, on two block paths (`BlockPath`: sampled — the GPU's BC decode — or exact — decoded in the shader, bit-exact with the CPU); persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
 | [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
 | [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
 
@@ -87,9 +98,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.6.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -121,6 +132,10 @@ let rgba_texture = renderer.output();                    // Rgba8Unorm, the clip
 For playback, `cache::Player` decodes ahead on worker threads and `transport::Transport` says which
 frame to show at each clock tick (exact integer time).
 
+**Exact pictures (0.8.0).** `FrameRenderer::with_path(&gpu.device, BlockPath::Exact)` makes a
+renderer whose DXV DXT1 / DXT5 and HAP frames equal `Decoded::to_rgba` bit for bit
+([Exact path](#exact-path-080)); `FrameRenderer::new` stays on the sampled path.
+
 **Many layers (0.3.0).** `render` is the simple path; a player with many layers records every
 layer into one submission through an `Uploader` (persistent staging memory, at most 2 steps in
 flight, no device-wide wait) and samples plain-BC frames directly:
@@ -147,11 +162,13 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.6.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.8.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
 dxvkit-plus decode clip.mov 42 frame.png --alpha-mode premultiplied   # a DXV clip whose colour is premultiplied
+dxvkit-plus decode clip.mov 42 frame.png --block-path exact           # GPU path, decoded in the shader: the CPU decode's pixels
+dxvkit-plus verify --block-path exact clip.mov                        # GPU must equal CPU on every frame, nothing allowed
 dxvkit-plus verify --tiles tests/fixtures/*.mov tests/fixtures/*.mp4
 dxvkit-plus bench clip.mov --frames 60 --layers 16 --import
 dxvkit-plus bench clip.lmbd --layers 16 --layers-only --variants per_layer,staged,pipelined2_direct,into2_direct
@@ -160,9 +177,11 @@ dxvkit-plus encode-lmbd frames/ clip.lmbd --chunks 8   # any decodable source �
 dxvkit-plus compare frames/ clip.lmbd --frame 3       # PSNR / SSIM of frame 3 against the source
 ```
 
-`verify` checks every frame: GPU vs CPU (exact for LMBD, native frames and DXV High Quality; HAP Q
-and DXV DXT1 / DXT5 within 2/255; other HAP within 1/255), frame identity (fixtures), shuffled seeks
-vs sequential decode, and zero-copy for native frames. `bench` prints p50 / p99 per measurement as JSON lines.
+`verify` checks every frame: GPU vs CPU (exact for LMBD, native frames and DXV High Quality; on the
+default sampled path HAP Q within 3/255, DXV DXT1 / DXT5 within 2/255 and other HAP within 1/255;
+with `--block-path exact` nothing is allowed for any CPU-decoded frame), frame identity (fixtures),
+shuffled seeks vs sequential decode, and zero-copy for native frames. `bench` prints p50 / p99 per
+measurement as JSON lines; `--block-path` chooses the path it measures.
 
 ## DXV
 
@@ -178,14 +197,67 @@ and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and
   and the committed vectors equals DXVKit's C core (`dxvtool`).
 - **GPU**: High Quality converts YCoCg on the GPU with DXVKit's integer arithmetic (the blocks
   uploaded as integer texels, palettes decoded in the shader), bit-exact with the CPU. DXT1 / DXT5
-  sample as BC textures: the GPU's own BC decode, within 2/255 of DXVKit's truncating CPU convention
-  — what Resolume Arena's GPU upload does too.
+  by default sample as BC textures: the GPU's own BC decode, within 2/255 of DXVKit's truncating CPU
+  convention — what Resolume Arena's GPU upload does too. On the [exact path](#exact-path-080) they
+  are decoded in the shader like High Quality and equal DXVKit's RGBA bit for bit, straight and
+  premultiplied.
 - **Alpha**: a DXV file does not say whether its colour is straight or premultiplied. The default is
   **straight** (Resolume Alley writes straight colour); `ImportOptions { alpha_mode:
   AlphaMode::Premultiplied, .. }` (CLI `--alpha-mode premultiplied`) reads it as premultiplied and
   un-premultiplies on output, per clip — the counterpart of Arena's per-clip "Alpha Type". That
   reading is what ffmpeg assumes for DXT5; on a straight-alpha test card our premultiplied mode
   is within 1.9/255 (CPU) / 2.6/255 (GPU) of ffmpeg's output as shown.
+
+## Exact path (0.8.0)
+
+A GPU's fixed-function BC decoder is not required to be bit-exact, and on Apple silicon it is not:
+against the CPU decode, encoded DXT1 / DXT5 / Hap1 / Hap5 footage comes out up to 1-2 code values
+off and HAP Q up to 3 (arbitrary blocks: up to 3, HAP Q 6). Colour that is un-premultiplied on
+output multiplies that step by 255 / alpha. For a player whose picture must equal a reference decode, a
+`FrameRenderer` can decode those frames itself:
+
+```rust
+use dxvkit_plus_wgpu::{BlockPath, FrameRenderer};
+
+let mut exact = FrameRenderer::with_path(&gpu.device, BlockPath::Exact);
+exact.render(&gpu.device, &gpu.queue, &decoded)?;       // == decoded.to_rgba(), every channel of every texel
+let mut fast = FrameRenderer::new(&gpu.device);          // BlockPath::Sampled, as before 0.8.0
+```
+
+| | `BlockPath::Sampled` (default) | `BlockPath::Exact` |
+|---|---|---|
+| How | blocks into a BC texture; the GPU decodes them when the texel is read | the same bytes as integer texels (one per block); the conversion shader decodes them with the CPU decoder's integer arithmetic |
+| Against `Decoded::to_rgba` | encoded footage within 1/255 (Hap1, Hap5, HapA), 2/255 (DXT1, DXT5), 3/255 (HAP Q), measured on Apple M5 Max | **equal** — max 0, RGB and alpha, at every tested size (1x1 … 3840x2160, odd and non-16 sizes) |
+| Conversion pass | not needed for plain BC1 / BC3 frames (`direct_view`) | always (integer texels cannot be sampled) |
+| The pass, one 1080p layer (wall time, GPU waited for) | 30-48 µs | 50-73 µs (HAP Q 84-93 µs) |
+| … 16 layers | 0.5-0.8 ms per step | 0.8-1.5 ms per step |
+
+It covers DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied) and HAP Hap1 / Hap5 / HapY /
+HapM / HapA. DXV High Quality, BC7 (HAP R, LMB7), LMBX and RGBA8 frames were already exact and take
+the same route on both paths; HAP HDR has no CPU decoder and is always sampled. `set_path` changes a
+renderer's path between frames; the uploads (`upload`, `upload_staged`, `upload_from_stage`) and the
+`Uploader` work the same on both. The path's values are fixed (`Sampled` = 0, `Exact` = 1) for the
+planned C ABI.
+
+Which rounding each variant uses, and the rules that keep the shader's result the same on every
+backend, are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#block-paths-080). Measured on a
+Mac17,6 (Apple M5 Max, 18 cores, 128 GB, macOS 27.0.1), release build, Metal, with Resolume Arena
+running on the same GPU:
+`cargo run --release -p dxvkit-plus-wgpu --example convert_cost -- <clip> <layers>` for the pass,
+`dxvkit-plus bench <clip> --layers N --layers-only --variants pipelined2,pipelined2_direct
+--block-path exact|sampled` for throughput. A pipelined player that converts every layer runs at the same speed on both paths
+within the run-to-run spread (the median of exact / sampled over 18 clip and layer-count cases is
+1.04, range 0.70-1.25, five rounds). What the exact path costs is `direct_view`: 16 layers of plain
+BC1 / BC3 frames sampled directly (`pipelined2_direct`) run at 1792 steps/s (Hap1), 1006 (Hap5),
+1279 (DXT1) and 671 (DXT5), against 925, 706, 884 and 611 for the same variant on the exact path,
+which has no direct view and converts (medians; raw lines in `docs/data/w1-exact-path-*`). The
+0-difference test has run on Metal; the shaders also translate to HLSL, and D3D12 runs with the
+Windows backend.
+
+One thing changed for the CPU side: the HAP Q transform (`Decoded::to_rgba` of HapY / HapM frames)
+is now exact integer arithmetic, rounded half up, where it was `f64`. The float code rounded exact
+halves down some of the time, so about 2% of the fixtures' texels (7% of a real 1080p clip's) are
+now 1 higher in one or more channels. The sampled GPU path's output is byte-identical to 0.7.1's.
 
 ## LMBX
 

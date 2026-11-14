@@ -1,0 +1,336 @@
+# W1 exact path — crates/dxvkit-plus-wgpu/tests/exact.rs on DXVKit Plus 0.8.0, debug test build,
+# Mac17,6 (Apple M5 Max, Metal), 2026-11-14: `cargo test -p dxvkit-plus-wgpu --test exact -- --include-ignored --nocapture --test-threads 1`.
+# GPU read-back vs Decoded::to_rgba (0.8.0's oracle: HAP Q in exact integers), raw channel difference, all four channels.
+# Sweep movies: stored packets of random blocks written by the test (2 frames per size).
+
+## exact_path_equals_the_cpu_at_every_size — BlockPath::Exact: 99 rows, 0 differ from the CPU decode
+Dxt1 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Dxt1 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+Dxt1 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+Dxt1 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+Dxt1 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+Dxt1 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+Dxt1 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+Dxt1 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+Dxt1 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+Dxt5 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Dxt5 Premultiplied 1x1: frames 2, max diff 0, texels differing 0 / 2
+Dxt5 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+Dxt5 Premultiplied 2x2: frames 2, max diff 0, texels differing 0 / 8
+Dxt5 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+Dxt5 Premultiplied 3x3: frames 2, max diff 0, texels differing 0 / 18
+Dxt5 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+Dxt5 Premultiplied 4x4: frames 2, max diff 0, texels differing 0 / 32
+Dxt5 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+Dxt5 Premultiplied 5x7: frames 2, max diff 0, texels differing 0 / 70
+Dxt5 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+Dxt5 Premultiplied 15x9: frames 2, max diff 0, texels differing 0 / 270
+Dxt5 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+Dxt5 Premultiplied 17x33: frames 2, max diff 0, texels differing 0 / 1122
+Dxt5 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+Dxt5 Premultiplied 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+Dxt5 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+Dxt5 Premultiplied 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+LegacyDxt1 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+LegacyDxt1 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+LegacyDxt1 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+LegacyDxt1 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+LegacyDxt1 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+LegacyDxt1 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+LegacyDxt1 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+LegacyDxt1 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+LegacyDxt1 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+LegacyDxt5 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+LegacyDxt5 Premultiplied 1x1: frames 2, max diff 0, texels differing 0 / 2
+LegacyDxt5 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+LegacyDxt5 Premultiplied 2x2: frames 2, max diff 0, texels differing 0 / 8
+LegacyDxt5 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+LegacyDxt5 Premultiplied 3x3: frames 2, max diff 0, texels differing 0 / 18
+LegacyDxt5 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+LegacyDxt5 Premultiplied 4x4: frames 2, max diff 0, texels differing 0 / 32
+LegacyDxt5 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+LegacyDxt5 Premultiplied 5x7: frames 2, max diff 0, texels differing 0 / 70
+LegacyDxt5 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+LegacyDxt5 Premultiplied 15x9: frames 2, max diff 0, texels differing 0 / 270
+LegacyDxt5 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+LegacyDxt5 Premultiplied 17x33: frames 2, max diff 0, texels differing 0 / 1122
+LegacyDxt5 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+LegacyDxt5 Premultiplied 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+LegacyDxt5 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+LegacyDxt5 Premultiplied 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+Hap1 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Hap1 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+Hap1 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+Hap1 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+Hap1 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+Hap1 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+Hap1 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+Hap1 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+Hap1 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+Hap5 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Hap5 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+Hap5 Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+Hap5 Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+Hap5 Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+Hap5 Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+Hap5 Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+Hap5 Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+Hap5 Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+HapY Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+HapY Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+HapY Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+HapY Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+HapY Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+HapY Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+HapY Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+HapY Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+HapY Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+HapM Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+HapM Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+HapM Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+HapM Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+HapM Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+HapM Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+HapM Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+HapM Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+HapM Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+HapA Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+HapA Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+HapA Straight 3x3: frames 2, max diff 0, texels differing 0 / 18
+HapA Straight 4x4: frames 2, max diff 0, texels differing 0 / 32
+HapA Straight 5x7: frames 2, max diff 0, texels differing 0 / 70
+HapA Straight 15x9: frames 2, max diff 0, texels differing 0 / 270
+HapA Straight 17x33: frames 2, max diff 0, texels differing 0 / 1122
+HapA Straight 1920x1080: frames 2, max diff 0, texels differing 0 / 4147200
+HapA Straight 3840x2160: frames 2, max diff 0, texels differing 0 / 16588800
+
+## exact_path_equals_the_cpu_on_every_fixture_frame — BlockPath::Exact: 63 rows, 0 differ from the CPU decode
+tiles_hap1.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hap1_chunks4.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hap5.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapa.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapy.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapm.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapm_chunks4.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt1.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt1.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt5.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt5.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_ycg6.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_ycg6.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_yg10.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_yg10.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+glenc_dxt1_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_dxt1_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_dxt1_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_dxt1_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_dxt1_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_dxt1_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_dxt1_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_dxt1_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+glenc_dxt5_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_dxt5_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_dxt5_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_dxt5_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_dxt5_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_dxt5_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_dxt5_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_dxt5_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+glenc_ycg6_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_ycg6_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_ycg6_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_ycg6_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_ycg6_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_ycg6_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_ycg6_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_ycg6_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+glenc_yg10_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_yg10_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_yg10_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_yg10_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_yg10_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_yg10_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_yg10_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_yg10_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt1-lzf_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+synthetic-dxdi_dxt1-lzf_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+synthetic-dxdi_dxt1-lzf_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt1-lzf_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt1-raw_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt1-raw_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt5-lzf_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt5-lzf_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_implied-dxt1-v2_pat64.mov Straight: frames 1, max diff 0, texels differing 0 / 4096
+synthetic-dxdi_implied-dxt1-v2_pat64.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 4096
+synthetic-dxdi_type03-implied-dxt1_pat64.mov Straight: frames 1, max diff 0, texels differing 0 / 4096
+synthetic-dxdi_type03-implied-dxt1_pat64.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 4096
+synthetic-dxv3_dxt1-rawflag_pat64.mov Straight: frames 2, max diff 0, texels differing 0 / 8192
+synthetic-dxv3_dxt1-rawflag_pat64.mov Premultiplied: frames 2, max diff 0, texels differing 0 / 8192
+synthetic-dxv3_dxt5-rawflag_pat64.mov Straight: frames 1, max diff 0, texels differing 0 / 4096
+synthetic-dxv3_dxt5-rawflag_pat64.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 4096
+
+## sampled_path_numbers — BlockPath::Sampled (for the record; not a pass / fail check): 162 rows, 128 differ from the CPU decode
+Dxt1 Straight 1x1: frames 2, max diff 1, texels differing 1 / 2
+Dxt1 Straight 2x2: frames 2, max diff 1, texels differing 3 / 8
+Dxt1 Straight 3x3: frames 2, max diff 1, texels differing 6 / 18
+Dxt1 Straight 4x4: frames 2, max diff 1, texels differing 4 / 32
+Dxt1 Straight 5x7: frames 2, max diff 2, texels differing 27 / 70
+Dxt1 Straight 15x9: frames 2, max diff 2, texels differing 81 / 270
+Dxt1 Straight 17x33: frames 2, max diff 2, texels differing 353 / 1122
+Dxt1 Straight 1920x1080: frames 2, max diff 2, texels differing 1285465 / 4147200
+Dxt1 Straight 3840x2160: frames 2, max diff 2, texels differing 5138431 / 16588800
+Dxt5 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Dxt5 Premultiplied 1x1: frames 2, max diff 0, texels differing 0 / 2
+Dxt5 Straight 2x2: frames 2, max diff 2, texels differing 7 / 8
+Dxt5 Premultiplied 2x2: frames 2, max diff 6, texels differing 6 / 8
+Dxt5 Straight 3x3: frames 2, max diff 1, texels differing 13 / 18
+Dxt5 Premultiplied 3x3: frames 2, max diff 20, texels differing 6 / 18
+Dxt5 Straight 4x4: frames 2, max diff 1, texels differing 18 / 32
+Dxt5 Premultiplied 4x4: frames 2, max diff 3, texels differing 17 / 32
+Dxt5 Straight 5x7: frames 2, max diff 2, texels differing 38 / 70
+Dxt5 Premultiplied 5x7: frames 2, max diff 4, texels differing 33 / 70
+Dxt5 Straight 15x9: frames 2, max diff 2, texels differing 162 / 270
+Dxt5 Premultiplied 15x9: frames 2, max diff 4, texels differing 131 / 270
+Dxt5 Straight 17x33: frames 2, max diff 2, texels differing 638 / 1122
+Dxt5 Premultiplied 17x33: frames 2, max diff 8, texels differing 532 / 1122
+Dxt5 Straight 1920x1080: frames 2, max diff 3, texels differing 2433496 / 4147200
+Dxt5 Premultiplied 1920x1080: frames 2, max diff 251, texels differing 2006296 / 4147200
+Dxt5 Straight 3840x2160: frames 2, max diff 3, texels differing 9735094 / 16588800
+Dxt5 Premultiplied 3840x2160: frames 2, max diff 251, texels differing 8030244 / 16588800
+LegacyDxt1 Straight 1x1: frames 2, max diff 1, texels differing 1 / 2
+LegacyDxt1 Straight 2x2: frames 2, max diff 1, texels differing 4 / 8
+LegacyDxt1 Straight 3x3: frames 2, max diff 2, texels differing 7 / 18
+LegacyDxt1 Straight 4x4: frames 2, max diff 1, texels differing 13 / 32
+LegacyDxt1 Straight 5x7: frames 2, max diff 2, texels differing 15 / 70
+LegacyDxt1 Straight 15x9: frames 2, max diff 2, texels differing 99 / 270
+LegacyDxt1 Straight 17x33: frames 2, max diff 2, texels differing 342 / 1122
+LegacyDxt1 Straight 1920x1080: frames 2, max diff 2, texels differing 1286827 / 4147200
+LegacyDxt1 Straight 3840x2160: frames 2, max diff 2, texels differing 5140717 / 16588800
+LegacyDxt5 Straight 1x1: frames 2, max diff 1, texels differing 1 / 2
+LegacyDxt5 Premultiplied 1x1: frames 2, max diff 1, texels differing 1 / 2
+LegacyDxt5 Straight 2x2: frames 2, max diff 1, texels differing 7 / 8
+LegacyDxt5 Premultiplied 2x2: frames 2, max diff 1, texels differing 3 / 8
+LegacyDxt5 Straight 3x3: frames 2, max diff 2, texels differing 10 / 18
+LegacyDxt5 Premultiplied 3x3: frames 2, max diff 3, texels differing 10 / 18
+LegacyDxt5 Straight 4x4: frames 2, max diff 2, texels differing 21 / 32
+LegacyDxt5 Premultiplied 4x4: frames 2, max diff 4, texels differing 13 / 32
+LegacyDxt5 Straight 5x7: frames 2, max diff 2, texels differing 30 / 70
+LegacyDxt5 Premultiplied 5x7: frames 2, max diff 4, texels differing 28 / 70
+LegacyDxt5 Straight 15x9: frames 2, max diff 2, texels differing 170 / 270
+LegacyDxt5 Premultiplied 15x9: frames 2, max diff 4, texels differing 140 / 270
+LegacyDxt5 Straight 17x33: frames 2, max diff 2, texels differing 652 / 1122
+LegacyDxt5 Premultiplied 17x33: frames 2, max diff 6, texels differing 551 / 1122
+LegacyDxt5 Straight 1920x1080: frames 2, max diff 3, texels differing 2434511 / 4147200
+LegacyDxt5 Premultiplied 1920x1080: frames 2, max diff 247, texels differing 2008664 / 4147200
+LegacyDxt5 Straight 3840x2160: frames 2, max diff 3, texels differing 9735271 / 16588800
+LegacyDxt5 Premultiplied 3840x2160: frames 2, max diff 247, texels differing 8030250 / 16588800
+Hap1 Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+Hap1 Straight 2x2: frames 2, max diff 0, texels differing 0 / 8
+Hap1 Straight 3x3: frames 2, max diff 2, texels differing 6 / 18
+Hap1 Straight 4x4: frames 2, max diff 1, texels differing 8 / 32
+Hap1 Straight 5x7: frames 2, max diff 2, texels differing 36 / 70
+Hap1 Straight 15x9: frames 2, max diff 2, texels differing 115 / 270
+Hap1 Straight 17x33: frames 2, max diff 2, texels differing 333 / 1122
+Hap1 Straight 1920x1080: frames 2, max diff 2, texels differing 1284075 / 4147200
+Hap1 Straight 3840x2160: frames 2, max diff 2, texels differing 5139020 / 16588800
+Hap5 Straight 1x1: frames 2, max diff 2, texels differing 2 / 2
+Hap5 Straight 2x2: frames 2, max diff 1, texels differing 3 / 8
+Hap5 Straight 3x3: frames 2, max diff 2, texels differing 15 / 18
+Hap5 Straight 4x4: frames 2, max diff 1, texels differing 22 / 32
+Hap5 Straight 5x7: frames 2, max diff 2, texels differing 38 / 70
+Hap5 Straight 15x9: frames 2, max diff 2, texels differing 152 / 270
+Hap5 Straight 17x33: frames 2, max diff 2, texels differing 669 / 1122
+Hap5 Straight 1920x1080: frames 2, max diff 3, texels differing 2434613 / 4147200
+Hap5 Straight 3840x2160: frames 2, max diff 3, texels differing 9739977 / 16588800
+HapY Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+HapY Straight 2x2: frames 2, max diff 1, texels differing 4 / 8
+HapY Straight 3x3: frames 2, max diff 2, texels differing 9 / 18
+HapY Straight 4x4: frames 2, max diff 1, texels differing 14 / 32
+HapY Straight 5x7: frames 2, max diff 1, texels differing 29 / 70
+HapY Straight 15x9: frames 2, max diff 2, texels differing 121 / 270
+HapY Straight 17x33: frames 2, max diff 2, texels differing 465 / 1122
+HapY Straight 1920x1080: frames 2, max diff 6, texels differing 1789735 / 4147200
+HapY Straight 3840x2160: frames 2, max diff 6, texels differing 7154473 / 16588800
+HapM Straight 1x1: frames 2, max diff 1, texels differing 2 / 2
+HapM Straight 2x2: frames 2, max diff 1, texels differing 4 / 8
+HapM Straight 3x3: frames 2, max diff 2, texels differing 14 / 18
+HapM Straight 4x4: frames 2, max diff 1, texels differing 25 / 32
+HapM Straight 5x7: frames 2, max diff 1, texels differing 40 / 70
+HapM Straight 15x9: frames 2, max diff 2, texels differing 148 / 270
+HapM Straight 17x33: frames 2, max diff 3, texels differing 673 / 1122
+HapM Straight 1920x1080: frames 2, max diff 6, texels differing 2466805 / 4147200
+HapM Straight 3840x2160: frames 2, max diff 6, texels differing 9870132 / 16588800
+HapA Straight 1x1: frames 2, max diff 0, texels differing 0 / 2
+HapA Straight 2x2: frames 2, max diff 1, texels differing 1 / 8
+HapA Straight 3x3: frames 2, max diff 1, texels differing 8 / 18
+HapA Straight 4x4: frames 2, max diff 1, texels differing 11 / 32
+HapA Straight 5x7: frames 2, max diff 2, texels differing 14 / 70
+HapA Straight 15x9: frames 2, max diff 2, texels differing 78 / 270
+HapA Straight 17x33: frames 2, max diff 2, texels differing 363 / 1122
+HapA Straight 1920x1080: frames 2, max diff 3, texels differing 1251297 / 4147200
+HapA Straight 3840x2160: frames 2, max diff 3, texels differing 5005628 / 16588800
+tiles_hap1.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hap1_chunks4.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hap5.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapa.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_hapy.mov Straight: frames 24, max diff 1, texels differing 76800 / 221184
+tiles_hapm.mov Straight: frames 24, max diff 1, texels differing 76800 / 221184
+tiles_hapm_chunks4.mov Straight: frames 24, max diff 1, texels differing 76800 / 221184
+tiles_dxt1.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt1.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt5.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_dxt5.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_ycg6.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_ycg6.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+tiles_yg10.mov Straight: frames 24, max diff 0, texels differing 0 / 221184
+tiles_yg10.mov Premultiplied: frames 24, max diff 0, texels differing 0 / 221184
+glenc_dxt1_pat100x36.mov Straight: frames 3, max diff 2, texels differing 4104 / 10800
+glenc_dxt1_pat100x36.mov Premultiplied: frames 3, max diff 2, texels differing 4104 / 10800
+glenc_dxt1_pat18x10.mov Straight: frames 3, max diff 1, texels differing 179 / 540
+glenc_dxt1_pat18x10.mov Premultiplied: frames 3, max diff 1, texels differing 179 / 540
+glenc_dxt1_pat48.mov Straight: frames 1, max diff 1, texels differing 946 / 2304
+glenc_dxt1_pat48.mov Premultiplied: frames 1, max diff 1, texels differing 946 / 2304
+glenc_dxt1_pat64.mov Straight: frames 4, max diff 2, texels differing 6420 / 16384
+glenc_dxt1_pat64.mov Premultiplied: frames 4, max diff 2, texels differing 6420 / 16384
+glenc_dxt5_pat100x36.mov Straight: frames 3, max diff 2, texels differing 4269 / 10800
+glenc_dxt5_pat100x36.mov Premultiplied: frames 3, max diff 8, texels differing 3414 / 10800
+glenc_dxt5_pat18x10.mov Straight: frames 3, max diff 1, texels differing 204 / 540
+glenc_dxt5_pat18x10.mov Premultiplied: frames 3, max diff 2, texels differing 184 / 540
+glenc_dxt5_pat48.mov Straight: frames 1, max diff 1, texels differing 954 / 2304
+glenc_dxt5_pat48.mov Premultiplied: frames 1, max diff 4, texels differing 726 / 2304
+glenc_dxt5_pat64.mov Straight: frames 4, max diff 2, texels differing 6491 / 16384
+glenc_dxt5_pat64.mov Premultiplied: frames 4, max diff 8, texels differing 5090 / 16384
+glenc_ycg6_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_ycg6_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_ycg6_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_ycg6_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_ycg6_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_ycg6_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_ycg6_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_ycg6_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+glenc_yg10_pat100x36.mov Straight: frames 3, max diff 0, texels differing 0 / 10800
+glenc_yg10_pat100x36.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 10800
+glenc_yg10_pat18x10.mov Straight: frames 3, max diff 0, texels differing 0 / 540
+glenc_yg10_pat18x10.mov Premultiplied: frames 3, max diff 0, texels differing 0 / 540
+glenc_yg10_pat48.mov Straight: frames 1, max diff 0, texels differing 0 / 2304
+glenc_yg10_pat48.mov Premultiplied: frames 1, max diff 0, texels differing 0 / 2304
+glenc_yg10_pat64.mov Straight: frames 4, max diff 0, texels differing 0 / 16384
+glenc_yg10_pat64.mov Premultiplied: frames 4, max diff 0, texels differing 0 / 16384
+synthetic-dxdi_dxt1-lzf_pat100x36.mov Straight: frames 3, max diff 2, texels differing 4104 / 10800
+synthetic-dxdi_dxt1-lzf_pat100x36.mov Premultiplied: frames 3, max diff 2, texels differing 4104 / 10800
+synthetic-dxdi_dxt1-lzf_pat64.mov Straight: frames 4, max diff 2, texels differing 6420 / 16384
+synthetic-dxdi_dxt1-lzf_pat64.mov Premultiplied: frames 4, max diff 2, texels differing 6420 / 16384
+synthetic-dxdi_dxt1-raw_pat64.mov Straight: frames 4, max diff 2, texels differing 6420 / 16384
+synthetic-dxdi_dxt1-raw_pat64.mov Premultiplied: frames 4, max diff 2, texels differing 6420 / 16384
+synthetic-dxdi_dxt5-lzf_pat64.mov Straight: frames 4, max diff 2, texels differing 6491 / 16384
+synthetic-dxdi_dxt5-lzf_pat64.mov Premultiplied: frames 4, max diff 8, texels differing 5090 / 16384
+synthetic-dxdi_implied-dxt1-v2_pat64.mov Straight: frames 1, max diff 2, texels differing 1581 / 4096
+synthetic-dxdi_implied-dxt1-v2_pat64.mov Premultiplied: frames 1, max diff 2, texels differing 1581 / 4096
+synthetic-dxdi_type03-implied-dxt1_pat64.mov Straight: frames 1, max diff 2, texels differing 1581 / 4096
+synthetic-dxdi_type03-implied-dxt1_pat64.mov Premultiplied: frames 1, max diff 2, texels differing 1581 / 4096
+synthetic-dxv3_dxt1-rawflag_pat64.mov Straight: frames 2, max diff 2, texels differing 3083 / 8192
+synthetic-dxv3_dxt1-rawflag_pat64.mov Premultiplied: frames 2, max diff 2, texels differing 3083 / 8192
+synthetic-dxv3_dxt5-rawflag_pat64.mov Straight: frames 1, max diff 2, texels differing 1598 / 4096
+synthetic-dxv3_dxt5-rawflag_pat64.mov Premultiplied: frames 1, max diff 6, texels differing 1215 / 4096
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 46.76s

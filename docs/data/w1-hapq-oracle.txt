@@ -1,0 +1,30 @@
+# W1 exact path — the HAP Q CPU oracle: f64 (v0.7.1) against the exact rational rounded half up.
+# Throw-away programs against dxvkit-plus-core @ 09f1dbc (v0.7.1), release, Mac17,6, 2026-11-14.
+# f64 oracle: bc::bc3_block_exact (f64 palette) + hap::ycocg_scaled_to_rgb_f.
+# integer:    R = round((y35 k + 280 (r3 - g3)) / (35 k)), G = round((y35 k + 280 (g3 - 384)) / (35 k)),
+#             B = round((y35 k - 280 (r3 + g3 - 768)) / (35 k)), k = b3 + 24, halves up, clamped 0..255
+#             (0.8.0: hap::ycocg_scaled_exact).
+
+## 1. Random BC3 blocks (splitmix64 seed 1), texel 0 of each
+random mismatch: c0 f26e c1 fe81 ci 1 a0 178 a1 114 ai 0: f64 [200, 219, 73] int [200, 220, 73] (r3 765 g3 633 b3 24 a35 6230)
+random mismatch: c0 8ff3 c1 e481 ci 1 a0 131 a1 28 ai 0: f64 [173, 140, 70] int [174, 140, 71] (r3 693 g3 438 b3 24 a35 4585)
+random mismatch: c0 e2e1 c1 b4d2 ci 0 a0 36 a1 15 ai 3: f64 [99, 12, 0] int [99, 13, 0] (r3 693 g3 279 b3 24 a35 1050)
+random mismatch: c0 2021 c1 9a64 ci 0 a0 46 a1 123 ai 6: f64 [14, 0, 110] int [15, 0, 110] (r3 99 g3 12 b3 24 a35 0)
+random mismatch: c0 32e1 c1 2bb1 ci 0 a0 34 a1 105 ai 0: f64 [12, 16, 91] int [12, 17, 91] (r3 147 g3 279 b3 24 a35 1190)
+random blocks: 200000000 texels, 574662 where f64 oracle != integer formula
+
+## 2. Exact halves of the green channel, enumerated in integers and checked through real blocks
+reachable: r/b thirds 220, g thirds 460, alpha 35ths 2806
+tie mismatch (G'): c0 0201 c1 0000 idx 0 a0 0 a1 32 ai 1: f64 [0, 0, 128] int [0, 1, 128]
+tie mismatch (G'): c0 0201 c1 0000 idx 0 a0 0 a1 34 ai 1: f64 [2, 2, 130] int [2, 3, 130]
+tie mismatch (G'): c0 0201 c1 0000 idx 0 a0 0 a1 36 ai 1: f64 [4, 4, 132] int [4, 5, 132]
+tie mismatch (G'): c0 0201 c1 0000 idx 0 a0 0 a1 38 ai 1: f64 [6, 6, 134] int [6, 7, 134]
+tie mismatch (G'): c0 0201 c1 0000 idx 0 a0 0 a1 40 ai 1: f64 [8, 8, 136] int [8, 9, 136]
+G' exact ties (x.5): 56400404 (endpoint/index/alpha-value combinations), f64 oracle rounds down on 10883073; distinct denominators 15
+
+## 3. Texels of real frames whose CPU RGBA changes (every texel of the BC3 plane, first 30 frames)
+tiles_hapy.mov: 128x72 24 frames, 221184 texels, 4736 change (2.1412%), max change 1
+tiles_hapm.mov: 128x72 24 frames, 221184 texels, 4736 change (2.1412%), max change 1
+tiles_hapm_chunks4.mov: 128x72 24 frames, 221184 texels, 4736 change (2.1412%), max change 1
+Metric_01_HapM.mov: 1920x1080 30 frames, 62208000 texels, 4366479 change (7.0192%), max change 1
+glenc_hapy_fromMaster.mov: 512x512 30 frames, 7864320 texels, 3445 change (0.0438%), max change 1

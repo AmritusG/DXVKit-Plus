@@ -1,4 +1,5 @@
-//! One GPU session: device, frame renderer and (macOS) the native import route.
+//! One GPU session: device, frame renderer (on the run's `--block-path`) and (macOS) the native
+//! import route.
 
 use dxvkit_plus_core::source::Decoded;
 use dxvkit_plus_wgpu::{FrameRenderer, Gpu, GpuError, NativePlanes, read_texture_rgba, wait_idle};
@@ -34,7 +35,7 @@ pub struct Session {
 impl Session {
     pub fn new() -> Result<Session, GpuError> {
         let gpu = Gpu::headless()?;
-        let renderer = FrameRenderer::new(&gpu.device);
+        let renderer = FrameRenderer::with_path(&gpu.device, crate::block_path());
         let mut s = Session {
             gpu,
             renderer,
@@ -123,8 +124,8 @@ pub struct AltPaths {
 impl AltPaths {
     pub fn new(gpu: &Gpu) -> AltPaths {
         AltPaths {
-            staged: FrameRenderer::new(&gpu.device),
-            into: FrameRenderer::new(&gpu.device),
+            staged: FrameRenderer::with_path(&gpu.device, crate::block_path()),
+            into: FrameRenderer::with_path(&gpu.device, crate::block_path()),
             view: FrameRenderer::new(&gpu.device),
             uploader: dxvkit_plus_wgpu::Uploader::new(&gpu.device, 1 << 20, 2),
         }

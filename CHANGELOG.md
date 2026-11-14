@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.8.0 — 2026-11-14
+
+**The exact path** (W1 of the Glance family's needs): a second way for `dxvkit-plus-wgpu` to turn
+BC1 / BC3 / BC4 frames into pixels, bit-exact with the CPU decode. The default path, its output and
+every file format are unchanged.
+
+- **`BlockPath`** (`dxvkit-plus-wgpu`, `#[repr(u32)]`: `Sampled` = 0, the default; `Exact` = 1), chosen
+  per renderer: `FrameRenderer::with_path(device, path)`, `set_path`, `path`. `FrameRenderer::new` is
+  the sampled path as before; its output is byte-identical to 0.7.1's (checked on three real 1080p
+  clips).
+- **`BlockPath::Exact`**: the blocks upload as integer texels (one `Rg32Uint` texel per 8-byte
+  block, one `Rgba32Uint` per 16-byte block — the same bytes and rows as the BC upload) and the new
+  `BC_EXACT_WGSL` decodes them with the CPU decoders' integer arithmetic: BC1 and BC3 colour, BC3 /
+  BC4 alpha (DXVKit's truncating convention), un-premultiply, and HAP Q's scaled YCoCg from the exact
+  palettes. Covers DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied) and HAP Hap1 / Hap5 /
+  HapY / HapM / HapA, through every upload route (`upload`, `upload_staged`, `upload_from_stage`).
+  Such frames have no `direct_view`. DXV High Quality, BC7, LMBX and RGBA8 were already exact and
+  take the same route on both paths; HAP HDR is always sampled.
+- **Proof** (`crates/dxvkit-plus-wgpu/tests/exact.rs`, Metal): GPU read-back equals
+  `Decoded::to_rgba`, max 0 on all four channels, on every frame of the committed fixtures and
+  vectors (63 file / alpha-mode rows, 488 frames; 348 of them BC1 / BC3 / BC4 frames, the other 140
+  DXV High Quality) and on movies the test writes from random blocks
+  for each of the 9 variants (+ the 2 premultiplied readings) at 1x1, 2x2, 3x3, 4x4, 5x7, 15x9,
+  17x33, 1920x1080 and 3840x2160 (99 rows). Written first and run on 0.7.1, where it failed on 93 of
+  the 99 and 35 of the 63 (`docs/data/w1-exact-path-red-v0.7.1.txt`). One flipped bit in one block
+  fails it, for every variant. Also 0 on seven of Amrit's real clips, every frame (1 272; the DXT5
+  clip's 300 again read premultiplied) (`dxvkit-plus verify --block-path exact`; 1080p HapM / HapY /
+  Hap1 / Hap5 / DXT1 / DXT5 and a 2160p HapM). "Every size" means every size tested.
+- **HAP Q on the CPU is now exact integer arithmetic** (`hap::ycocg_scaled_exact`;
+  `bc::bc3_block_exact` returns whole thirds and 35ths as `u16`; `hap::ycocg_scaled_to_rgb_f` is
+  gone). The `f64` transform rounded exact halves down some of the time — 574 662 of 200 000 000
+  random texels — which no shader can reproduce. `Decoded::to_rgba` of HapY / HapM frames is 1
+  higher in one or more channels on those texels: 2.1% of the fixtures' texels, 7.0% of a real
+  1080p clip's.
+- **Cost** (release, Mac17,6 Apple M5 Max, Resolume Arena running on the same GPU): the conversion
+  pass per 1080p layer takes 30-48 µs sampled, 50-73 µs exact (HAP Q 84-93 µs); 16 layers 0.5-0.8 ms
+  per step sampled, 0.8-1.5 ms exact (wall time from submission to the GPU being done, 64 passes per
+  submission: an upper bound on GPU time).
+  A pipelined player that converts every layer runs at the same speed on both paths within the
+  run-to-run spread (median of exact / sampled over 18 clip and layer-count cases 1.04, range
+  0.70-1.25; 5 rounds); what the exact path costs is `direct_view`: 16 layers of plain BC1 / BC3
+  frames sampled directly (`pipelined2_direct`) run at 1792 steps/s (Hap1), 1006 (Hap5), 1279 (DXT1)
+  and 671 (DXT5) against 925, 706, 884 and 611 for the same variant on the exact path.
+- **CLI**: `--block-path sampled|exact` for `decode`, `bench` and `verify` (rows carry
+  `block_path`); with `exact`, `verify` allows nothing between CPU and GPU, colour under alpha 0
+  included. On the sampled path `verify` now allows HAP Q 3/255 (was 2): 0.7.1 itself measures 3 on
+  two real 1080p HAP Q clips on this Mac.
+- The conversion shaders (`BC_EXACT_WGSL`, `DXV_HQ_WGSL` — now exported — and `CONVERT_WGSL`) are
+  validated by naga and translated to MSL and HLSL in the test suite. Nothing has run on D3D12 or
+  Vulkan yet; D3D12 runs at the Windows wave.
+- `examples/convert_cost.rs` (wall time of the conversion pass per path, the GPU waited for).
+- Lints: clippy 1.99's new `chunks_exact_to_as_chunks` is allowed (59 sites that predate it).
+
 ## 0.7.1 — 2026-10-14
 
 LMBX **encoder** improvement (W11, from W10's exploration). The bitstream (v3) and every decoder are
