@@ -68,11 +68,24 @@ fn hostile_files_are_errors_not_panics() {
     for cut in 0..good.len() {
         let _ = parse(good[..cut].to_vec());
     }
-    // A sample table pointing past the end of the file is rejected.
+    // A sample table pointing past the end of the file (0.9.0, Swift Glance's rule): the movie
+    // opens with every sample in its table, and reading one past the end is `Corrupt`, allocating
+    // nothing; the samples inside the file still read.
     let mut bad = good.clone();
     let at = bad.windows(4).position(|w| w == b"stco").unwrap() + 12;
     bad[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
-    assert!(matches!(parse(bad).err(), Some(MediaError::Corrupt(_))));
+    let m = parse(bad).unwrap();
+    let mut buf = Vec::new();
+    assert!(matches!(m.read_sample(&m.tracks[0], 0, &mut buf), Err(MediaError::Corrupt(_))));
+    assert!(buf.is_empty());
+    let ok = parse(good.clone()).unwrap();
+    ok.read_sample(&ok.tracks[0], 2, &mut buf).unwrap();
+    assert_eq!(buf, vec![2u8; 16]);
+    // A uniform sample size claiming more samples than the file has bytes stays refused.
+    let mut lie = good.clone();
+    let at = lie.windows(4).position(|w| w == b"stsz").unwrap() + 8;
+    lie[at..at + 8].copy_from_slice(&[0, 0, 0, 1, 0, 0xFF, 0xFF, 0xFF]);
+    assert!(matches!(parse(lie).err(), Some(MediaError::Corrupt(_))));
     // Codec classification.
     assert_eq!(Codec::of(*b"Hap7"), Codec::Hap);
     assert_eq!(Codec::of(*b"DXD3"), Codec::Dxv);

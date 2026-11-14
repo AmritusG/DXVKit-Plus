@@ -62,6 +62,24 @@ pub struct NativeInfo {
     pub start: (i64, i32),
     pub nominal_fps: f64,
     pub layout: PixelLayout,
+    /// The alpha the track's format description states (0.9.0): none, straight or premultiplied
+    /// (`crate::source::StatedAlpha`). Backends that cannot tell say `None`.
+    pub alpha: crate::source::StatedAlpha,
+}
+
+impl Default for NativeInfo {
+    fn default() -> Self {
+        NativeInfo {
+            width: 0,
+            height: 0,
+            frame_count: 0,
+            frame_duration: (1, 30),
+            start: (0, 1),
+            nominal_fps: 0.0,
+            layout: PixelLayout::Bgra,
+            alpha: crate::source::StatedAlpha::None,
+        }
+    }
 }
 
 /// One decoded platform frame.
@@ -110,6 +128,7 @@ pub trait NativeDecoder: Send {
 pub trait Backend: Send + Sync {
     /// A short name for logs and `probe` output (`"avfoundation"`, `"media-foundation"`).
     fn name(&self) -> &'static str;
-    /// Open `path`'s first video track, delivering frames in `layout`.
+    /// Open `path`'s first video track, delivering frames in `layout`. (`source::probe` offers a
+    /// backend only the movie's first video track, or a file its own parser cannot read.)
     fn open(&self, path: &Path, layout: PixelLayout) -> Result<Box<dyn NativeDecoder>, MediaError>;
 }

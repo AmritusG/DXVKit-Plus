@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.9.0 — 2026-11-14
+
+**The probe opens files as Swift Glance does; BC7 on the exact path; the MediaInfo gaps** (W2: the
+eight findings of glance-core C1 as Cowork decided them, and item 6 of the Glance family's needs).
+Every change to the API is an addition.
+
+- **Device limit** (`dxvkit-plus-wgpu`): `Gpu::headless` / `with_adapter` ask for the adapter's
+  largest 2D texture up to `MAX_EDGE` (16384 on Apple M5 Max; wgpu's default is 8192). A frame larger
+  than the device holds is `GpuError::Unsupported` with the numbers — from `render`, every upload,
+  `render_native` and `create_bc_texture*` — never a wgpu validation error with `Ok` and an invalid
+  texture; new `check_device_size`. The Apple island's imports refuse it the same way.
+- **Track choice**: Swift Glance's order — the first DXV track anywhere; else HAP only when the first
+  video track is HAP; else the platform backend. `ImportOptions::track` opens a chosen video track
+  (index in file order); `MediaInfo::track` says which plays and `source::open` opens it.
+- **A cut-off track keeps its whole samples**: a sample past the end of the file stays in the table
+  and fails when read (`Movie::read_sample`: `Corrupt`, nothing allocated), DXV and HAP alike —
+  Swift Glance's behaviour (DXVKit's C demuxer refuses the track). A uniform sample size may not
+  claim more samples than the file has bytes.
+- **Content before name**: LMBD by its magic, movies by their atoms, PNG by its signature; the
+  extension only where the content says nothing. A HAP movie named `.png` or `.lmbd` is HAP.
+- **Damaged containers**: damage is per track (`Movie::damaged`, `DamagedTrack`,
+  `Movie::open_all`); a movie our parser cannot read — a fragmented MP4, whose `moov` has empty
+  sample tables — goes to the platform backend unless a DXV or HAP track was identified in it.
+  Verified on a real fragmented MP4 written by AVFoundation (new CC0 fixture
+  `tests/fixtures/frag_h264.mp4`, generator `scripts/make-fragmented-mp4.swift`).
+- **BC7 on `BlockPath::Exact`**: HAP R and LMB7 frames (as planes) upload as `Rgba32Uint` texels and
+  `BC_EXACT_WGSL` mode 4 decodes them, `core::bc7::bc7_block` line for line, so reserved-mode blocks
+  (first byte 0, which no encoder writes) are transparent black on every GPU — GitHub's virtual Metal
+  GPU decodes them as opaque black in hardware. The sampled path keeps the hardware decode and its
+  `direct_view`; on the exact path BC7 frames have none. Proof: the exactness sweep (now 10 variants;
+  BC7 with every mode forced in turn and reserved blocks, 1x1 ... 3840x2160), every BC7 fixture frame
+  (HAP R + five LMB7 files), a frame of reserved blocks, the flipped-bit control: max 0. Cost: about
+  210-225 µs per 1080p pass against 36-56 µs sampled (`docs/data/w2-bc7-convert-cost-m5max.jsonl`).
+- **MediaInfo** (appended; `MediaInfo` now implements `Default`): `track`; `dxv_variant` (the first
+  packet's `dxv::Variant`); `alpha` (`StatedAlpha`: `None` 0, `Straight` 1, `Premultiplied` 2,
+  `Unstated` 3 — HAP / LMBD / PNG straight, DXV with alpha unstated, native clips as their format
+  description says); `codec_name`, `container_name`. `NativeInfo::alpha` (+ `Default`): the Apple
+  island reads it from the format description with Swift Glance's rule.
+- **`core::names`**: `codec_name` (Swift Glance's table + `Hap7` "HAP R", `HapH` "HAP HDR"),
+  `codec_label`, `container_name`, `unsupported_message` (Swift Glance's "<codec> in <CONTAINER> is
+  not supported" line, Matroska included). **`container::first_video_fourcc(_in)`**: the first video
+  track's FourCC from atom headers alone, for files whose tables are beyond reading.
+- **Apple targets**: `x86_64-apple-darwin` builds and its CLI runs under Rosetta (verify on the exact
+  path max 0); its binaries must target macOS ≥ 10.14.4 or they do not load (rustc's default 10.12
+  links `@rpath/libswiftCoreMedia.dylib`), so `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET =
+  11.0`. `dxvkit-plus-apple` now compiles its decoder for `aarch64-apple-ios` and links there
+  (`IPHONEOS_DEPLOYMENT_TARGET = 15.0`; with none set the link fails on libzstd built for the SDK's
+version); not run on a device.
+- Fuzzer: also `first_video_fourcc_in`, damaged tracks and reads past the end. Manifests: the
+  `homepage` field (equal to `repository`) is gone (cargo 1.100 warns on it).
+
 ## 0.8.0 — 2026-11-14
 
 **The exact path** (W1 of the Glance family's needs): a second way for `dxvkit-plus-wgpu` to turn

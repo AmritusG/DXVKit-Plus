@@ -39,9 +39,20 @@ pub struct Plane {
     pub surface_id: u32,
 }
 
+/// A frame larger than the device's largest 2D texture is `Unsupported` with the numbers, before
+/// any Metal texture is made (0.9.0; the same rule as `dxvkit_plus_wgpu::check_device_size`).
+fn fits(device: &wgpu::Device, frame: &NativeFrame) -> Result<(), MediaError> {
+    let limit = device.limits().max_texture_dimension_2d;
+    if frame.width > limit || frame.height > limit {
+        return Err(MediaError::Unsupported(format!("a {}x{} frame is larger than this GPU's largest texture ({limit} pixels)", frame.width, frame.height)));
+    }
+    Ok(())
+}
+
 /// The frame's planes on `device` (`Bgra`: one BGRA8 plane; `Yuv420`: R8 luma + RG8 chroma).
 /// `device` must be a Metal device.
 pub fn import(device: &wgpu::Device, frame: &NativeFrame) -> Result<Vec<Plane>, MediaError> {
+    fits(device, frame)?;
     let buffer = pixel_buffer(frame)?;
     let surface = CVPixelBufferGetIOSurface(Some(&buffer.0)).ok_or_else(|| MediaError::Platform("pixel buffer has no IOSurface".into()))?;
     let planes = plane_specs(frame.layout);
@@ -170,6 +181,7 @@ impl TextureCacheImporter {
 
     /// The frame's planes on `device` through the cache (same layout as [`import`]).
     pub fn import(&self, device: &wgpu::Device, frame: &NativeFrame) -> Result<Vec<Plane>, MediaError> {
+        fits(device, frame)?;
         let buffer = pixel_buffer(frame)?;
         let surface = CVPixelBufferGetIOSurface(Some(&buffer.0)).ok_or_else(|| MediaError::Platform("pixel buffer has no IOSurface".into()))?;
         let plane_count = surface.plane_count();

@@ -12,7 +12,17 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.8.0**: an **exact path** for the GPU. DXV DXT1 / DXT5 / legacy DXT and HAP
+This is release **0.9.0**: the **probe opens files the way Swift Glance does**, and the exact path
+covers **BC7**. Which track of a movie plays follows Swift Glance's order (DXV first; HAP only when
+it is the first video track; else the platform decoder), and a chosen track can be opened; the
+content decides before the file name; a file cut off in its sample data plays up to the cut; a movie
+our parser cannot read (a fragmented MP4) goes to the platform decoder unless it holds DXV or HAP; a
+frame larger than the GPU's largest texture is an error value, and the device asks for the adapter's
+own limit (16384, not wgpu's 8192). `MediaInfo` now says which track plays, the DXV variant, the
+alpha the clip states and the display names for "<codec> in <CONTAINER> is not supported"
+([Probing](#probing-and-routing-090)). On `BlockPath::Exact` BC7 (HAP R, LMB7) is decoded in the shader too, so the
+exact path equals the CPU decode for every input on every GPU, hostile files included. The Apple
+island builds for Intel Macs and for iOS. 0.8.0 was an **exact path** for the GPU. DXV DXT1 / DXT5 / legacy DXT and HAP
 Hap1 / Hap5 / HapY / HapM / HapA frames can now be decoded in the conversion shader, from the blocks
 uploaded as integer texels, **bit-exact with the CPU decode** — every channel of every texel, at
 every tested size from 1x1 to 3840x2160 — instead of by the GPU's fixed-function BC decoder, which
@@ -56,12 +66,12 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | HAP Q (`HapY`) | ✅ pure Rust | BC3 scaled YCoCg → RGB in WGSL | GPU: sampled ≤ 3/255, or exact |
 | HAP Q Alpha (`HapM`) | ✅ pure Rust | BC3 YCoCg + BC4 alpha | GPU: sampled ≤ 3/255, or exact |
 | HAP Alpha-Only (`HapA`) | ✅ pure Rust | BC4 | GPU: sampled ≤ 1/255, or exact |
-| HAP R (`Hap7`) | ✅ pure Rust | BC7 blocks | CPU BC7 decoder bit-exact with the GPU |
+| HAP R (`Hap7`) | ✅ pure Rust | BC7 blocks | GPU: sampled (the GPU's BC7 decode, bit-exact on Apple M5 Max) or exact (decoded in the shader, 0.9.0) |
 | HAP HDR (`HapH`) | ✅ pure Rust | BC6H blocks (unsigned and signed) | GPU only (no CPU BC6H decoder) |
-| H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020 |
+| H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020; fragmented MP4 through the platform (0.9.0) |
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
-| LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU; both Zstd backends decode identically |
+| LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU (sampled or exact); both Zstd backends decode identically |
 | LMBD (`LMBX`: YCoCg + integer DCT + rANS, variable rate; flat, palette and quad tiles, edge alpha) | ✅ pure Rust, **and encode** | the bitstream itself, decoded by WGSL compute | 4:2:2-halo or 4:4:4 chroma, optional alpha; GPU bit-exact with the CPU; frozen spec (v1, v2, v3) + conformance vectors |
 | DXV3 Normal Quality (`DXT1`) | ✅ pure Rust | BC1 blocks | block-copy layer; bit-exact with DXVKit; GPU: sampled ≤ 2/255, or exact |
 | DXV3 Normal Quality With Alpha (`DXT5`) | ✅ pure Rust | BC3 blocks | alpha straight (default) or premultiplied; GPU: sampled ≤ 2/255, or exact |
@@ -87,7 +97,7 @@ every frame of every fixture), and every error is a value — hostile files neve
 | [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, DXV, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
 | [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30, on two block paths (`BlockPath`: sampled — the GPU's BC decode — or exact — decoded in the shader, bit-exact with the CPU); persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
-| [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS: AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
+| [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS (Apple silicon and Intel; iOS builds): AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
 | [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
@@ -98,9 +108,9 @@ Not on crates.io yet; depend on the git repository:
 
 ```toml
 [dependencies]
-dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" }
-dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" }
-dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.8.0" } # macOS
+dxvkit-plus-core = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.9.0" }
+dxvkit-plus-wgpu = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.9.0" }
+dxvkit-plus-apple = { git = "https://github.com/AmritusG/DXVKit-Plus", tag = "v0.9.0" } # macOS
 # No C in the decoder: add `default-features = false, features = ["zstd-rust"]` to every
 # DXVKit Plus crate you depend on (see "Zstd decode backend" below).
 ```
@@ -162,7 +172,7 @@ clip's `clip.layout()` (fixed for LMBD and HAP), gives a `StagedFrame` that a de
 ## CLI
 
 ```sh
-cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.8.0 dxvkit-plus-cli
+cargo install --git https://github.com/AmritusG/DXVKit-Plus --tag v0.9.0 dxvkit-plus-cli
 
 dxvkit-plus probe clip.mov                 # JSON: codec, size, frames, rate, alpha, timecode
 dxvkit-plus decode clip.mov 42 frame.png   # frame 42 through the GPU path (--cpu for the CPU path)
@@ -208,6 +218,30 @@ and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and
   reading is what ffmpeg assumes for DXT5; on a straight-alpha test card our premultiplied mode
   is within 1.9/255 (CPU) / 2.6/255 (GPU) of ffmpeg's output as shown.
 
+## Probing and routing (0.9.0)
+
+`source::probe` looks at what a file holds, and routes movies as Swift Glance does:
+
+- **Which track plays.** The first DXV track anywhere; else HAP, only when the movie's first video
+  track is HAP; else the platform decoder on the file. `ImportOptions { track: Some(i), .. }` opens
+  video track `i` instead (file order); `MediaInfo::track` says which one plays.
+- **Content before name.** LMBD by its magic, movies by their atoms, PNG by its signature; a HAP
+  movie named `clip.png` is HAP. The extension speaks only when the content cannot.
+- **Damaged files.** A track whose tables do not parse does not stop the others
+  (`Movie::damaged`). A file cut off inside its sample data opens with its whole frames; the cut
+  ones fail one by one. A movie our parser cannot read (a fragmented MP4) goes to the platform
+  decoder — unless a DXV or HAP track was found in it.
+- **What it says.** `MediaInfo::dxv_variant`, `alpha` (`StatedAlpha`: none / straight /
+  premultiplied / unstated — a DXV clip's alpha is the user's choice), `codec_name` and
+  `container_name`; `names::unsupported_message(path)` is Swift Glance's "HAP Q in MOV is not
+  supported" line, `container::first_video_fourcc(path)` names the codec of files whose tables are
+  beyond reading.
+- **GPU size.** `Gpu::headless` asks for the adapter's largest texture (up to 16384); a frame larger
+  than the device holds is `GpuError::Unsupported` with the numbers (`check_device_size`), never a
+  wgpu validation error and a blank texture.
+
+Details and sources in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#probe-and-routing-090).
+
 ## Exact path (0.8.0)
 
 A GPU's fixed-function BC decoder is not required to be bit-exact, and on Apple silicon it is not:
@@ -232,9 +266,15 @@ let mut fast = FrameRenderer::new(&gpu.device);          // BlockPath::Sampled, 
 | The pass, one 1080p layer (wall time, GPU waited for) | 30-48 µs | 50-73 µs (HAP Q 84-93 µs) |
 | … 16 layers | 0.5-0.8 ms per step | 0.8-1.5 ms per step |
 
-It covers DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied) and HAP Hap1 / Hap5 / HapY /
-HapM / HapA. DXV High Quality, BC7 (HAP R, LMB7), LMBX and RGBA8 frames were already exact and take
-the same route on both paths; HAP HDR has no CPU decoder and is always sampled. `set_path` changes a
+It covers DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied), HAP Hap1 / Hap5 / HapY /
+HapM / HapA and, since 0.9.0, BC7 (HAP R, LMB7 frames as planes): a GPU's BC7 decoder is exact for
+valid blocks, but blocks of a reserved mode, which no encoder writes, came out opaque black on
+GitHub's virtual Metal GPU where the format (and our CPU decoder, and the M5 Max) says transparent
+black; on the exact path the shader decodes them, so the contract holds for every file on every GPU.
+BC7 on the exact path costs more than the other variants: about 210-225 µs per 1080p pass against
+36-56 µs sampled (16 layers 3.4 against 0.85 ms per step; LMB7 encoded from a real clip,
+`docs/data/w2-bc7-convert-cost-m5max.jsonl`). DXV High Quality, LMBX and RGBA8 frames take the same
+route on both paths; HAP HDR has no CPU decoder and is always sampled. `set_path` changes a
 renderer's path between frames; the uploads (`upload`, `upload_staged`, `upload_from_stage`) and the
 `Uploader` work the same on both. The path's values are fixed (`Sampled` = 0, `Exact` = 1) for the
 planned C ABI.

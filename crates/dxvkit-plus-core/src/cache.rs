@@ -355,7 +355,7 @@ mod tests {
             frames,
             rate: FrameRate::FPS_30,
             has_alpha: false,
-            timecode: None,
+            ..MediaInfo::default()
         };
         (Box::new(Fake { info, decodes: Arc::clone(&decodes), delay: Duration::from_millis(delay_ms) }), decodes)
     }

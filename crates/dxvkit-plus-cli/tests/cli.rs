@@ -26,7 +26,8 @@ fn run(cmd: &mut Command) -> Vec<serde_json::Value> {
 #[test]
 fn every_command_works_on_every_fixture() {
     let files = fixtures();
-    assert_eq!(files.len(), 18);
+    // 16 tile movies, HAP R and HAP HDR, and (0.9.0) a fragmented MP4 only the platform reads.
+    assert_eq!(files.len(), 19);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     for f in &files {
@@ -35,6 +36,8 @@ fn every_command_works_on_every_fixture() {
         let tiles = name.starts_with("tiles_");
         if tiles {
             assert_eq!((p["width"].as_u64(), p["height"].as_u64(), p["frames"].as_u64()), (Some(128), Some(72), Some(24)), "{name}");
+        } else if name.starts_with("frag_") {
+            assert_eq!((p["kind"].as_str(), p["frames"].as_u64(), p["codec_name"].as_str()), (Some("native"), Some(60), Some("H.264")), "{name}");
         } else {
             assert_eq!(p["frames"].as_u64(), Some(3), "{name}");
         }
@@ -66,7 +69,8 @@ fn every_command_works_on_every_fixture() {
             }
         }
     }
-    let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
+    let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) =
+        files.iter().filter(|f| !f.to_str().unwrap().contains("frag_")).partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
     let v = run(bin().args(["verify", "--tiles", "--source-tolerance", "255"]).args(&tile_files));
     let v2 = run(bin().arg("verify").args(&synthetic));
     assert_eq!((v.len(), v2.len()), (16, 2));

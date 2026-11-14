@@ -85,6 +85,45 @@ pub fn video_movie(fourcc: &[u8; 4], w: u16, h: u16, samples: &[Vec<u8>]) -> Vec
     [ftyp, mdat, atom(b"moov", &trak)].concat()
 }
 
+/// A 30 fps QuickTime movie with one video track per `(fourcc, w, h, samples)`, in that order (each
+/// track's samples one chunk in the shared `mdat`). The moov comes last, so cutting the file's tail
+/// cuts the moov; [`video_movie_moov_first`] puts it first.
+pub fn tracks_movie(tracks: &[(&[u8; 4], u16, u16, &[Vec<u8>])]) -> Vec<u8> {
+    let ftyp = atom(b"ftyp", b"qt  \0\0\0\0qt  ");
+    let data: Vec<u8> = tracks.iter().flat_map(|t| t.3.concat()).collect();
+    let mdat = atom(b"mdat", &data);
+    let mut offset = (ftyp.len() + 8) as u32;
+    let mut traks = Vec::new();
+    for &(fourcc, w, h, samples) in tracks {
+        let sizes: Vec<u32> = samples.iter().map(|s| s.len() as u32).collect();
+        traks.extend(trak(b"vide", 30, samples.len() as u32, stbl(&sample_entry(fourcc, w, h), &sizes, offset)));
+        offset += sizes.iter().sum::<u32>();
+    }
+    [ftyp, mdat, atom(b"moov", &traks)].concat()
+}
+
+/// The 86-byte video sample entry of `fourcc` at `w` x `h` (depth 24).
+pub fn sample_entry(fourcc: &[u8; 4], w: u16, h: u16) -> Vec<u8> {
+    let mut v = vec![0u8; 78];
+    v[6..8].copy_from_slice(&1u16.to_be_bytes());
+    v[24..26].copy_from_slice(&w.to_be_bytes());
+    v[26..28].copy_from_slice(&h.to_be_bytes());
+    v[74..76].copy_from_slice(&24u16.to_be_bytes());
+    v[76..78].copy_from_slice(&0xFFFFu16.to_be_bytes());
+    [&86u32.to_be_bytes()[..], fourcc, &v].concat()
+}
+
+/// [`video_movie`] with the moov before the mdat (sample tables first, as a fast-start file), so the
+/// file can be cut inside its sample data with the tables whole.
+pub fn video_movie_moov_first(fourcc: &[u8; 4], w: u16, h: u16, samples: &[Vec<u8>]) -> Vec<u8> {
+    let ftyp = atom(b"ftyp", b"qt  \0\0\0\0qt  ");
+    let sizes: Vec<u32> = samples.iter().map(|s| s.len() as u32).collect();
+    let moov_at = |offset: u32| atom(b"moov", &trak(b"vide", 30, samples.len() as u32, stbl(&sample_entry(fourcc, w, h), &sizes, offset)));
+    let moov_len = moov_at(0).len();
+    let moov = moov_at((ftyp.len() + moov_len + 8) as u32);
+    [ftyp, moov, atom(b"mdat", &samples.concat())].concat()
+}
+
 /// A HAP frame: a 4-byte section header of type `ty` + uncompressed blocks.
 pub fn hap_frame(ty: u8, blocks: &[u8]) -> Vec<u8> {
     let l = (blocks.len() as u32).to_le_bytes();

@@ -123,7 +123,8 @@ fn chunked_and_single_section_frames_are_identical() {
 #[test]
 fn every_fixture_has_a_cc0_sidecar_with_a_matching_hash() {
     let media = sidecars_match(&fixtures(), "license: CC0-1.0");
-    assert_eq!(media, 37);
+    // 0.9.0: + frag_h264.mp4 (a fragmented MP4, ours).
+    assert_eq!(media, 38);
     let mut vectors = 0;
     for group in ["glenc", "synthetic", "invalid"] {
         vectors += sidecars_match(&fixtures().join("dxvkit/streams").join(group), "license: MIT (LICENSES/DXVKit-MIT.txt)");

@@ -1,4 +1,4 @@
-//! # dxvkit-plus-apple — the macOS native island
+//! # dxvkit-plus-apple — the Apple native island (macOS; iOS builds)
 //!
 //! The only DXVKit Plus crate allowed `unsafe` (every block carries a `// SAFETY:` comment). It
 //! decodes every codec that is not decoded in pure Rust — H.264, HEVC, ProRes incl. 4444 alpha,
@@ -17,14 +17,17 @@
 //! - Both routes are measured by `dxvkit-plus bench --import`; the faster one (the cache route) is
 //!   the default (numbers in `docs/ARCHITECTURE.md`).
 //!
-//! On other targets the crate builds empty: callers never see objc2, CoreVideo or Metal types.
+//! The same code builds for iOS (0.9.0: `aarch64-apple-ios` compiles and links — AVFoundation,
+//! VideoToolbox, CoreVideo's `CVMetalTextureCache`, IOSurface and wgpu's Metal backend all exist
+//! there; not yet run on a device). On other targets the crate builds empty: callers never see
+//! objc2, CoreVideo or Metal types.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod decode;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod objc;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod surface;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use decode::{AppleBackend, NativeReader};

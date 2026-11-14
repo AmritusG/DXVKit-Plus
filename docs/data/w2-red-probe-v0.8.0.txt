@@ -1,0 +1,42 @@
+
+running 4 tests
+test tracks_are_chosen_in_swift_glances_order ... FAILED
+test a_movie_our_parser_refuses_goes_to_the_backend_unless_it_is_dxv_or_hap ... FAILED
+test the_content_decides_before_the_name ... FAILED
+test a_cut_off_track_keeps_its_whole_samples ... FAILED
+
+failures:
+
+---- tracks_are_chosen_in_swift_glances_order stdout ----
+
+thread 'tracks_are_chosen_in_swift_glances_order' (33137367) panicked at crates/dxvkit-plus-core/tests/probe.rs:103:5:
+assertion `left == right` failed
+  left: Hap
+ right: Dxv
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_movie_our_parser_refuses_goes_to_the_backend_unless_it_is_dxv_or_hap stdout ----
+
+thread 'a_movie_our_parser_refuses_goes_to_the_backend_unless_it_is_dxv_or_hap' (33137365) panicked at crates/dxvkit-plus-core/tests/probe.rs:178:86:
+called `Result::unwrap()` on an `Err` value: Corrupt("sample count is 0 or above 2^24")
+
+---- the_content_decides_before_the_name stdout ----
+
+thread 'the_content_decides_before_the_name' (33137366) panicked at crates/dxvkit-plus-core/tests/probe.rs:146:74:
+called `Result::unwrap()` on an `Err` value: Image("<tmp>/dxvkit-plus-probe-name-42340/clip.png: Invalid PNG signature.")
+
+---- a_cut_off_track_keeps_its_whole_samples stdout ----
+
+thread 'a_cut_off_track_keeps_its_whole_samples' (33137364) panicked at crates/dxvkit-plus-core/tests/probe.rs:129:83:
+Hap (1 whole): corrupt file: sample outside the file
+
+
+failures:
+    a_cut_off_track_keeps_its_whole_samples
+    a_movie_our_parser_refuses_goes_to_the_backend_unless_it_is_dxv_or_hap
+    the_content_decides_before_the_name
+    tracks_are_chosen_in_swift_glances_order
+
+test result: FAILED. 0 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p dxvkit-plus-core --test probe`

@@ -11,7 +11,15 @@
 //! Limits (documented, not silently wrong): edit lists (`elst`) and composition offsets (`ctts`) are
 //! not applied — DXV / HAP / ProRes / MJPEG are intra-only and written without them; long-GOP native
 //! codecs are timed by AVFoundation in the island, which applies them. Fragmented MP4 (`moof`) is
-//! not read.
+//! not read: its `moov` has empty sample tables, so the track is [`DamagedTrack`] and
+//! `source::probe` offers the file to the platform backend.
+//!
+//! Damage is per track (0.9.0): a track whose tables do not parse is listed in [`Movie::damaged`]
+//! and the other tracks still open. A sample that lies past the end of the file (a cut-off file)
+//! keeps its place in the table and fails when it is read ([`Movie::read_sample`]), so the whole
+//! samples before the cut still play — Swift Glance's HAP demuxer does the same; DXVKit's `mov.c`
+//! refuses such a track. [`first_video_fourcc`] names the first video track's codec from the atom
+//! headers alone, for files whose tables are beyond reading.
 
 use crate::bytes::{be16, be32, be64};
 use crate::error::MediaError;
@@ -135,6 +143,26 @@ pub struct VideoTrack {
     pub samples: Vec<(u64, u32)>,
     /// Largest sample (bytes).
     pub max_sample: u32,
+    /// Position among the movie's video tracks in file order, damaged ones counted (0.9.0;
+    /// `ImportOptions::track` chooses by it).
+    pub index: u32,
+}
+
+/// A video track whose tables did not parse (0.9.0): where it is and what was wrong.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DamagedTrack {
+    /// Position among the movie's video tracks in file order (as [`VideoTrack::index`]).
+    pub index: u32,
+    /// The sample-entry FourCC, when the sample description could be read.
+    pub fourcc: Option<[u8; 4]>,
+    pub error: MediaError,
+}
+
+impl DamagedTrack {
+    /// What would have decoded the track, judged by its FourCC.
+    pub fn codec(&self) -> Option<Codec> {
+        self.fourcc.map(Codec::of)
+    }
 }
 
 impl VideoTrack {
@@ -233,12 +261,15 @@ pub struct Movie {
     pub tracks: Vec<VideoTrack>,
     /// The embedded timecode track's start, if the movie has one.
     pub timecode: Option<TimecodeStart>,
+    /// Video tracks whose tables did not parse (0.9.0). [`Movie::open`] fails only when no video
+    /// track parses.
+    pub damaged: Vec<DamagedTrack>,
     source: Arc<dyn ReadAt>,
 }
 
 impl std::fmt::Debug for Movie {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Movie").field("tracks", &self.tracks).field("timecode", &self.timecode).finish()
+        f.debug_struct("Movie").field("tracks", &self.tracks).field("timecode", &self.timecode).field("damaged", &self.damaged).finish()
     }
 }
 
@@ -347,6 +378,7 @@ fn read_track(trak: Span<'_>, file_size: u64) -> Result<Option<VideoTrack>, Medi
         stts: Vec::new(),
         samples: Vec::new(),
         max_sample: 0,
+        index: 0,
     };
     // timing
     if let Some(m) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"mdhd")])? {
@@ -388,6 +420,101 @@ fn read_track(trak: Span<'_>, file_size: u64) -> Result<Option<VideoTrack>, Medi
     Ok(Some(track))
 }
 
+/// The first sample entry's FourCC of a `trak`, if its sample description can be reached (for
+/// [`DamagedTrack::fourcc`]).
+fn sample_entry_fourcc(trak: Span<'_>) -> Option<[u8; 4]> {
+    let stbl = find_path(trak, &[fourcc(b"mdia"), fourcc(b"minf"), fourcc(b"stbl")]).ok()??;
+    let stsd = find(stbl, fourcc(b"stsd")).ok()??;
+    be32(stsd.0, 12).map(u32::to_be_bytes)
+}
+
+/// The sample-entry FourCC of the first video track of the movie at `path`, read from the atom
+/// headers alone — `moov > trak > mdia > hdlr` (handler `vide`), then `minf > stbl > stsd`, the first
+/// entry — so it answers for files whose sample tables are damaged or cut off, where [`Movie::open`]
+/// fails. The walk of Swift Glance's `DXVDetector.compressorFourCC`
+/// (glance/Sources/GlanceCore/DXVDetector.swift:60-174), as glance-core's `first_video_fourcc`
+/// cross-tested it on 226 files: a FourCC with a byte outside ASCII counts as unreadable and the
+/// next video track is tried; a malformed atom ends the walk of its parent. `None`: no file, no
+/// `moov`, no readable video track.
+pub fn first_video_fourcc(path: &Path) -> Option<[u8; 4]> {
+    first_video_fourcc_in(&FileSource::open(path).ok()?)
+}
+
+/// [`first_video_fourcc`] over any byte source.
+pub fn first_video_fourcc_in(source: &dyn ReadAt) -> Option<[u8; 4]> {
+    let root = Atom { kind: *b"root", body: 0, end: source.size() };
+    let moov = child(source, root, b"moov")?;
+    let mut offset = moov.body;
+    while offset < moov.end {
+        let atom = atom_at(source, offset, moov.end)?;
+        if &atom.kind == b"trak"
+            && let Some(cc) = track_video_fourcc(source, atom)
+        {
+            return Some(cc);
+        }
+        offset = atom.end;
+    }
+    None
+}
+
+/// One atom of the lenient walk: where its payload starts and where it ends.
+#[derive(Clone, Copy)]
+struct Atom {
+    kind: [u8; 4],
+    body: u64,
+    end: u64,
+}
+
+fn read_n<const N: usize>(source: &dyn ReadAt, offset: u64) -> Option<[u8; N]> {
+    let mut b = [0u8; N];
+    source.read_exact_at(offset, &mut b).ok()?;
+    Some(b)
+}
+
+/// The atom header at `offset` inside a parent ending at `limit` (at least 8 bytes, so a walk always
+/// moves forward and ends).
+fn atom_at(source: &dyn ReadAt, offset: u64, limit: u64) -> Option<Atom> {
+    if offset.checked_add(8)? > limit {
+        return None;
+    }
+    let [s0, s1, s2, s3, k0, k1, k2, k3] = read_n::<8>(source, offset)?;
+    let (size, body) = match u32::from_be_bytes([s0, s1, s2, s3]) {
+        1 => (u64::from_be_bytes(read_n(source, offset.checked_add(8)?)?), offset.checked_add(16)?),
+        0 => (limit.checked_sub(offset)?, offset.checked_add(8)?),
+        n => (u64::from(n), offset.checked_add(8)?),
+    };
+    let end = offset.checked_add(size)?;
+    (size >= 8 && end <= limit).then_some(Atom { kind: [k0, k1, k2, k3], body, end })
+}
+
+/// The first child of `parent` of a kind; `None` when absent or when a malformed atom comes first.
+fn child(source: &dyn ReadAt, parent: Atom, kind: &[u8; 4]) -> Option<Atom> {
+    let mut offset = parent.body;
+    while offset < parent.end {
+        let atom = atom_at(source, offset, parent.end)?;
+        if &atom.kind == kind {
+            return Some(atom);
+        }
+        offset = atom.end;
+    }
+    None
+}
+
+fn track_video_fourcc(source: &dyn ReadAt, trak: Atom) -> Option<[u8; 4]> {
+    let mdia = child(source, trak, b"mdia")?;
+    let hdlr = child(source, mdia, b"hdlr")?;
+    // hdlr: version + flags (4), predefined (4), handler type (4).
+    if &read_n::<4>(source, hdlr.body.checked_add(8)?)? != b"vide" {
+        return None;
+    }
+    let minf = child(source, mdia, b"minf")?;
+    let stbl = child(source, minf, b"stbl")?;
+    let stsd = child(source, stbl, b"stsd")?;
+    // stsd: version + flags (4), entry count (4), then the first entry: size (4), FourCC (4).
+    let cc: [u8; 4] = read_n(source, stsd.body.checked_add(12)?)?;
+    cc.is_ascii().then_some(cc)
+}
+
 /// Per-sample offsets and sizes from stsz, stsc and stco / co64.
 fn build_samples(t: &mut VideoTrack, stsz: &[u8], stsc: &[u8], stco: &[u8], co64: bool, file_size: u64) -> Result<(), MediaError> {
     let entry_bytes = if co64 { 8usize } else { 4 };
@@ -402,8 +529,10 @@ fn build_samples(t: &mut VideoTrack, stsz: &[u8], stsc: &[u8], stco: &[u8], co64
     if uniform == 0 && (stsz.len().saturating_sub(12) / 4) < count as usize {
         return Err(corrupt("stsz shorter than its count"));
     }
-    if uniform != 0 && u64::from(uniform).saturating_mul(u64::from(count)) > file_size {
-        return Err(corrupt("uniform sample size exceeds the file"));
+    // Without a size table a tiny moov could claim 2^24 samples: never more samples than the file
+    // has bytes (each is at least one byte).
+    if uniform != 0 && u64::from(count) > file_size {
+        return Err(corrupt("more samples of a uniform size than bytes in the file"));
     }
     let runs = be32(stsc, 4).unwrap_or(0);
     if runs == 0 || (stsc.len().saturating_sub(8) / 12) < runs as usize {
@@ -433,8 +562,10 @@ fn build_samples(t: &mut VideoTrack, stsz: &[u8], stsc: &[u8], stco: &[u8], co64
             let mut k = 0u32;
             while k < per_chunk && sample < count {
                 let sz = size_of(sample);
-                if off > file_size || u64::from(sz) > file_size.saturating_sub(off) || sz > MAX_SAMPLE_BYTES {
-                    return Err(corrupt("sample outside the file"));
+                // A sample past the end of the file stays in the table and fails when read
+                // (`Movie::read_sample`): the whole samples of a cut-off file still play.
+                if sz > MAX_SAMPLE_BYTES {
+                    return Err(corrupt("sample larger than 300 MB"));
                 }
                 samples.push((off, sz));
                 max = max.max(sz);
@@ -465,8 +596,29 @@ impl Movie {
         Movie::from_source(Arc::new(src))
     }
 
-    /// Parse from any byte source.
+    /// Parse from any byte source. Fails when no video track parses (with the first damaged
+    /// track's error, or `NoVideoTrack`).
     pub fn from_source(source: Arc<dyn ReadAt>) -> Result<Movie, MediaError> {
+        let movie = Movie::parse(source)?;
+        if movie.tracks.is_empty() {
+            return Err(movie.damaged.into_iter().next().map_or(MediaError::NoVideoTrack, |d| d.error));
+        }
+        Ok(movie)
+    }
+
+    /// [`Movie::open`] that also returns a movie none of whose video tracks parsed (its
+    /// [`Movie::damaged`] says why), so a caller can tell a damaged DXV / HAP track from a damaged
+    /// track of another codec. `Err` when there is no movie, no video track, or the `moov` itself
+    /// does not parse.
+    pub fn open_all(path: &Path) -> Result<Movie, MediaError> {
+        let movie = Movie::parse(Arc::new(FileSource::open(path)?))?;
+        if movie.tracks.is_empty() && movie.damaged.is_empty() {
+            return Err(MediaError::NoVideoTrack);
+        }
+        Ok(movie)
+    }
+
+    fn parse(source: Arc<dyn ReadAt>) -> Result<Movie, MediaError> {
         let size = source.size();
         let io = |e: std::io::Error| MediaError::Io(e.to_string());
         let mut pos = 0u64;
@@ -506,23 +658,43 @@ impl Movie {
         let mut buf = vec![0u8; moov_size as usize];
         source.read_exact_at(moov_pos, &mut buf).map_err(io)?;
         let mut tracks = Vec::new();
+        let mut damaged = Vec::new();
         let mut timecode = None;
+        let mut index = 0u32;
         let mut it = 0usize;
         while let Some((ty, body)) = next_atom(Span(&buf), &mut it)? {
             if ty != fourcc(b"trak") {
                 continue;
             }
-            if let Some(t) = read_track(body, size)? {
-                tracks.push(t);
-            } else if timecode.is_none() {
-                // A damaged timecode track never blocks playback: the movie plays without one.
-                timecode = read_timecode(body, &*source, size).unwrap_or(None);
+            match read_track(body, size) {
+                Ok(Some(mut t)) => {
+                    t.index = index;
+                    tracks.push(t);
+                    index = index.saturating_add(1);
+                }
+                Ok(None) => {
+                    if timecode.is_none() {
+                        // A damaged timecode track never blocks playback: the movie plays without one.
+                        timecode = read_timecode(body, &*source, size).unwrap_or(None);
+                    }
+                }
+                Err(error) => {
+                    damaged.push(DamagedTrack { index, fourcc: sample_entry_fourcc(body), error });
+                    index = index.saturating_add(1);
+                }
             }
         }
-        if tracks.is_empty() {
-            return Err(MediaError::NoVideoTrack);
-        }
-        Ok(Movie { tracks, timecode, source })
+        Ok(Movie { tracks, timecode, damaged, source })
+    }
+
+    /// Every video track, parsed or damaged.
+    pub fn video_track_count(&self) -> u32 {
+        u32::try_from(self.tracks.len().saturating_add(self.damaged.len())).unwrap_or(u32::MAX)
+    }
+
+    /// The parsed track at `index` among the video tracks ([`VideoTrack::index`]).
+    pub fn track_at(&self, index: u32) -> Option<&VideoTrack> {
+        self.tracks.iter().find(|t| t.index == index)
     }
 
     /// The first track decodable by `codec`.
@@ -535,9 +707,14 @@ impl Movie {
         self.tracks.first()
     }
 
-    /// Read sample `index` of `track` into `buf` (resized to the sample size).
+    /// Read sample `index` of `track` into `buf` (resized to the sample size). A sample that lies
+    /// past the end of the file (a cut-off file) is `Corrupt`, read nothing and allocates nothing.
     pub fn read_sample(&self, track: &VideoTrack, index: u32, buf: &mut Vec<u8>) -> Result<(), MediaError> {
         let &(off, size) = track.samples.get(index as usize).ok_or(MediaError::Range { index, count: track.frame_count() })?;
+        let file = self.source.size();
+        if off > file || u64::from(size) > file.saturating_sub(off) {
+            return Err(MediaError::Corrupt(format!("sample {index} lies past the end of the file (cut off)")));
+        }
         buf.resize(size as usize, 0);
         self.source.read_exact_at(off, buf).map_err(|e| MediaError::Io(e.to_string()))
     }

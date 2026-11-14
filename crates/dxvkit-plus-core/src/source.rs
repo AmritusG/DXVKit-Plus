@@ -13,7 +13,7 @@
 //! CPU when asked — the oracle for the GPU path, and the route for tools without a GPU.
 
 use crate::backend::{Backend, NativeDecoder, NativeFrame, PixelLayout};
-use crate::container::{Codec, Movie, VideoTrack};
+use crate::container::{Codec, DamagedTrack, Movie, VideoTrack};
 use crate::error::MediaError;
 use crate::hap;
 use crate::time::FrameRate;
@@ -52,6 +52,63 @@ pub struct MediaInfo {
     pub has_alpha: bool,
     /// The embedded timecode track's start (QuickTime `tmcd`), if any.
     pub timecode: Option<crate::container::TimecodeStart>,
+    /// The video track that plays: its index among the movie's video tracks in file order
+    /// ([`VideoTrack::index`]); `None` for files that are not movies we parse (stills, sequences,
+    /// LMBD, and files only the platform backend reads). 0.9.0.
+    pub track: Option<u32>,
+    /// A DXV clip's variant, from its first packet (the packet decides, DXVKit spec 2.2); `None`
+    /// for other clips and for a first packet that states no variant. 0.9.0.
+    pub dxv_variant: Option<crate::dxv::Variant>,
+    /// The alpha the clip states ([`StatedAlpha`]). 0.9.0.
+    pub alpha: StatedAlpha,
+    /// The codec's display name ([`crate::names::codec_label`]: Swift Glance's names, else the
+    /// FourCC; `LMB7` / `LMBX`, `PNG`). 0.9.0.
+    pub codec_name: String,
+    /// The container's display name ([`crate::names::container_name`]). 0.9.0.
+    pub container_name: String,
+}
+
+impl Default for MediaInfo {
+    fn default() -> Self {
+        MediaInfo {
+            path: String::new(),
+            kind: SourceKind::Native,
+            codec: String::new(),
+            width: 0,
+            height: 0,
+            frames: 0,
+            rate: FrameRate::FPS_30,
+            has_alpha: false,
+            timecode: None,
+            track: None,
+            dxv_variant: None,
+            alpha: StatedAlpha::None,
+            codec_name: String::new(),
+            container_name: String::new(),
+        }
+    }
+}
+
+/// The alpha a clip states, as a viewer reports it (Swift Glance: "Alpha Type: Straight (HAP)", the
+/// stated mode of ProRes 4444 / HEVC with alpha, or the user's choice for DXV). `#[repr(u32)]` with
+/// fixed values (C ABI; pinned by `tests/abi.rs`). 0.9.0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum StatedAlpha {
+    /// No alpha: an opaque clip.
+    #[default]
+    None = 0,
+    /// Alpha, colour stored straight: HAP Alpha / Q Alpha / Alpha-only / R (the HAP
+    /// specification), LMBD (`docs/LMBD.md`), PNG, and native clips whose format description says
+    /// so or says nothing about the mode (Swift Glance's rule, `AlphaType.probeAVFoundation`).
+    Straight = 1,
+    /// Alpha, colour stored premultiplied: native clips whose format description says so
+    /// (`kCMFormatDescriptionAlphaChannelMode_PremultipliedAlpha`).
+    Premultiplied = 2,
+    /// Alpha, mode not stated by the file: DXV DXT5 / YG10 / legacy DXT5 (DXVKit spec 8.5) — the
+    /// user's choice ([`AlphaMode`]).
+    Unstated = 3,
 }
 
 fn ser_rate<S: serde::Serializer>(r: &FrameRate, s: S) -> Result<S::Ok, S::Error> {
@@ -78,18 +135,23 @@ pub enum AlphaMode {
 }
 
 /// Import options: the image-sequence frame rate (chosen on import), the platform backend for
-/// native codecs (none = native codecs are `Unsupported`), and how the colour of DXV clips that
-/// carry alpha (DXT5, YG10, legacy DXT5) is read.
+/// native codecs (none = native codecs are `Unsupported`), how the colour of DXV clips that carry
+/// alpha (DXT5, YG10, legacy DXT5) is read, and which video track of a movie plays.
 #[derive(Clone)]
 pub struct ImportOptions {
     pub sequence_rate: FrameRate,
     pub backend: Option<Arc<dyn Backend>>,
     pub alpha_mode: AlphaMode,
+    /// The video track to open, by its index among the movie's video tracks in file order
+    /// ([`VideoTrack::index`]). `None` (the default): Swift Glance's order — the first DXV track;
+    /// else the first video track if it is HAP; else the platform backend on the file. A chosen
+    /// native track must be the first video track (the platform decoder plays that one). 0.9.0.
+    pub track: Option<u32>,
 }
 
 impl Default for ImportOptions {
     fn default() -> Self {
-        ImportOptions { sequence_rate: FrameRate::FPS_30, backend: None, alpha_mode: AlphaMode::Straight }
+        ImportOptions { sequence_rate: FrameRate::FPS_30, backend: None, alpha_mode: AlphaMode::Straight, track: None }
     }
 }
 
@@ -99,6 +161,7 @@ impl std::fmt::Debug for ImportOptions {
             .field("sequence_rate", &self.sequence_rate)
             .field("backend", &self.backend.as_ref().map(|b| b.name()))
             .field("alpha_mode", &self.alpha_mode)
+            .field("track", &self.track)
             .finish()
     }
 }
@@ -174,8 +237,16 @@ fn png_size(path: &Path) -> Result<(u32, u32), MediaError> {
 }
 
 /// Probe `path` without decoding pixels (movies: the container + the backend; images: headers).
+///
+/// The content decides, the name only where the content cannot tell (0.9.0): a folder is an image
+/// sequence; a file with the LMBD magic is LMBD; a QuickTime / MP4 movie is routed by its tracks
+/// ([`ImportOptions::track`], else Swift Glance's order); a PNG by its signature is a still; then
+/// an image extension names an image this build reads or not; anything else goes to the platform
+/// backend. A movie our parser cannot read is offered to the backend too, unless a DXV or HAP
+/// track was identified in it (the platform decodes neither): then our parser's error stands.
 pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> {
     let p = Path::new(path);
+    let base = MediaInfo { path: path.into(), container_name: crate::names::container_name(p), ..MediaInfo::default() };
     if p.is_dir() {
         let files = sequence_files(p)?;
         let first = files.first().ok_or_else(|| MediaError::Invalid(format!("{path}: no images in folder")))?;
@@ -185,115 +256,203 @@ pub fn probe(path: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> 
         let (width, height) = png_size(first)?;
         let frames = u32::try_from(files.len()).unwrap_or(u32::MAX);
         return Ok(MediaInfo {
-            path: path.into(),
             kind: SourceKind::ImageSequence,
             codec: "png".into(),
+            codec_name: "PNG".into(),
             width,
             height,
             frames,
             rate: opts.sequence_rate,
             has_alpha: true,
-            timecode: None,
+            alpha: StatedAlpha::Straight,
+            ..base
         });
     }
     if !p.exists() {
         return Err(MediaError::Io(format!("{path}: no such file")));
     }
-    let ext = ext_of(p);
-    if ext == "lmbd" || starts_with_lmbd_magic(p) {
+    if starts_with_magic(p, crate::lmbd::is_lmbd) {
         let f = crate::lmbd::LmbdFile::open(p)?;
         let h = f.header();
+        let codec = if h.profile == crate::lmbd::Profile::Lmbx { "LMBX" } else { "LMB7" };
         return Ok(MediaInfo {
-            path: path.into(),
             kind: SourceKind::Lmbd,
-            codec: if h.profile == crate::lmbd::Profile::Lmbx { "LMBX".into() } else { "LMB7".into() },
+            codec: codec.into(),
+            codec_name: codec.into(),
             width: h.width,
             height: h.height,
             frames: h.frame_count,
             rate: h.rate(),
             has_alpha: true,
-            timecode: None,
+            alpha: StatedAlpha::Straight,
+            ..base
         });
     }
-    if IMAGE_EXTS.contains(&ext.as_str()) {
-        if ext != "png" {
-            return Err(MediaError::Unsupported(format!("{path}: .{ext} images (only PNG decodes in this build)")));
-        }
-        let (width, height) = png_size(p)?;
-        return Ok(MediaInfo {
-            path: path.into(),
-            kind: SourceKind::Still,
-            codec: "png".into(),
-            width,
-            height,
-            frames: 1,
-            rate: opts.sequence_rate,
-            has_alpha: true,
-            timecode: None,
-        });
-    }
-    match Movie::open(p) {
-        Ok(movie) => {
-            let track = movie.track(Codec::Hap).or_else(|| movie.track(Codec::Dxv)).or_else(|| movie.first()).ok_or(MediaError::NoVideoTrack)?;
-            let kind = match track.codec {
-                Codec::Dxv => SourceKind::Dxv,
-                Codec::Hap => SourceKind::Hap,
-                Codec::Native => SourceKind::Native,
-            };
-            let codec = String::from_utf8_lossy(&track.fourcc).into_owned();
-            let rate = track.frame_rate().unwrap_or(FrameRate::FPS_30);
-            let has_alpha = match track.codec {
-                Codec::Hap => hap_alpha(&track.fourcc),
-                Codec::Dxv => dxv_first_variant(&movie, track).is_none_or(|v| v.has_alpha()),
-                Codec::Native => native_alpha(track),
-            };
-            let mut info = MediaInfo {
-                path: path.into(),
-                kind,
-                codec,
-                width: track.width,
-                height: track.height,
-                frames: track.frame_count(),
-                rate,
-                has_alpha,
-                timecode: movie.timecode,
-            };
-            if kind == SourceKind::Native {
-                native_probe(&mut info, track, opts)?;
-            }
-            Ok(info)
-        }
+    match Movie::open_all(p) {
+        Ok(movie) => probe_movie(base, &movie, opts),
         Err(MediaError::NotMovie | MediaError::NoVideoTrack) => {
+            let ext = ext_of(p);
+            if starts_with_magic(p, |b| b == PNG_SIGNATURE) || IMAGE_EXTS.contains(&ext.as_str()) {
+                return probe_image(base, &ext, opts);
+            }
             // Not a QuickTime / MP4 we parse: the platform may still read it.
-            let mut info = MediaInfo {
-                path: path.into(),
-                kind: SourceKind::Native,
-                codec: ext,
-                width: 0,
-                height: 0,
-                frames: 0,
-                rate: FrameRate::FPS_30,
-                has_alpha: false,
-                timecode: None,
-            };
-            let backend = opts.backend.as_ref().ok_or_else(|| no_backend(path))?;
-            let dec = backend.open(p, PixelLayout::Bgra)?;
-            let n = dec.info();
-            info.width = n.width;
-            info.height = n.height;
-            info.frames = n.frame_count;
-            info.rate = FrameRate::new(i64::from(n.frame_duration.1), n.frame_duration.0);
-            Ok(info)
+            probe_backend(MediaInfo { codec: ext, ..base }, opts, None)
         }
+        // The moov itself does not parse: the backend, unless the atom headers name DXV / HAP.
+        Err(e @ MediaError::Corrupt(_)) => match crate::container::first_video_fourcc(p).map(Codec::of) {
+            Some(Codec::Dxv | Codec::Hap) => Err(e),
+            _ => probe_backend(base, opts, Some(e)),
+        },
         Err(e) => Err(e),
     }
 }
 
-/// Whether the file begins with the LMBD magic (so a renamed `.lmbd` still opens as one).
-fn starts_with_lmbd_magic(p: &Path) -> bool {
+const PNG_SIGNATURE: &[u8] = b"\x89PNG";
+
+/// A still (PNG decodes; other image formats are named and refused).
+fn probe_image(base: MediaInfo, ext: &str, opts: &ImportOptions) -> Result<MediaInfo, MediaError> {
+    let p = Path::new(&base.path);
+    if !starts_with_magic(p, |b| b == PNG_SIGNATURE) && ext != "png" {
+        return Err(MediaError::Unsupported(format!("{}: .{ext} images (only PNG decodes in this build)", base.path)));
+    }
+    let (width, height) = png_size(p)?;
+    Ok(MediaInfo {
+        kind: SourceKind::Still,
+        codec: "png".into(),
+        codec_name: "PNG".into(),
+        width,
+        height,
+        frames: 1,
+        rate: opts.sequence_rate,
+        has_alpha: true,
+        alpha: StatedAlpha::Straight,
+        ..base
+    })
+}
+
+/// The track that plays a movie: the chosen one, or Swift Glance's order.
+enum Pick<'a> {
+    Track(&'a VideoTrack),
+    Damaged(&'a DamagedTrack),
+    /// The platform backend on the file.
+    Backend,
+}
+
+fn pick<'a>(movie: &'a Movie, opts: &ImportOptions) -> Result<Pick<'a>, MediaError> {
+    let at = |i: u32| -> Option<Pick<'a>> { movie.track_at(i).map(Pick::Track).or_else(|| movie.damaged.iter().find(|d| d.index == i).map(Pick::Damaged)) };
+    if let Some(i) = opts.track {
+        return at(i).ok_or_else(|| MediaError::Invalid(format!("track {i}: the movie has {} video tracks", movie.video_track_count())));
+    }
+    let codec_at =
+        |i: u32| -> Option<Codec> { movie.track_at(i).map(|t| t.codec).or_else(|| movie.damaged.iter().find(|d| d.index == i).and_then(DamagedTrack::codec)) };
+    let n = movie.video_track_count();
+    // A DXV / HAP track the order reaches but whose tables do not parse: nothing else of the movie
+    // is tried on the platform (it decodes neither); its error stands if no other track plays.
+    let mut damaged: Option<Pick<'a>> = None;
+    // 1. The first DXV track anywhere (DXVKit mov.c: the first trak whose entry is DXV).
+    if let Some(i) = (0..n).find(|&i| codec_at(i) == Some(Codec::Dxv)) {
+        match at(i) {
+            Some(Pick::Track(t)) => return Ok(Pick::Track(t)),
+            other => damaged = other,
+        }
+    }
+    // 2. HAP only when the first video track is HAP (HAPDemuxer.parseMoov takes the first video trak).
+    if codec_at(0) == Some(Codec::Hap) {
+        return Ok(match at(0) {
+            Some(Pick::Track(t)) => Pick::Track(t),
+            other => damaged.or(other).unwrap_or(Pick::Backend),
+        });
+    }
+    // 3. The OS decoder on the file, with our view of its first video track when that parsed.
+    Ok(match (at(0), damaged) {
+        (Some(Pick::Track(t)), _) => Pick::Track(t),
+        (_, Some(d)) => d,
+        (Some(d), None) => d,
+        (None, None) => Pick::Backend,
+    })
+}
+
+fn probe_movie(base: MediaInfo, movie: &Movie, opts: &ImportOptions) -> Result<MediaInfo, MediaError> {
+    let track = match pick(movie, opts)? {
+        Pick::Track(t) => t,
+        // A damaged DXV / HAP track: our parser's error (the platform decodes neither format).
+        Pick::Damaged(d) if matches!(d.codec(), Some(Codec::Dxv | Codec::Hap)) => return Err(d.error.clone()),
+        Pick::Damaged(d) => {
+            if opts.track.is_some_and(|i| i != 0) {
+                return Err(d.error.clone());
+            }
+            let codec = d.fourcc.map(|f| String::from_utf8_lossy(&f).into_owned()).unwrap_or_default();
+            let codec_name = d.fourcc.map(|f| crate::names::codec_label(&f)).unwrap_or_default();
+            return probe_backend(MediaInfo { codec, codec_name, timecode: movie.timecode, ..base }, opts, Some(d.error.clone()));
+        }
+        Pick::Backend => return probe_backend(MediaInfo { timecode: movie.timecode, ..base }, opts, None),
+    };
+    let kind = match track.codec {
+        Codec::Dxv => SourceKind::Dxv,
+        Codec::Hap => SourceKind::Hap,
+        Codec::Native => SourceKind::Native,
+    };
+    if kind == SourceKind::Native && track.index != 0 {
+        return Err(MediaError::Unsupported(format!("{}: track {}: the platform decoder plays the movie's first video track only", base.path, track.index)));
+    }
+    let dxv_variant = if kind == SourceKind::Dxv { dxv_first_variant(movie, track) } else { None };
+    let has_alpha = match track.codec {
+        Codec::Hap => hap_alpha(&track.fourcc),
+        Codec::Dxv => dxv_variant.is_none_or(|v| v.has_alpha()),
+        Codec::Native => native_alpha(track),
+    };
+    let alpha = match (track.codec, has_alpha) {
+        (_, false) => StatedAlpha::None,
+        (Codec::Dxv, true) => StatedAlpha::Unstated,
+        (_, true) => StatedAlpha::Straight,
+    };
+    let mut info = MediaInfo {
+        kind,
+        codec: String::from_utf8_lossy(&track.fourcc).into_owned(),
+        codec_name: crate::names::codec_label(&track.fourcc),
+        width: track.width,
+        height: track.height,
+        frames: track.frame_count(),
+        rate: track.frame_rate().unwrap_or(FrameRate::FPS_30),
+        has_alpha,
+        timecode: movie.timecode,
+        track: Some(track.index),
+        dxv_variant,
+        alpha,
+        ..base
+    };
+    if kind == SourceKind::Native {
+        native_probe(&mut info, track, opts)?;
+    }
+    Ok(info)
+}
+
+/// A file only the platform backend reads (its size, length, rate and alpha from the backend).
+/// `ours`: our own parser's error, returned when there is no backend to ask or the backend cannot
+/// read the file either (it says what is wrong with the file; the backend's refusal does not).
+fn probe_backend(mut info: MediaInfo, opts: &ImportOptions, ours: Option<MediaError>) -> Result<MediaInfo, MediaError> {
+    let Some(backend) = opts.backend.as_ref() else { return Err(ours.unwrap_or_else(|| no_backend(&info.path))) };
+    let dec = match backend.open(Path::new(&info.path), PixelLayout::Bgra) {
+        Ok(d) => d,
+        Err(e) => return Err(ours.unwrap_or(e)),
+    };
+    let n = dec.info();
+    info.kind = SourceKind::Native;
+    info.track = None;
+    info.width = n.width;
+    info.height = n.height;
+    info.frames = n.frame_count;
+    info.rate = FrameRate::new(i64::from(n.frame_duration.1), n.frame_duration.0);
+    info.alpha = n.alpha;
+    info.has_alpha = n.alpha != StatedAlpha::None;
+    Ok(info)
+}
+
+/// Whether the file's first 4 bytes pass `test` (the LMBD magic, the PNG signature).
+fn starts_with_magic(p: &Path, test: impl Fn(&[u8]) -> bool) -> bool {
     use std::io::Read;
     let mut b = [0u8; 4];
-    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).is_ok() && crate::lmbd::is_lmbd(&b)
+    std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut b)).is_ok() && test(&b)
 }
 
 /// The variant of a DXV track's first packet (the packet decides, DXVKit spec 2.2); `None` for an
@@ -335,6 +494,13 @@ fn native_probe(info: &mut MediaInfo, track: &VideoTrack, opts: &ImportOptions) 
     if track.frame_rate().is_none() {
         let (v, ts) = dec.info().frame_duration;
         info.rate = FrameRate::new(i64::from(ts), v);
+    }
+    // The alpha as the platform's format description states it (Swift Glance's rule), when the
+    // backend can tell; else the sample entry's (depth 32 on an alpha-capable codec).
+    let stated = dec.info().alpha;
+    if stated != StatedAlpha::None || !info.has_alpha {
+        info.alpha = stated;
+        info.has_alpha = stated != StatedAlpha::None;
     }
     Ok(())
 }
@@ -716,7 +882,7 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
     match info.kind {
         SourceKind::Hap => {
             let movie = Movie::open(Path::new(&info.path))?;
-            let track = movie.track(Codec::Hap).cloned().ok_or(MediaError::NoVideoTrack)?;
+            let track = probed_track(&movie, info, Codec::Hap)?;
             Ok(Box::new(HapSource { info: info.clone(), movie, track: Arc::new(track), buf: Vec::new(), parallel }))
         }
         SourceKind::ImageSequence => {
@@ -731,7 +897,7 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
         }
         SourceKind::Dxv => {
             let movie = Movie::open(Path::new(&info.path))?;
-            let track = movie.track(Codec::Dxv).cloned().ok_or(MediaError::NoVideoTrack)?;
+            let track = probed_track(&movie, info, Codec::Dxv)?;
             let layout = dxv_first_variant(&movie, &track).map(|v| dxv_layout(v, track.width, track.height, opts.alpha_mode)).transpose()?;
             Ok(Box::new(DxvSource { info: info.clone(), movie, track: Arc::new(track), buf: Vec::new(), parallel, alpha_mode: opts.alpha_mode, layout }))
         }
@@ -743,6 +909,16 @@ pub fn open(info: &MediaInfo, opts: &ImportOptions, parallel: bool) -> Result<Bo
             Ok(Box::new(LmbdSource { info: info.clone(), file, scratch: Vec::new(), chunk: Vec::new(), parallel }))
         }
     }
+}
+
+/// The track a probe chose ([`MediaInfo::track`]), or — for an info without one — the first
+/// track of `codec`; it must be of `codec`.
+fn probed_track(movie: &Movie, info: &MediaInfo, codec: Codec) -> Result<VideoTrack, MediaError> {
+    let t = match info.track {
+        Some(i) => movie.track_at(i),
+        None => movie.track(codec),
+    };
+    t.filter(|t| t.codec == codec).cloned().ok_or(MediaError::NoVideoTrack)
 }
 
 /// LMBD (LMB7): each frame decodes to one BC7 block plane at the coded (block-rounded) size,

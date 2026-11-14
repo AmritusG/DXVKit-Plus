@@ -166,3 +166,68 @@ fn yuv_conversion_matches_apples_own() {
         }
     }
 }
+
+/// The alpha each native fixture states (0.9.0), read from AVFoundation's format description by
+/// Swift Glance's rule, and carried into `MediaInfo`: ProRes 4444 straight, the others none.
+#[test]
+fn native_clips_state_their_alpha() {
+    use dxvkit_plus_core::source::{self, ImportOptions, StatedAlpha};
+    let opts = ImportOptions { backend: Some(std::sync::Arc::new(AppleBackend)), ..ImportOptions::default() };
+    for (name, fourcc, alpha) in NATIVE {
+        let want = if alpha { StatedAlpha::Straight } else { StatedAlpha::None };
+        let rd = AppleBackend.open(&fixture(name), layout(fourcc, alpha)).unwrap();
+        assert_eq!(rd.info().alpha, want, "{name}: backend");
+        let info = source::probe(fixture(name).to_str().unwrap(), &opts).unwrap();
+        assert_eq!((info.alpha, info.has_alpha), (want, alpha), "{name}: probe");
+    }
+}
+
+/// glance-core C1 finding 5, on a real fragmented MP4 written by AVFoundation
+/// (`tests/fixtures/frag_h264.mp4`, scripts/make-fragmented-mp4.swift): its moov has empty sample
+/// tables, so our parser refuses the track; the probe offers the file to AVFoundation, which plays
+/// it — every frame decodes.
+#[test]
+fn a_fragmented_mp4_plays_through_the_platform() {
+    use dxvkit_plus_core::source::{self, ImportOptions, SourceKind};
+    let path = fixture("frag_h264.mp4");
+    let m = dxvkit_plus_core::container::Movie::open(&path);
+    assert!(matches!(m, Err(dxvkit_plus_core::MediaError::Corrupt(_))), "our parser: {m:?}");
+    let opts = ImportOptions { backend: Some(std::sync::Arc::new(AppleBackend)), ..ImportOptions::default() };
+    let info = source::probe(path.to_str().unwrap(), &opts).unwrap();
+    assert_eq!((info.kind, info.width, info.height, info.frames, info.codec_name.as_str()), (SourceKind::Native, 64, 48, 60, "H.264"));
+    let mut src = source::open(&info, &opts, false).unwrap();
+    for f in 0..info.frames {
+        assert_eq!(src.decode(f).unwrap().size(), (64, 48), "frame {f}");
+    }
+    assert!(src.decode(info.frames).is_err());
+    // Control: without a backend it is our parser's error.
+    assert!(matches!(source::probe(path.to_str().unwrap(), &ImportOptions::default()), Err(dxvkit_plus_core::MediaError::Corrupt(_))));
+}
+
+/// glance-core C1 finding 1 in the island: a frame larger than the device's largest texture is an
+/// error value from both import routes, before any texture exists (a frame handle that is not a
+/// pixel buffer at all shows the size check comes first); a frame within the limit gets past it.
+#[test]
+fn a_frame_larger_than_the_device_is_refused_by_both_imports() {
+    use dxvkit_plus_core::backend::YuvMatrix;
+    let g = Gpu::headless().unwrap();
+    let cache = TextureCacheImporter::new(&g.device).unwrap();
+    let limit = g.device.limits().max_texture_dimension_2d;
+    let frame = |height: u32| NativeFrame {
+        index: 0,
+        width: 16,
+        height,
+        layout: PixelLayout::Bgra,
+        matrix: YuvMatrix::Bt709,
+        surface_id: 0,
+        handle: std::sync::Arc::new(()),
+    };
+    for r in [import(&g.device, &frame(limit + 4)).err(), cache.import(&g.device, &frame(limit + 4)).err()] {
+        match r {
+            Some(dxvkit_plus_core::MediaError::Unsupported(m)) => assert!(m.contains(&(limit + 4).to_string()) && m.contains(&limit.to_string()), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    // Control: at the limit the size passes and the (fake) handle is what fails.
+    assert!(!matches!(import(&g.device, &frame(limit)), Err(dxvkit_plus_core::MediaError::Unsupported(_)) | Ok(_)));
+}

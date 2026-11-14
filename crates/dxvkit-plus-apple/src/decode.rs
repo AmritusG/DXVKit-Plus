@@ -14,13 +14,17 @@
 use crate::objc::{PixelBuffer, cmtime, cmtime_numeric, cmtime_pos_inf, dict, ns, number_bool, number_u32};
 use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::backend::{Backend, NativeDecoder, NativeFrame, NativeInfo, PixelLayout, YuvMatrix};
+use dxvkit_plus_core::source::StatedAlpha;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
     AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo, AVURLAsset, AVURLAssetPreferPreciseDurationAndTimingKey,
 };
-use objc2_core_foundation::CFString;
-use objc2_core_media::{CMTime, CMTimeRange};
+use objc2_core_foundation::{CFRetained, CFString};
+use objc2_core_media::{
+    CMFormatDescription, CMTime, CMTimeRange, kCMFormatDescriptionAlphaChannelMode_PremultipliedAlpha, kCMFormatDescriptionExtension_AlphaChannelMode,
+    kCMFormatDescriptionExtension_ContainsAlphaChannel,
+};
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetIOSurface, CVPixelBufferGetPixelFormatType,
     CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
@@ -28,7 +32,7 @@ use objc2_core_video::{
     kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
 };
-use objc2_foundation::{NSString, NSURL};
+use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -83,6 +87,45 @@ fn div_round(a: i128, b: i128) -> i128 {
     a.checked_add(if a >= 0 { half } else { half.saturating_neg() }).and_then(|x| x.checked_div(b)).unwrap_or(0)
 }
 
+/// The alpha the track's first format description states — Swift Glance's rule
+/// (`AlphaTypeProbe.probeAVFoundation`, glance/Sources/GlanceCore/AlphaType.swift:155-171): alpha
+/// when the `ContainsAlphaChannel` extension says so, or, without that extension, when the codec is
+/// ProRes 4444 / 4444 XQ (`ap4h` / `ap4x`); premultiplied only when the `AlphaChannelMode`
+/// extension says premultiplied, else straight.
+fn stated_alpha(track: &AVAssetTrack) -> StatedAlpha {
+    // SAFETY: a property read on a valid track.
+    let descriptions = unsafe { track.formatDescriptions() };
+    let Some(first) = descriptions.firstObject() else { return StatedAlpha::None };
+    // SAFETY: `formatDescriptions` is documented as an array of CMFormatDescriptions (CF objects
+    // stored in an NSArray); `first` keeps the object alive while `desc` is used.
+    let desc: &CMFormatDescription = unsafe { &*Retained::as_ptr(&first).cast::<CMFormatDescription>() };
+    // SAFETY: plain getters on a valid format description.
+    let (subtype, extensions) = unsafe { (desc.media_sub_type().to_be_bytes(), desc.extensions()) };
+    // SAFETY: CFDictionary and NSDictionary are toll-free bridged; the keys of a format
+    // description's extensions are CFStrings (CMFormatDescription.h), so NSString keys.
+    let ext: Option<&NSDictionary<NSString, AnyObject>> = extensions.as_ref().map(|d| unsafe { &*CFRetained::as_ptr(d).as_ptr().cast() });
+    // SAFETY: framework constants (valid for the process).
+    let (k_contains, k_mode, premultiplied) = unsafe {
+        (
+            kCMFormatDescriptionExtension_ContainsAlphaChannel,
+            kCMFormatDescriptionExtension_AlphaChannelMode,
+            kCMFormatDescriptionAlphaChannelMode_PremultipliedAlpha,
+        )
+    };
+    let value = |k: &CFString| ext.and_then(|d| d.objectForKey(ns(k)));
+    let contains = match value(k_contains).and_then(|v| v.downcast::<NSNumber>().ok()) {
+        Some(n) => n.boolValue(),
+        None => matches!(&subtype, b"ap4h" | b"ap4x"),
+    };
+    if !contains {
+        return StatedAlpha::None;
+    }
+    match value(k_mode).and_then(|v| v.downcast::<NSString>().ok()) {
+        Some(m) if &*m == ns(premultiplied) => StatedAlpha::Premultiplied,
+        _ => StatedAlpha::Straight,
+    }
+}
+
 impl NativeReader {
     /// Open `path` and read its first video track's timing.
     pub fn open(path: &Path, layout: PixelLayout) -> Result<NativeReader, MediaError> {
@@ -133,7 +176,8 @@ impl NativeReader {
             if !(w.is_finite() && h.is_finite()) || w < 1.0 || h < 1.0 {
                 return Err(platform(format!("{p}: invalid natural size {w}x{h}")));
             }
-            let info = NativeInfo { width: w.round() as u32, height: h.round() as u32, frame_count, frame_duration, start, nominal_fps: fps, layout };
+            let alpha = stated_alpha(&track);
+            let info = NativeInfo { width: w.round() as u32, height: h.round() as u32, frame_count, frame_duration, start, nominal_fps: fps, layout, alpha };
             Ok(NativeReader { asset, track, reader: None, next: None, info })
         })
     }

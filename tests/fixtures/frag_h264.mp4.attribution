@@ -1,0 +1,8 @@
+asset: tests/fixtures/frag_h264.mp4
+title: Fragmented MP4 (H.264) 64x48
+author: Amrit Rosell — generated test pattern (bytes (offset + frame * 8) mod 256 in BGRA), no third-party content
+source: Written by scripts/make-fragmented-mp4.swift with AVFoundation (AVAssetWriter, outputFileTypeProfile mpeg4CMAFCompliant, 1 s segments): the initialization segment (ftyp + moov whose sample tables are empty, stsz count 0, + mvex) followed by two media segments (moof + mdat), concatenated; 60 frames, 30 fps, H.264 (VideoToolbox)
+license: CC0-1.0
+added: 2026-11-14
+sha256: 744325412ebffd90f7a20de90b06d90f0c82bd26c345c8197cf777cdc85199bb
+notes: The fragmented-MP4 case of glance-core C1 finding 5: DXVKit Plus's own parser does not read fragments, so source::probe offers the file to the platform backend.

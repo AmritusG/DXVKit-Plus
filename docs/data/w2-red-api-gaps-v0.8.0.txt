@@ -1,0 +1,10 @@
+   1 error: could not compile `dxvkit-plus-core` (test "api_gaps") due to 18 previous errors
+   1 error[E0432]: unresolved import `dxvkit_plus_core::names`
+   1 error[E0432]: unresolved import `dxvkit_plus_core::source::StatedAlpha`
+   1 error[E0432]: unresolved imports `dxvkit_plus_core::container::first_video_fourcc`, `dxvkit_plus_core::container::first_video_fourcc_in`
+   2 error[E0560]: struct `ImportOptions` has no field named `track`
+   1 error[E0609]: no field `alpha` on type `MediaInfo`
+   2 error[E0609]: no field `codec_name` on type `MediaInfo`
+   1 error[E0609]: no field `container_name` on type `MediaInfo`
+   6 error[E0609]: no field `dxv_variant` on type `MediaInfo`
+   3 error[E0609]: no field `track` on type `MediaInfo`

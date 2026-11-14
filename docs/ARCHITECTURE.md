@@ -3,7 +3,8 @@
 ```
       file.mov / file.mp4 / file.lmbd / PNG folder
                          │
-              dxvkit-plus-core::source::probe ──► MediaInfo (codec, size, frames, exact rate, tmcd start)
+              dxvkit-plus-core::source::probe ──► MediaInfo (codec + names, size, frames, exact rate, tmcd start,
+                         │                       track, DXV variant, stated alpha)
                          │
      ┌───────────────────┼────────────────────────────┐
      │ HAP, DXV, LMBD    │ native codecs              │ PNG stills / sequences
@@ -41,6 +42,60 @@ The core never depends on a GPU API: its output is a description of GPU-ready da
 (`source::PixelFormat`, `source::Shading`) that any renderer can upload. The platform crate is
 the only place that knows objc2, CoreVideo or Metal types; callers see `NativeFrame` with an
 opaque handle.
+
+## Probe and routing (0.9.0)
+
+`source::probe` decides what plays a file by its content, and routes a movie the way Swift Glance
+does (glance/Sources/Glance/PlayerModel.swift:209-229), so the Rust family and the Swift apps open
+the same files the same way:
+
+1. A folder is an image sequence. A file that starts with the LMBD magic is LMBD (whatever its name).
+2. A QuickTime / MP4 movie (`container::Movie::open_all`): the track `ImportOptions::track` names
+   (its index among the movie's video tracks in file order, damaged ones counted:
+   `VideoTrack::index`); without one, Swift Glance's order —
+   1. the first DXV track anywhere (DXVKit's `mov.c`: the first `trak` whose entry is `DXD3` /
+      `DXD4` / `DXDI`);
+   2. else HAP, only when the movie's **first** video track is HAP (Swift Glance's `HAPDemuxer`
+      takes the first video track; `Hap7` / `HapH` included here, which Swift Glance does not play);
+   3. else the platform backend on the file (it plays the first video track; a chosen native track
+      must be that one).
+   `MediaInfo::track` says which track plays; `source::open` opens that one.
+3. A file whose first bytes are a PNG signature is a still; then an image extension names an image
+   (PNG decodes, the others are `Unsupported`) — the name speaks only where the content cannot.
+4. Anything else goes to the platform backend.
+
+**Damage is per track.** A video track whose sample tables do not parse is listed in
+`Movie::damaged` (`DamagedTrack`: index, FourCC if readable, the error) and the other tracks still
+open. A movie our parser cannot read — a damaged first track, a `moov` that does not parse, a
+fragmented MP4 (its `moov` has empty sample tables; fragments are not read) — is offered to the
+platform backend, **unless a DXV or HAP track was identified** in it (by the damaged track's FourCC,
+or by `container::first_video_fourcc` when the `moov` itself is unreadable): the platform decodes
+neither, so our parser's `Corrupt` stands. Without a backend the answer is our parser's error.
+Verified on a real fragmented MP4 written by AVFoundation (`tests/fixtures/frag_h264.mp4`).
+
+**A cut-off track keeps its whole samples.** A sample that lies past the end of the file stays in
+the sample table; `Movie::read_sample` fails it (`Corrupt`, nothing read or allocated), so a file cut
+in the middle of its sample data plays up to the cut and fails frame by frame after it — Swift
+Glance's HAP demuxer's behaviour, applied to DXV and HAP alike (DXVKit's `mov.c` refuses such a DXV
+track). `MediaInfo::frames` stays the sample table's count. Hostile-file caps that remain: 64 MB
+`moov`, 2^24 samples, 300 MB per sample, and a uniform sample size may not claim more samples than
+the file has bytes.
+
+**What `MediaInfo` says** (fields appended in 0.9.0): `track`; `dxv_variant` (the first packet's
+`dxv::Variant`; `None` for other clips or a first packet that states none); `alpha`
+(`StatedAlpha`: `None`, `Straight`, `Premultiplied`, `Unstated`) — HAP Alpha / Q Alpha /
+Alpha-only / R and LMBD and PNG state straight, DXV with alpha states nothing (the user's choice,
+`AlphaMode`), a native clip states what its format description says (`NativeInfo::alpha`; on macOS
+Swift Glance's rule: the `ContainsAlphaChannel` extension, or ProRes 4444 / 4444 XQ without it;
+premultiplied only when `AlphaChannelMode` says so); `codec_name` and `container_name`
+(`names::codec_label`, `names::container_name`).
+
+**Names** (`core::names`): `codec_name` is Swift Glance's `DXVDetector.displayName` table plus
+`Hap7` "HAP R" and `HapH` "HAP HDR" (the HAP specification's "Hap R" / "Hap HDR" in the family's
+case); `container_name` is the extension in upper case or `this container`; `unsupported_message`
+is Swift Glance's line, `<codec> in <CONTAINER> is not supported` or `<CONTAINER> files are not
+supported`, the codec from `container::first_video_fourcc` (atom headers only, Swift's
+`DXVDetector.compressorFourCC` walk) or a Matroska `V_...` id.
 
 ## Decode paths
 
@@ -172,13 +227,22 @@ with `FrameRenderer::new` behaves as before 0.8.0 — its output is byte-identic
 | Upload | the blocks into a BC texture (`Bc1RgbaUnorm`, `Bc3RgbaUnorm`, `Bc4RUnorm`) | the same bytes, the same rows, into an integer texture: one `Rg32Uint` texel per 8-byte block, one `Rgba32Uint` texel per 16-byte block |
 | Decode | the GPU's fixed-function BC decoder, when `CONVERT_WGSL` reads the texel | `BC_EXACT_WGSL`: the CPU decoders' integer arithmetic, in the fragment shader |
 | Contract against `Decoded::to_rgba` | encoded footage within 1 / 255 (Hap1, Hap5, HapA), 2 / 255 (DXT1, DXT5), 3 / 255 (HAP Q) — measured, Apple M5 Max; arbitrary blocks up to 3 (HAP Q 6); un-premultiplied colour scales that step by 255 / alpha | **equal: every channel of every texel, at every tested size** |
-| `direct_view` (no conversion pass) | BC1 / BC3 / BC7 frames | BC7 frames only: integer texels cannot be sampled |
+| `direct_view` (no conversion pass) | BC1 / BC3 / BC7 frames | none: integer texels cannot be sampled |
 | Use it for | many layers, the lowest GPU time | pictures that must equal a reference decode |
 
-Frames that are exact on both paths take the same route on both: DXV High Quality (always decoded
-in the shader, `DXV_HQ_WGSL`), BC7 (HAP R, LMB7 — the GPU's BC7 decode is exact integer arithmetic,
-tested against our CPU decoder), LMBX and RGBA8. HAP HDR (BC6H) has no CPU decoder and is always
-sampled. The exact pipeline is built on a renderer's first exact frame, so a renderer on the sampled
+**BC7 (HAP R, LMB7 frames as planes; 0.9.0)** is on both paths too. Sampled, the GPU's BC7
+decoder decodes it (exact integer arithmetic by the format's definition, and so on the Apple M5 Max
+for every block tested, reserved modes included) and it keeps its `direct_view`. Exact, it is
+integer texels decoded by `BC_EXACT_WGSL` mode 4, `core::bc7::bc7_block` line for line — because a
+GPU need not follow the definition for blocks no encoder writes: GitHub's virtual Metal GPU ("Apple
+Paravirtual device") decodes reserved-mode blocks (first byte 0) as opaque black where the
+definition says transparent black (glance-core C1, CI run 43638498291). So "Exact equals
+`Decoded::to_rgba` on every texel" holds for every input on every GPU, hostile files included; the
+sampled path's BC7 is exact for valid blocks and, for reserved ones, is whatever the GPU gives.
+`LmbdTexture` (LMB7 sampled straight from its BC7 texture) is the hardware route.
+
+Frames that take the same route on both paths: DXV High Quality (always decoded in the shader,
+`DXV_HQ_WGSL`), LMBX and RGBA8. HAP HDR (BC6H) has no CPU decoder and is always sampled. The exact pipeline is built on a renderer's first exact frame, so a renderer on the sampled
 path compiles nothing new.
 
 **What the exact shader computes, per variant** (the oracle is `core::bc` / `core::hap`, which follow
@@ -190,6 +254,7 @@ the sources named):
 | DXV DXT5, legacy DXT5, HAP Hap5 (BC3) | colour always four-colour, thirds **truncated**; alpha sevenths / fifths **truncated** (six-value mode ends in 0 and 255) | DXVKit spec 8.2 (`bc::bc1_block`, `bc::bc4_block`) |
 | DXV DXT5 read premultiplied | as above, then `min(255, (c * 255 + a / 2) / a)`, a = 0 keeps c | `bc::unpremul` |
 | HAP HapA (BC4) | sevenths / fifths **truncated**, shown as grey, alpha 255 | `bc::bc4_block` |
+| HAP R, LMB7 (BC7) | the specification's decode: mode = lowest set bit of byte 0, partition / anchor tables, p-bits, bit-replicated endpoints, `((64 - w) * e0 + w * e1 + 32) >> 6`, index selection, rotation; reserved mode transparent black. Exact by definition (no rounding choice) | Khronos Data Format 1.3 "BPTC", Microsoft "BC7 Format" (`bc7::bc7_block`) |
 | HAP Q HapY, HapM (BC3 scaled YCoCg) | the **exact** palettes — colour in thirds, Y in 35ths of a code value — through the scaled-YCoCg transform 0.7.1 already used (offset 128 / 255, `scale = B * 255 / 8 + 1`) over one common denominator, **rounded to nearest, halves up**; HapM's alpha plane truncated like Hap5's | this library's reading of van Waveren & Castaño 2007, the paper the HAP specification references (`bc::bc3_block_exact`, `hap::ycocg_scaled_exact`) |
 
 HAP's own variants thus share DXVKit's truncating convention for plain BC1 / BC3 / BC4 (this
@@ -246,13 +311,13 @@ frames: at 16 layers 1792 / 1006 / 1279 / 671 steps/s sampled directly (Hap1 / H
 | HAP Hap1 / Hap5 / HapA (CPU) | exact to the source pattern (0/255 measured; 1/255 allowed) | `core/tests/fixtures.rs` |
 | HAP Q HapY / HapM (CPU) | ≤ 2/255 to the source (chroma is lossy by design) | same |
 | HAP Q transform (CPU) | the exact rational value rounded half up, on a grid of 8 604 128 inputs against `i128` arithmetic | `core/src/hap.rs` tests |
-| **Exact path** GPU vs CPU: DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied), HAP Hap1 / Hap5 / HapY / HapM / HapA | **bit-exact** (max 0, all four channels): every frame of the committed fixtures and vectors (488 frames, 348 of them BC1 / BC3 / BC4), and movies the test writes from random blocks at 1x1, 2x2, 3x3, 4x4, 5x7, 15x9, 17x33, 1920x1080, 3840x2160; through `write_texture`, staged uploads and decode-into-staging; one flipped bit fails it | `wgpu/tests/exact.rs`, `dxvkit-plus verify --block-path exact` |
+| **Exact path** GPU vs CPU: DXV DXT1 / DXT5 / legacy DXT (straight and premultiplied), HAP Hap1 / Hap5 / HapY / HapM / HapA, and (0.9.0) BC7: HAP R, LMB7 | **bit-exact** (max 0, all four channels): every frame of the committed fixtures and vectors (504 frames, 348 of them BC1 / BC3 / BC4, 16 BC7), and movies the test writes from random blocks (BC7: every mode forced in turn, all-zero = reserved-mode blocks) at 1x1, 2x2, 3x3, 4x4, 5x7, 15x9, 17x33, 1920x1080, 3840x2160; a HAP R frame with every eighth block reserved; through `write_texture`, staged uploads and decode-into-staging; one flipped bit fails it | `wgpu/tests/exact.rs`, `dxvkit-plus verify --block-path exact` |
 | Conversion shaders | naga validates each and translates it to MSL and HLSL | `wgpu/tests/exact.rs` |
 | Sampled path GPU vs CPU, every HAP fixture frame | ≤ 1/255 (BC decoders may round differently by 1; HAP Q measures 1 on the fixtures); `verify` allows HAP Q 3/255 (measured 3 on real 1080p clips, Apple M5 Max, on 0.7.1 and 0.8.0) | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | DXV decode (CPU) vs DXVKit's test vectors | bit-exact: 334 rows (366 block streams, 287 RGBA, 47 rejects) with `DXVKIT_DIR`; the committed 74-row MIT subset always | `core/tests/dxv.rs` |
 | DXV decode vs DXVKit's C core (`dxvtool`) | bit-exact block streams, straight and premultiplied RGBA on every frame of the DXV fixtures and committed vectors (with `DXVTOOL`) | same |
 | DXV GPU vs CPU, sampled path | High Quality (YCG6 / YG10) bit-exact, both alpha modes, every vector frame; DXT1 / DXT5 ≤ 2/255 (the GPU's fixed-function BC1 / BC3 vs DXVKit's truncating convention, as Arena's GPU upload, DXVKit spec 8.1); premultiplied DXT5 ≤ 2/255 as shown | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
-| BC7 CPU decoder vs the GPU | bit-exact, 4096 random blocks per mode, all 8 modes | `wgpu/tests/gpu.rs` |
+| BC7 CPU decoder vs the GPU's own BC7 decode (sampled path) | bit-exact on Apple M5 Max, 4096 random blocks per mode, all 8 modes; reserved-mode blocks differ by GPU (GitHub's virtual Metal GPU: opaque black) — the exact path does not depend on it | `wgpu/tests/gpu.rs` |
 | LMBD files written by the original encoder (CPU) | bit-exact with the original decoder (per-frame RGBA SHA-256) | `core/tests/lmbd_vectors.rs` |
 | LMBD GPU vs CPU | bit-exact, every vector frame, frame renderer and `LmbdTexture`; sRGB view within 1/255 of linear light | `wgpu/tests/gpu.rs`, `dxvkit-plus verify` |
 | LMBD encoder vs the original encoder | byte-identical files (five vectors; 1080p frames checked by hand) | `lmbd-enc/tests/encoder_identity.rs` |
@@ -323,7 +388,7 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 |---|---|
 | `Box<dyn FrameSource>`, `cache::Player`, `transport::Transport`, `FrameRenderer` | opaque handles (`*mut T` created and freed by the wrapper) |
 | `MediaInfo`, `NativeInfo`, `transport::Settings`, `transport::Frame`, `TimecodeStart` | plain-data `#[repr(C)]` mirrors (numbers, bools, one path string) |
-| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}`, `lmbx::Chroma` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
+| `PixelFormat`, `SourceKind`, `YuvMatrix`, `Codec`, `HapTexture`, `AlphaMode`, `StatedAlpha` (0.9.0), `dxv::Variant`, `PlayMode`, `Direction`, `SyncMode`, `lmbd::{Profile, TexFormat, Compressor, Colorspace}`, `lmbx::Chroma` | `#[repr(u32)]` with fixed values (pinned by `core/tests/abi.rs`; the LMBD ones equal the bytes in the file) |
 | `wgpu::BlockPath` | `#[repr(u32)]` (`Sampled` = 0, `Exact` = 1; pinned by `wgpu/tests/abi.rs`); `FrameRenderer::with_path` / `set_path` / `path` map to a create call taking the value and a setter / getter on the renderer handle |
 | `lmbd::LmbdFile`, `lmbd::Writer`, `LmbdTexture` | opaque handles |
 | `Uploader`, `StagedFrame` | opaque handles; `decode_into` takes a source handle + a `StagedFrame` handle (the `PlaneSink` is implemented on the Rust side — no C callback) |
@@ -336,13 +401,35 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `Decoded::Planes` | count + per-plane (format, width, height, pointer, length) borrowed from the handle |
 | `Decoded::Native` | the platform handle (`CVPixelBufferRef` on macOS), retained for the caller |
 | `MediaError` | `MediaError::code()` (stable `u32`, pinned; `Lmbd` = 11, `Dxv` = 12) + the message through a separate call |
-| `ImportOptions` | a plain-data mirror: the sequence rate, `alpha_mode` (`AlphaMode` as `u32`); the backend chosen by the wrapper |
+| `ImportOptions` | a plain-data mirror: the sequence rate, `alpha_mode` (`AlphaMode` as `u32`), `track` (0.9.0: a flag + `u32`); the backend chosen by the wrapper |
+| `MediaInfo` 0.9.0 fields | `track` and `dxv_variant` as a flag + `u32`; `alpha` as `StatedAlpha` (`u32`); `codec_name`, `container_name` as strings through a call, like the path |
+| `container::DamagedTrack`, `first_video_fourcc` | plain data (index, a flag + FourCC bytes, the error's `code()`); the FourCC as 4 bytes + a found flag |
+| `names::*` | functions returning strings (a call that fills a caller buffer) |
+| `wgpu::check_device_size` | a call returning the `GpuError` code |
 | `dxv::Layout`, `dxv::Header`, `dxv::Blocks` | plain-data `#[repr(C)]` mirrors (`Blocks`' planes as pointer + length borrowed from the handle) |
 | `Arc<dyn Backend>` | chosen by the wrapper per platform (no callbacks across the boundary) |
 
 Rules that keep it that way: no generics or lifetimes in the public decode / transport API, no
 callbacks, errors as values, every fieldless enum `#[repr(u32)]` with explicit values, and new
 variants only appended.
+
+## Apple targets (0.9.0)
+
+| Target | What builds | Run |
+|---|---|---|
+| `aarch64-apple-darwin` | everything | the test suite, every wave |
+| `x86_64-apple-darwin` | everything (`cargo check --all-targets`, release build) | the CLI under Rosetta 2 on Apple silicon: `verify --block-path exact` max 0 on HapM / Hap7, ProRes 4444 zero-copy; not on an Intel Mac |
+| `aarch64-apple-ios` | the workspace; `dxvkit-plus-apple` with its decoder (AVFoundation, VideoToolbox, CoreVideo's `CVMetalTextureCache`, IOSurface, wgpu Metal — the code is the macOS code, the `cfg` widened) and an example binary links | not run (no device or simulator here) |
+
+**Deployment target.** rustc's default for `x86_64-apple-darwin` is macOS 10.12; below 10.14.4 the
+SDK links CoreMedia's Swift overlay as `@rpath/libswiftCoreMedia.dylib` and the binary does not load
+("no LC_RPATH's found"). Built for 11.0 (rustc's `aarch64-apple-darwin` default) it links no Swift
+library. For iOS, with no `IPHONEOS_DEPLOYMENT_TARGET` set rustc links for 10.0 while the
+cc crate builds libzstd for the SDK's version, and the link fails (`___chkstk_darwin`); any value
+set aligns both (10.0 links too); this repo uses 15.0. This repo sets both in `.cargo/config.toml`
+(`MACOSX_DEPLOYMENT_TARGET = 11.0`, `IPHONEOS_DEPLOYMENT_TARGET = 15.0`, an environment variable
+wins); a crate that ships a binary using `dxvkit-plus-apple` sets its own (a library's build cannot
+set it for its dependents).
 
 ## Windows (planned)
 

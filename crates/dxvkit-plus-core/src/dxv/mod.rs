@@ -82,7 +82,8 @@ impl std::error::Error for DxvError {}
 
 /// The texture variant of a packet (the packet decides, never the container FourCC: spec 2.2).
 /// `#[repr(u32)]` with fixed values (C ABI; pinned by `tests/abi.rs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[repr(u32)]
 pub enum Variant {
     /// DXV3 Normal Quality: BC1.

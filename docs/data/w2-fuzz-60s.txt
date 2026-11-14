@@ -1,0 +1,2 @@
+# W2: cargo run --release -p dxvkit-plus-core --example fuzz -- 60 8, DXVKit Plus 0.9.0 tree, Mac17,6, 2026-11-14 (a dxvkit-plus verify run over the test folder was using the machine at the same time)
+fuzz: 60 s, 8 threads, corpus 209 (hap frames 35, dxv packets 79, files 62, lmbd 33), execs 13562807 (226021/s), crashes 0, hangs 0, slowest input 59.9 ms

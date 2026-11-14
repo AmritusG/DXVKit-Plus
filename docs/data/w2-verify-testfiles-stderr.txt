@@ -1,0 +1,4 @@
+# stderr of the real-clip verify run (docs/data/w2-verify-testfiles-exact-m5max.jsonl); lines mentioning wgpu / uncaptured / validation:
+0
+# all distinct stderr lines:
+  17 dxvkit-plus: 1 file(s) failed verification

@@ -1,13 +1,12 @@
 [package]
 name = "dxvkit-plus-apple"
-description = "DXVKit Plus native island for macOS: AVFoundation / VideoToolbox decode (H.264, HEVC, ProRes, MJPEG) into IOSurface-backed pixel buffers, imported zero-copy into wgpu Metal textures. The only crate allowed unsafe."
+description = "DXVKit Plus native island for macOS (iOS builds): AVFoundation / VideoToolbox decode (H.264, HEVC, ProRes, MJPEG) into IOSurface-backed pixel buffers, imported zero-copy into wgpu Metal textures. The only crate allowed unsafe."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 publish.workspace = true
@@ -46,7 +45,7 @@ zstd-rust = ["dxvkit-plus-core/zstd-rust"]
 dxvkit-plus-core = { workspace = true }
 wgpu = { workspace = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu-hal = { workspace = true }
 objc2 = { workspace = true }
 objc2-foundation = { workspace = true }

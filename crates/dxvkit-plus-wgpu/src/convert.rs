@@ -8,14 +8,17 @@ use dxvkit_plus_core::source::{Decoded, PixelFormat, Shading};
 /// The converter's output format (straight alpha, not sRGB: values are stored as decoded).
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// How a [`FrameRenderer`] turns BC1 / BC3 / BC4 block planes (DXV DXT1 / DXT5 / legacy DXT, HAP
-/// Hap1 / Hap5 / HapY / HapM / HapA) into pixels. Chosen per renderer ([`FrameRenderer::with_path`],
+/// How a [`FrameRenderer`] turns BC1 / BC3 / BC4 / BC7 block planes (DXV DXT1 / DXT5 / legacy DXT,
+/// HAP Hap1 / Hap5 / HapY / HapM / HapA / R, LMB7 frames as planes) into pixels. Chosen per renderer ([`FrameRenderer::with_path`],
 /// [`FrameRenderer::set_path`]); the default is [`BlockPath::Sampled`]. `#[repr(u32)]` with fixed
 /// values (C ABI; pinned by `tests/abi.rs`; new variants only appended).
 ///
-/// Frames that are exact on both paths take the same route on both: DXV High Quality (always
-/// decoded in the shader, [`DXV_HQ_WGSL`]), BC7 (HAP R, LMB7: the GPU's BC7 decode is exact integer
-/// arithmetic), LMBX and RGBA8. HAP HDR (BC6H) has no CPU oracle and is always sampled.
+/// BC7 (0.9.0): sampled, the GPU's BC7 decode, exact by the format's definition for valid blocks
+/// (and on Apple M5 Max for reserved-mode blocks too); exact, [`BC_EXACT_WGSL`] mode 4, so that
+/// reserved-mode blocks — which GitHub's virtual Metal GPU decodes as opaque black — are
+/// transparent black on every GPU. Frames that take the same route on both paths: DXV High Quality
+/// (always decoded in the shader, [`DXV_HQ_WGSL`]), LMBX and RGBA8. HAP HDR (BC6H) has no CPU oracle
+/// and is always sampled.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum BlockPath {
@@ -208,6 +211,10 @@ fn hq8(v: i32) -> i32 {
 ///   HAP specification's scaled-YCoCg transform over the common denominator, rounded half up
 ///   (`ycocg_scaled_exact`); HapM's alpha plane as mode 1's alpha.
 /// - 3, alpha only (HAP HapA): the BC4 palette truncated, shown as grey with alpha 255.
+/// - 4, BC7 (HAP R, LMB7 frames uploaded as planes; 0.9.0): `dxvkit_plus_core::bc7::bc7_block`
+///   line for line — every mode, the partition and anchor tables, p-bits, bit-replicated
+///   endpoints, the 6-bit weights `((64 - w) * e0 + w * e1 + 32) >> 6`, index selection and channel
+///   rotation; a reserved mode (first byte 0) is transparent black. Flag 1: alpha forced to 255.
 pub const BC_EXACT_WGSL: &str = r#"
 struct U { mode: u32, flags: u32, matrix: u32, full_range: u32, size: vec2<u32>, pad: vec2<u32> };
 @group(0) @binding(0) var t0: texture_2d<u32>;
@@ -309,6 +316,189 @@ fn hap_ycocg(c: vec3<u32>, y35: u32) -> vec3<u32> {
     return vec3<u32>(round8(y + 280 * (r3 - g3), d), round8(y + 280 * (g3 - 384), d), round8(y + 280 * (768 - r3 - g3), d));
 }
 
+// ---- BC7 (mode 4 of U.mode), `dxvkit_plus_core::bc7::bc7_block` line for line --------------------
+// Tables from core::bc7: the subset of each texel of the 64 two-subset partitions (bit px) and of
+// the 64 three-subset partitions (bits 2px..2px+1); the anchor texel of subset 1 (two subsets, bits
+// 0-7), of subset 1 and 2 (three subsets, bits 8-15 and 16-23).
+const BC7_P2 = array<u32, 64>(
+    0xCCCCu, 0x8888u, 0xEEEEu, 0xECC8u, 0xC880u, 0xFEECu, 0xFEC8u, 0xEC80u,
+    0xC800u, 0xFFECu, 0xFE80u, 0xE800u, 0xFFE8u, 0xFF00u, 0xFFF0u, 0xF000u,
+    0xF710u, 0x008Eu, 0x7100u, 0x08CEu, 0x008Cu, 0x7310u, 0x3100u, 0x8CCEu,
+    0x088Cu, 0x3110u, 0x6666u, 0x366Cu, 0x17E8u, 0x0FF0u, 0x718Eu, 0x399Cu,
+    0xAAAAu, 0xF0F0u, 0x5A5Au, 0x33CCu, 0x3C3Cu, 0x55AAu, 0x9696u, 0xA55Au,
+    0x73CEu, 0x13C8u, 0x324Cu, 0x3BDCu, 0x6996u, 0xC33Cu, 0x9966u, 0x0660u,
+    0x0272u, 0x04E4u, 0x4E40u, 0x2720u, 0xC936u, 0x936Cu, 0x39C6u, 0x639Cu,
+    0x9336u, 0x9CC6u, 0x817Eu, 0xE718u, 0xCCF0u, 0x0FCCu, 0x7744u, 0xEE22u,
+);
+const BC7_P3 = array<u32, 64>(
+    0xAA685050u, 0x6A5A5040u, 0x5A5A4200u, 0x5450A0A8u, 0xA5A50000u, 0xA0A05050u, 0x5555A0A0u, 0x5A5A5050u,
+    0xAA550000u, 0xAA555500u, 0xAAAA5500u, 0x90909090u, 0x94949494u, 0xA4A4A4A4u, 0xA9A59450u, 0x2A0A4250u,
+    0xA5945040u, 0x0A425054u, 0xA5A5A500u, 0x55A0A0A0u, 0xA8A85454u, 0x6A6A4040u, 0xA4A45000u, 0x1A1A0500u,
+    0x0050A4A4u, 0xAAA59090u, 0x14696914u, 0x69691400u, 0xA08585A0u, 0xAA821414u, 0x50A4A450u, 0x6A5A0200u,
+    0xA9A58000u, 0x5090A0A8u, 0xA8A09050u, 0x24242424u, 0x00AA5500u, 0x24924924u, 0x24499224u, 0x50A50A50u,
+    0x500AA550u, 0xAAAA4444u, 0x66660000u, 0xA5A0A5A0u, 0x50A050A0u, 0x69286928u, 0x44AAAA44u, 0x66666600u,
+    0xAA444444u, 0x54A854A8u, 0x95809580u, 0x96969600u, 0xA85454A8u, 0x80959580u, 0xAA141414u, 0x96960000u,
+    0xAAAA1414u, 0xA05050A0u, 0xA0A5A5A0u, 0x96000000u, 0x40804080u, 0xA9A8A9A8u, 0xAAAAAA44u, 0x2A4A5254u,
+);
+const BC7_ANCHORS = array<u32, 64>(
+    0x0F030Fu, 0x08030Fu, 0x080F0Fu, 0x030F0Fu, 0x0F080Fu, 0x0F030Fu, 0x030F0Fu, 0x080F0Fu,
+    0x0F080Fu, 0x0F080Fu, 0x0F060Fu, 0x0F060Fu, 0x0F060Fu, 0x0F050Fu, 0x0F030Fu, 0x08030Fu,
+    0x0F030Fu, 0x080302u, 0x0F0808u, 0x030F02u, 0x0F0302u, 0x080308u, 0x0F0608u, 0x080A0Fu,
+    0x030502u, 0x0F0808u, 0x060802u, 0x0A0602u, 0x0F0808u, 0x0F0508u, 0x0A0F02u, 0x080F02u,
+    0x0F080Fu, 0x030F0Fu, 0x0F0306u, 0x0A0508u, 0x0A0602u, 0x080A08u, 0x09080Fu, 0x0A0F0Fu,
+    0x060F02u, 0x0F0308u, 0x080F02u, 0x0F0502u, 0x030F02u, 0x060F0Fu, 0x060F0Fu, 0x080F06u,
+    0x0F0306u, 0x030F02u, 0x0F0506u, 0x0F0508u, 0x0F050Fu, 0x0F080Fu, 0x0F0502u, 0x0F0A02u,
+    0x0F050Fu, 0x0F0A0Fu, 0x0F080Fu, 0x0F0D0Fu, 0x030F0Fu, 0x0F0C02u, 0x0F0302u, 0x08030Fu,
+);
+
+// Word i (0..3) of the block; 0 past the end (bits beyond 128 read as 0, as `Bits::take`).
+fn bc7_word(b: vec4<u32>, i: u32) -> u32 {
+    switch i {
+        case 0u: { return b.x; }
+        case 1u: { return b.y; }
+        case 2u: { return b.z; }
+        case 3u: { return b.w; }
+        default: { return 0u; }
+    }
+}
+
+// `n` bits (0..8) of the block, LSB first, from bit `at`.
+fn bc7_bits(b: vec4<u32>, at: u32, n: u32) -> u32 {
+    if (n == 0u) { return 0u; }
+    let w = at >> 5u;
+    let o = at & 31u;
+    var v = bc7_word(b, w) >> o;
+    if (o + n > 32u) { v = v | (bc7_word(b, w + 1u) << (32u - o)); }
+    return v & ((1u << n) - 1u);
+}
+
+// An n-bit value (5..8 bits here) widened to 8 bits by bit replication (`bc7::expand`).
+fn bc7_expand(v: u32, n: u32) -> u32 {
+    if (n >= 8u) { return v & 255u; }
+    let s = v << (8u - n);
+    return s | (s >> n);
+}
+
+// The 2-, 3- and 4-bit index weights of the specification (`bc7::W2`, `W3`, `W4`).
+const BC7_W2 = array<u32, 4>(0u, 21u, 43u, 64u);
+const BC7_W3 = array<u32, 8>(0u, 9u, 18u, 27u, 37u, 46u, 55u, 64u);
+const BC7_W4 = array<u32, 16>(0u, 4u, 9u, 13u, 17u, 21u, 26u, 30u, 34u, 38u, 43u, 47u, 51u, 55u, 60u, 64u);
+
+fn bc7_weight(bits: u32, i: u32) -> u32 {
+    if (bits == 2u) { return BC7_W2[i & 3u]; }
+    if (bits == 3u) { return BC7_W3[i & 7u]; }
+    return BC7_W4[i & 15u];
+}
+
+fn bc7_interp(e0: u32, e1: u32, w: u32) -> u32 {
+    return ((64u - w) * e0 + w * e1 + 32u) >> 6u;
+}
+
+// Per mode (`bc7::MODES`): subsets, partition / rotation / index-selection bits, colour and alpha
+// bits, endpoint p-bits (1 = per endpoint, 2 = shared per subset), index and second index bits.
+struct Bc7Mode { ns: u32, pb: u32, rb: u32, isb: u32, cb: u32, ab: u32, pbits: u32, ib: u32, ib2: u32 };
+
+fn bc7_mode(m: u32) -> Bc7Mode {
+    switch m {
+        case 0u: { return Bc7Mode(3u, 4u, 0u, 0u, 4u, 0u, 1u, 3u, 0u); }
+        case 1u: { return Bc7Mode(2u, 6u, 0u, 0u, 6u, 0u, 2u, 3u, 0u); }
+        case 2u: { return Bc7Mode(3u, 6u, 0u, 0u, 5u, 0u, 0u, 2u, 0u); }
+        case 3u: { return Bc7Mode(2u, 6u, 0u, 0u, 7u, 0u, 1u, 2u, 0u); }
+        case 4u: { return Bc7Mode(1u, 0u, 2u, 1u, 5u, 6u, 0u, 2u, 3u); }
+        case 5u: { return Bc7Mode(1u, 0u, 2u, 0u, 7u, 8u, 0u, 2u, 2u); }
+        case 6u: { return Bc7Mode(1u, 0u, 0u, 0u, 7u, 7u, 1u, 4u, 0u); }
+        default: { return Bc7Mode(2u, 6u, 0u, 0u, 5u, 5u, 1u, 2u, 0u); }
+    }
+}
+
+// Texel i (0..15) of the BC7 block in words b, straight RGBA8. A reserved mode (first byte 0) is
+// transparent black, as the specification and `bc7_block` define it.
+fn bc7(b: vec4<u32>, i: u32) -> vec4<u32> {
+    let first = b.x & 255u;
+    if (first == 0u) { return vec4<u32>(0u); }
+    let mode = countTrailingZeros(first);
+    let m = bc7_mode(mode);
+    var at = mode + 1u;
+    let part = bc7_bits(b, at, m.pb);
+    at = at + m.pb;
+    let rotation = bc7_bits(b, at, m.rb);
+    at = at + m.rb;
+    let isel = bc7_bits(b, at, m.isb);
+    at = at + m.isb;
+    // This texel's subset and the anchors (texel 0 always; then subset 1's, and subset 2's).
+    var subset = 0u;
+    var anchor1 = 16u;
+    var anchor2 = 16u;
+    let anchors = BC7_ANCHORS[part & 63u];
+    if (m.ns == 2u) {
+        subset = (BC7_P2[part & 63u] >> i) & 1u;
+        anchor1 = anchors & 255u;
+    } else if (m.ns == 3u) {
+        subset = (BC7_P3[part & 63u] >> (2u * i)) & 3u;
+        anchor1 = (anchors >> 8u) & 255u;
+        anchor2 = (anchors >> 16u) & 255u;
+    }
+    // Endpoints, channel-major: R, G, B (cb bits each), A (ab bits), each subset's two endpoints.
+    let pstart = at + (3u * m.cb + m.ab) * 2u * m.ns;
+    var p0 = 0u;
+    var p1 = 0u;
+    if (m.pbits == 1u) {
+        p0 = bc7_bits(b, pstart + 2u * subset, 1u);
+        p1 = bc7_bits(b, pstart + 2u * subset + 1u, 1u);
+    } else if (m.pbits == 2u) {
+        p0 = bc7_bits(b, pstart + subset, 1u);
+        p1 = p0;
+    }
+    let has_p = u32(m.pbits != 0u);
+    var e0 = vec4<u32>(0u);
+    var e1 = vec4<u32>(0u);
+    for (var ch = 0u; ch < 4u; ch = ch + 1u) {
+        var n = m.cb;
+        var base = at + ch * m.cb * 2u * m.ns;
+        if (ch == 3u) { n = m.ab; }
+        let x0 = (bc7_bits(b, base + (2u * subset) * n, n) << has_p) | p0;
+        let x1 = (bc7_bits(b, base + (2u * subset + 1u) * n, n) << has_p) | p1;
+        var v0 = 255u;
+        var v1 = 255u;
+        if (ch < 3u || m.ab != 0u) {
+            v0 = bc7_expand(x0, n + has_p);
+            v1 = bc7_expand(x1, n + has_p);
+        }
+        e0[ch] = v0;
+        e1[ch] = v1;
+    }
+    // Indices: each texel ib bits, an anchor one bit less; the second set (modes 4, 5) after them.
+    let istart = pstart + select(0u, select(m.ns, 2u * m.ns, m.pbits == 1u), m.pbits != 0u);
+    var before = u32(i > 0u) + u32(anchor1 < i) + u32(anchor2 < i);
+    let anchor = i == 0u || i == anchor1 || i == anchor2;
+    let i1 = bc7_bits(b, istart + i * m.ib - before, m.ib - u32(anchor));
+    var i2 = 0u;
+    if (m.ib2 > 0u) {
+        let i2start = istart + 16u * m.ib - 1u;
+        i2 = bc7_bits(b, i2start + i * m.ib2 - u32(i > 0u), m.ib2 - u32(i == 0u));
+    }
+    var ci = i1;
+    var cbits = m.ib;
+    var ai = i1;
+    var abits = m.ib;
+    if (m.ib2 > 0u) {
+        if (isel == 0u) {
+            ai = i2;
+            abits = m.ib2;
+        } else {
+            ci = i2;
+            cbits = m.ib2;
+        }
+    }
+    let cw = bc7_weight(cbits, ci);
+    let aw = bc7_weight(abits, ai);
+    var p = vec4<u32>(bc7_interp(e0.x, e1.x, cw), bc7_interp(e0.y, e1.y, cw), bc7_interp(e0.z, e1.z, cw), bc7_interp(e0.w, e1.w, aw));
+    if (rotation == 1u) { p = p.wyzx; }
+    if (rotation == 2u) { p = p.xwzy; }
+    if (rotation == 3u) { p = p.xywz; }
+    return p;
+}
+
 @fragment fn fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let xy = vec2<u32>(pos.xy);
     let i = (xy.y & 3u) * 4u + (xy.x & 3u);
@@ -330,6 +520,11 @@ fn hap_ycocg(c: vec3<u32>, y35: u32) -> vec3<u32> {
                 let ab = textureLoad(t1, at, 0);
                 a = bc4(ab.x, ab.y, i);
             }
+        }
+        case 4u: { // BC7
+            let p = bc7(b, i);
+            rgb = p.xyz;
+            if ((u.flags & 1u) == 0u) { a = p.w; }
         }
         default: { // alpha only, shown as grey
             rgb = vec3<u32>(bc4(b.x, b.y, i));
@@ -422,7 +617,7 @@ enum Program {
     Sampled,
     /// [`DXV_HQ_WGSL`]: DXV High Quality blocks as integer texels.
     DxvHq,
-    /// [`BC_EXACT_WGSL`]: BC1 / BC3 / BC4 blocks as integer texels.
+    /// [`BC_EXACT_WGSL`]: BC1 / BC3 / BC4 / BC7 blocks as integer texels.
     Exact,
 }
 
@@ -439,7 +634,7 @@ impl Program {
 fn program_for(path: BlockPath, shading: Shading, first: Option<PixelFormat>) -> Program {
     let exact = path == BlockPath::Exact
         && match shading {
-            Shading::Rgba { .. } => matches!(first, Some(PixelFormat::Bc1 | PixelFormat::Bc3)),
+            Shading::Rgba { .. } => matches!(first, Some(PixelFormat::Bc1 | PixelFormat::Bc3 | PixelFormat::Bc7)),
             Shading::RgbaPremultiplied | Shading::HapYcocg { .. } => first == Some(PixelFormat::Bc3),
             Shading::AlphaOnly => first == Some(PixelFormat::Bc4),
             Shading::Hdr | Shading::Lmbx | Shading::DxvYcocg { .. } => false,
@@ -452,11 +647,11 @@ fn program_for(path: BlockPath, shading: Shading, first: Option<PixelFormat>) ->
 }
 
 /// The integer texture holding one block per texel: 8-byte blocks (BC1, BC4) -> `Rg32Uint`,
-/// 16-byte blocks (BC3, BC5) -> `Rgba32Uint`.
+/// 16-byte blocks (BC3, BC5, BC7) -> `Rgba32Uint`.
 fn raw_format(format: PixelFormat) -> Result<wgpu::TextureFormat, GpuError> {
     match format {
         PixelFormat::Bc1 | PixelFormat::Bc4 => Ok(wgpu::TextureFormat::Rg32Uint),
-        PixelFormat::Bc3 | PixelFormat::Bc5 => Ok(wgpu::TextureFormat::Rgba32Uint),
+        PixelFormat::Bc3 | PixelFormat::Bc5 | PixelFormat::Bc7 => Ok(wgpu::TextureFormat::Rgba32Uint),
         other => Err(GpuError::Invalid(format!("{other:?} blocks are not uploaded as integer texels"))),
     }
 }
@@ -590,7 +785,7 @@ struct Pending {
 
 /// An uploaded frame a compositor can sample as it is, skipping the conversion pass (see
 /// [`FrameRenderer::direct_view`]). The texels are the GPU's own BC decode ([`BlockPath::Sampled`]'s
-/// contract; exact for BC7).
+/// contract; for BC7 exact on valid blocks).
 #[derive(Clone, Copy, Debug)]
 pub struct DirectView<'a> {
     /// The frame's block texture (BC1 / BC3 / BC7, sampled as stored RGBA).
@@ -677,8 +872,8 @@ impl FrameRenderer {
     /// can skip [`FrameRenderer::encode_convert`] for these frames. `None` for frames that need
     /// the pass (HAP Q's and DXV HQ's YCoCg, premultiplied colour, alpha-only, HDR, RGBA8 images)
     /// or before an upload. DXV DXT1 / DXT5 (straight) qualify; their textures are the coded size
-    /// (rounded up to 16). On [`BlockPath::Exact`] BC1 / BC3 frames are integer texels that only the
-    /// conversion pass can read, so only BC7 frames have a direct view there.
+    /// (rounded up to 16). On [`BlockPath::Exact`] BC1 / BC3 / BC7 frames are integer texels that
+    /// only the conversion pass can read, so there is no direct view there (0.9.0: BC7 included).
     pub fn direct_view(&self) -> Option<DirectView<'_>> {
         let p = self.pending?;
         let Shading::Rgba { opaque } = p.shading else { return None };
@@ -696,6 +891,7 @@ impl FrameRenderer {
         if w == 0 || h == 0 || w > crate::MAX_EDGE || h > crate::MAX_EDGE {
             return Err(GpuError::Invalid(format!("output size {w}x{h}")));
         }
+        crate::check_device_size(device, w, h)?;
         let fits = self.output.as_ref().is_some_and(|(t, _)| t.width() == w && t.height() == h);
         if !fits {
             let t = device.create_texture(&wgpu::TextureDescriptor {
@@ -825,6 +1021,7 @@ impl FrameRenderer {
             return Err(GpuError::Invalid("native frames are rendered with render_native (after the platform import)".into()));
         };
         let shapes: Vec<(PixelFormat, u32, u32)> = planes.iter().map(|p| (p.format, p.width, p.height)).collect();
+        fits(device, *width, *height, &shapes)?;
         let program = program_for(self.path, *shading, shapes.first().map(|s| s.0));
         self.ensure_uploads(device, &shapes, program.raw())?;
         Ok((*shading, *width, *height, program))
@@ -866,6 +1063,7 @@ impl FrameRenderer {
         }
         let l = &staged.layout;
         let shapes: Vec<(PixelFormat, u32, u32)> = l.planes.iter().map(|p| (p.format, p.width, p.height)).collect();
+        fits(device, l.width, l.height, &shapes)?;
         let program = program_for(self.path, l.shading, shapes.first().map(|s| s.0));
         self.ensure_uploads(device, &shapes, program.raw())?;
         let (shading, width, height, n) = (l.shading, l.width, l.height, l.planes.len());
@@ -903,6 +1101,7 @@ impl FrameRenderer {
         // RGBA as stored is mode 0 in `CONVERT_WGSL`; `BC_EXACT_WGSL` has one mode per block format.
         let rgba = match (program, self.uploads.first().map(|u| u.format)) {
             (Program::Exact, Some(PixelFormat::Bc3)) => 1,
+            (Program::Exact, Some(PixelFormat::Bc7)) => 4,
             _ => 0,
         };
         let (mode, flags) = match shading {
@@ -963,6 +1162,7 @@ impl FrameRenderer {
         if native.textures.len() != want {
             return Err(GpuError::Invalid(format!("{:?} needs {want} planes, got {}", native.layout, native.textures.len())));
         }
+        crate::check_device_size(device, native.width, native.height)?;
         self.last_upload_bytes = 0;
         self.pending = None;
         self.set_uniform(queue, Uniform { mode, flags: 0, matrix: native.matrix.index(), full_range, size: [native.width, native.height], pad: [0; 2] });
@@ -976,10 +1176,18 @@ impl FrameRenderer {
     }
 }
 
+/// The device holds a frame of display size `width` x `height` with planes `shapes` (the output is
+/// the display size; a plane can be a little larger, rounded up to whole blocks or DXV's 16).
+fn fits(device: &wgpu::Device, width: u32, height: u32, shapes: &[(PixelFormat, u32, u32)]) -> Result<(), GpuError> {
+    let (w, h) = shapes.iter().fold((width, height), |(w, h), s| (w.max(s.1), h.max(s.2)));
+    crate::check_device_size(device, w, h)
+}
+
 /// A texture of `format` blocks as integer texels ([`raw_format`]): one texel per 4x4 block of a
 /// `width` x `height` plane.
 fn create_raw_texture(device: &wgpu::Device, format: PixelFormat, width: u32, height: u32) -> Result<wgpu::Texture, GpuError> {
     crate::check_size(format, width, height)?;
+    crate::check_device_size(device, width / 4, height / 4)?;
     Ok(device.create_texture(&wgpu::TextureDescriptor {
         label: Some("dxvkit-plus-plane-blocks"),
         size: wgpu::Extent3d { width: width / 4, height: height / 4, depth_or_array_layers: 1 },

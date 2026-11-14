@@ -7,7 +7,7 @@ use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::backend::YuvMatrix;
 use dxvkit_plus_core::container::Codec;
 use dxvkit_plus_core::hap::HapTexture;
-use dxvkit_plus_core::source::{AlphaMode, PixelFormat, SourceKind};
+use dxvkit_plus_core::source::{AlphaMode, PixelFormat, SourceKind, StatedAlpha};
 use dxvkit_plus_core::transport::{Direction, PlayMode, SyncMode};
 
 #[test]
@@ -31,6 +31,8 @@ fn enum_values_are_pinned() {
     assert_eq!([YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020].map(YuvMatrix::index), [0, 1, 2]);
     assert_eq!([Codec::Dxv, Codec::Hap, Codec::Native].map(|v| v as u32), [0, 1, 2]);
     assert_eq!([AlphaMode::Straight, AlphaMode::Premultiplied].map(|v| v as u32), [0, 1]);
+    // 0.9.0.
+    assert_eq!([StatedAlpha::None, StatedAlpha::Straight, StatedAlpha::Premultiplied, StatedAlpha::Unstated].map(|v| v as u32), [0, 1, 2, 3]);
     use dxvkit_plus_core::dxv::Variant as V;
     assert_eq!([V::Dxt1, V::Dxt5, V::Ycg6, V::Yg10, V::LegacyDxt1, V::LegacyDxt5].map(|v| v as u32), [0, 1, 2, 3, 4, 5]);
     use HapTexture as H;

@@ -11,9 +11,12 @@
 //! - **Two block paths** ([`BlockPath`], per [`FrameRenderer`]). `Sampled` (the default) is the
 //!   above: the GPU's fixed-function decoder decodes BC1 / BC3 / BC4, measured within 1-3 / 255 of
 //!   the CPU decode on encoded footage. `Exact` uploads the same bytes as integer texels and decodes them in the shader
-//!   ([`BC_EXACT_WGSL`]) with the CPU decoders' integer arithmetic: DXV DXT1 / DXT5 / legacy DXT and
-//!   HAP Hap1 / Hap5 / HapY / HapM / HapA frames then equal `Decoded::to_rgba` bit for bit. DXV High
-//!   Quality is always decoded that way ([`DXV_HQ_WGSL`]).
+//!   ([`BC_EXACT_WGSL`]) with the CPU decoders' integer arithmetic: DXV DXT1 / DXT5 / legacy DXT,
+//!   HAP Hap1 / Hap5 / HapY / HapM / HapA and (0.9.0) BC7 frames (HAP R, LMB7) then equal
+//!   `Decoded::to_rgba` bit for bit, reserved-mode BC7 blocks included. DXV High Quality is always
+//!   decoded that way ([`DXV_HQ_WGSL`]).
+//! - **Device size** (0.9.0): [`Gpu`] asks for the adapter's largest texture (up to [`MAX_EDGE`]); a
+//!   frame larger than the device holds is [`GpuError::Unsupported`] ([`check_device_size`]).
 //! - [`FrameRenderer`] keeps the upload textures and the output across frames (a steady clip
 //!   reallocates nothing).
 //! - **Many layers** ([`Uploader`]): frames go up through persistent staging memory
@@ -95,7 +98,8 @@ pub struct Gpu {
 
 impl Gpu {
     /// A device with no surface, on the high-performance adapter. Requests
-    /// `TEXTURE_COMPRESSION_BC` (always present on macOS and Windows desktop) when the adapter has it.
+    /// `TEXTURE_COMPRESSION_BC` (always present on macOS and Windows desktop) when the adapter has it,
+    /// and the adapter's largest 2D texture up to [`MAX_EDGE`] (0.9.0; wgpu's default is 8192).
     pub fn headless() -> Result<Gpu, GpuError> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, ..wgpu::InstanceDescriptor::new_without_display_handle() });
@@ -107,12 +111,18 @@ impl Gpu {
     }
 
     /// A device on a chosen adapter. Requests `TEXTURE_COMPRESSION_BC` and `TIMESTAMP_QUERY` where
-    /// the adapter has them.
+    /// the adapter has them, and the adapter's largest 2D texture up to [`MAX_EDGE`] (wgpu's
+    /// default limits stop at 8192; Apple silicon offers 16384 and more).
     pub fn with_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<Gpu, GpuError> {
         let required_features = adapter.features() & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::TIMESTAMP_QUERY);
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("dxvkit-plus"), required_features, ..Default::default() }))
-                .map_err(|e| GpuError::Device(e.to_string()))?;
+        let required_limits = wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(MAX_EDGE), ..wgpu::Limits::default() };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("dxvkit-plus"),
+            required_features,
+            required_limits,
+            ..Default::default()
+        }))
+        .map_err(|e| GpuError::Device(e.to_string()))?;
         // wgpu's default handler panics on an uncaptured error; log instead (never-crash rule).
         device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| eprintln!("dxvkit-plus-wgpu: uncaptured wgpu error: {e}")));
         Ok(Gpu { instance, adapter, device, queue })
@@ -157,6 +167,18 @@ pub(crate) fn check_size(format: PixelFormat, width: u32, height: u32) -> Result
     frame_bytes(format, width, height).ok_or_else(|| GpuError::Invalid("frame size overflows".into()))
 }
 
+/// Whether `device` holds a `width` x `height` frame: its largest 2D texture
+/// (`max_texture_dimension_2d`) must reach both edges. A larger frame is `GpuError::Unsupported`
+/// with the numbers — checked before any texture is made, so wgpu never raises a validation error
+/// and no call returns `Ok` with an invalid texture (0.9.0).
+pub fn check_device_size(device: &wgpu::Device, width: u32, height: u32) -> Result<(), GpuError> {
+    let limit = device.limits().max_texture_dimension_2d;
+    if width > limit || height > limit {
+        return Err(GpuError::Unsupported(format!("a {width}x{height} frame is larger than this GPU's largest texture ({limit} pixels)")));
+    }
+    Ok(())
+}
+
 /// Create a reusable texture (`TEXTURE_BINDING | COPY_DST`) for codec frames of `format` (BC sizes
 /// must be multiples of 4). Refill it each frame with [`write_bc`].
 pub fn create_bc_texture(device: &wgpu::Device, format: PixelFormat, width: u32, height: u32, label: &str) -> Result<wgpu::Texture, GpuError> {
@@ -177,6 +199,7 @@ pub fn create_bc_texture_with_views(
         return Err(GpuError::Unsupported("TEXTURE_COMPRESSION_BC is not available on this adapter".into()));
     }
     check_size(format, width, height)?;
+    check_device_size(device, width, height)?;
     Ok(device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },

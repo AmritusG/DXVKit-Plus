@@ -23,6 +23,7 @@
 //! - [`cache`]: a frame cache with read-ahead on worker threads; a miss decodes the exact frame.
 //! - [`transport`]: an exact-time playhead — loop, bounce, once, random; forward, reverse, any
 //!   rational speed; frame-exact seek, step, scrub, cues; beat and timecode sync.
+//! - [`names`]: codec and container display names, and the line for a file nothing plays.
 //! - [`time`]: exact integer media time ([`time::Tick`]) and timecode formatting.
 #![forbid(unsafe_code)]
 
@@ -37,6 +38,7 @@ mod error;
 pub mod hap;
 pub mod lmbd;
 pub mod lmbx;
+pub mod names;
 pub mod source;
 pub mod testpattern;
 pub mod time;

@@ -19,14 +19,14 @@
 //! HAP R (BC7, all modes) and timecode movies written here. Each iteration picks a seed input, applies 1-8
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
 //! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `dxv::decode_blocks` (sometimes
-//! at a random size, HQ sections sometimes in parallel) + CPU RGBA straight and premultiplied, `Movie::from_source` +
-//! `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
+//! at a random size, HQ sections sometimes in parallel) + CPU RGBA straight and premultiplied, `first_video_fourcc_in`, `Movie::from_source`
+//! (damaged tracks too) + `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
 //! through a contract-checking sink, compared with it) + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use dxvkit_plus_core::MediaError;
-use dxvkit_plus_core::container::{Codec, MemSource, Movie};
+use dxvkit_plus_core::container::{Codec, MemSource, Movie, first_video_fourcc_in};
 use dxvkit_plus_core::lmbd::LmbdFile;
 use dxvkit_plus_core::source::{PixelFormat, Plane, PlaneSink, Shading, planes_to_rgba};
 use dxvkit_plus_core::{dxv, hap};
@@ -275,7 +275,16 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
         }
         Seed::File(_) => {
             let src: Arc<[u8]> = Arc::from(data);
+            // 0.9.0: the lenient first-video-track reader walks the same bytes.
+            let _ = first_video_fourcc_in(&MemSource(Arc::clone(&src)));
             if let Ok(m) = Movie::from_source(Arc::new(MemSource(src))) {
+                for d in &m.damaged {
+                    let _ = (d.codec(), d.error.code());
+                }
+                // A cut-off track's last sample: the read past the end must be an error, not a panic.
+                if let Some(t) = m.tracks.first() {
+                    let _ = m.read_sample(t, t.frame_count().saturating_sub(1), &mut Vec::new());
+                }
                 for t in m.tracks.clone() {
                     // Bound the frame size the fuzzer lets a hostile header allocate (memory on a
                     // shared machine); the decoders' own limit is 16384 x 16384.

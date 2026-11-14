@@ -1,0 +1,24 @@
+# rustc 1.100.0, 2026-11-14T23:26:21Z
+## x86_64-apple-darwin, MACOSX_DEPLOYMENT_TARGET=10.12 (rustc's default), release CLI
+  version 10.12
+	@rpath/libswiftCoreMedia.dylib (compatibility version 1.0.0, current version 3385.14.5)
+dyld[31098]: Library not loaded: @rpath/libswiftCoreMedia.dylib
+  Referenced from: <D6A4F902-F5BD-3AE6-AD7E-1D35A5B081D3> <scratch>/target-1100/x86_64-apple-darwin/release/dxvkit-plus
+  Reason: no LC_RPATH's found
+## the same at 11.0 (this repo's .cargo/config.toml)
+    minos 11.0
+swift libs: 0
+{"alpha":"straight","backend":"avfoundation","codec":"HapM","codec_name":"HAP Q 
+## aarch64-apple-ios, IPHONEOS_DEPLOYMENT_TARGET=10.0 set (rustc's default value), example decode_frame: links (no error lines)
+## the same at 15.0: links
+<scratch>/target-1100/aarch64-apple-ios/debug/examples/decode_frame: Mach-O 64-bit executable arm64
+## cargo check --workspace --all-targets, both targets (config defaults)
+x86_64: no error lines (grep exit 1)
+ios grep-exit 1 (1 = no error lines)
+## clippy -D warnings (aarch64-apple-darwin host)
+0
+## aarch64-apple-ios with NO deployment variable (a copy of the tree without .cargo/, own target dir)
+"___chkstk_darwin", referenced from: ... (link fails)
+ld: warning: object file (.../libzstd_sys-....rlib[11](...zstd_common.o)) was built for newer 'iOS' version (27.2) than being linked (10.0)
+## the same copy with IPHONEOS_DEPLOYMENT_TARGET=10.0 set: Mach-O 64-bit executable arm64 (links)
+# So: unset, the cc crate compiles libzstd for the SDK version while rustc links for 10.0; any explicit value aligns both.

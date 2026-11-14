@@ -1,0 +1,5 @@
+# verify --block-path exact with the v0.8.0 binary (git archive v0.8.0, release) on the four native clips that fail on 0.9.0; problems as reported
+hap-testclips/glenc-hapm-gate_Hap5_HEVC.mp4 | v0.8.0 pass False problems 2 | 0.9.0 pass False problems 2 | identical lists: True
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_H.264 [00.00.00-00.00.00].mp4 | v0.8.0 pass False problems 19 | 0.9.0 pass False problems 19 | identical lists: True
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_H.264 [00.00.00-00.00.00]_2.mp4 | v0.8.0 pass False problems 27 | 0.9.0 pass False problems 27 | identical lists: True
+ShroomsProRes 4444.mov | v0.8.0 pass False problems 16 | 0.9.0 pass False problems 16 | identical lists: True

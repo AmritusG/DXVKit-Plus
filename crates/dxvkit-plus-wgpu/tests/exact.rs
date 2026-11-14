@@ -1,5 +1,6 @@
 //! The exact path (`BlockPath::Exact`): GPU read-back against the CPU oracle (`Decoded::to_rgba`),
-//! max 0 per channel, for DXV DXT1 / DXT5 / legacy DXT and HAP Hap1 / Hap5 / HapY / HapM / HapA —
+//! max 0 per channel, for DXV DXT1 / DXT5 / legacy DXT, HAP Hap1 / Hap5 / HapY / HapM / HapA and
+//! (0.9.0) BC7: HAP R and LMB7, reserved-mode blocks included —
 //! every frame of the committed fixtures, and movies this test writes itself at 1x1 ... 3840x2160
 //! (odd and non-16 sizes included) from random blocks, so every palette mode and index is hit.
 //! Skips without a GPU unless `DXVKIT_PLUS_REQUIRE_GPU=1`.
@@ -61,10 +62,12 @@ enum Kind {
     HapY,
     HapM,
     HapA,
+    Hap7,
 }
 
 impl Kind {
-    const ALL: [Kind; 9] = [Kind::Dxt1, Kind::Dxt5, Kind::LegacyDxt1, Kind::LegacyDxt5, Kind::Hap1, Kind::Hap5, Kind::HapY, Kind::HapM, Kind::HapA];
+    const ALL: [Kind; 10] =
+        [Kind::Dxt1, Kind::Dxt5, Kind::LegacyDxt1, Kind::LegacyDxt5, Kind::Hap1, Kind::Hap5, Kind::HapY, Kind::HapM, Kind::HapA, Kind::Hap7];
 
     fn fourcc(self) -> &'static [u8; 4] {
         match self {
@@ -75,6 +78,7 @@ impl Kind {
             Kind::HapY => b"HapY",
             Kind::HapM => b"HapM",
             Kind::HapA => b"HapA",
+            Kind::Hap7 => b"Hap7",
         }
     }
     fn is_dxv(self) -> bool {
@@ -91,6 +95,7 @@ impl Kind {
             Kind::Dxt5 | Kind::LegacyDxt5 | Kind::Hap5 | Kind::HapY => &[PixelFormat::Bc3],
             Kind::HapM => &[PixelFormat::Bc3, PixelFormat::Bc4],
             Kind::HapA => &[PixelFormat::Bc4],
+            Kind::Hap7 => &[PixelFormat::Bc7],
         }
     }
     /// Blocks per plane at `w` x `h`: HAP rounds up to whole blocks, DXV codes to 16.
@@ -103,7 +108,10 @@ impl Kind {
 
 /// `n` random blocks of `format`. Random bytes are valid blocks of every palette mode (c0 > c1 and
 /// c0 <= c1, a0 > a1 and a0 <= a1, every index); the boundary cases random data rarely hits are
-/// forced on some blocks: equal endpoints, the extreme endpoints, all-zero and all-one blocks.
+/// forced on some blocks: equal endpoints, the extreme endpoints, all-zero and all-one blocks. BC7:
+/// the mode is the lowest set bit of the first byte, so random bytes are mostly modes 0 and 1; each
+/// block's mode is forced to `i % 9` (8 = left random), and the all-zero blocks are reserved-mode
+/// blocks (first byte 0: transparent black).
 fn random_blocks(state: &mut u64, n: usize, format: PixelFormat) -> Vec<u8> {
     let bytes = format.unit_bytes() as usize;
     let mut v = Vec::with_capacity(n * bytes + 8);
@@ -115,9 +123,14 @@ fn random_blocks(state: &mut u64, n: usize, format: PixelFormat) -> Vec<u8> {
     let (alpha, colour) = match format {
         PixelFormat::Bc1 => (None, Some(0)),
         PixelFormat::Bc3 => (Some(0), Some(8)),
+        PixelFormat::Bc7 => (None, None),
         _ => (Some(0), None),
     };
     for (i, b) in v.chunks_exact_mut(bytes).enumerate() {
+        if format == PixelFormat::Bc7 && i % 9 < 8 {
+            let mode = (i % 9) as u32;
+            b[0] = (b[0] & !((2u16 << mode) - 1) as u8) | (1 << mode);
+        }
         match i % 53 {
             3 => {
                 if let Some(a) = alpha {
@@ -165,6 +178,7 @@ fn packet(kind: Kind, planes: &[Vec<u8>]) -> Vec<u8> {
         Kind::HapY => hap_frame(0xAF, p0),
         Kind::HapA => hap_frame(0xA1, p0),
         Kind::HapM => hap_frame(0x0D, &[hap_frame(0xAF, p0), hap_frame(0xA1, &planes[1])].concat()),
+        Kind::Hap7 => hap_frame(0xAC, p0),
     }
 }
 
@@ -273,6 +287,15 @@ fn fixture_files() -> Vec<PathBuf> {
         .iter()
         .map(|n| fixtures().join(format!("tiles_{n}.mov")))
         .collect();
+    // BC7: HAP R and the LMB7 files (their frames as BC7 planes).
+    v.push(fixtures().join("synthetic_hap7.mov"));
+    let mut lmb7: Vec<PathBuf> = std::fs::read_dir(fixtures())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("lmbd_") && n.ends_with(".lmbd")))
+        .collect();
+    lmb7.sort();
+    v.extend(lmb7);
     for group in ["glenc", "synthetic"] {
         let mut files: Vec<PathBuf> = std::fs::read_dir(fixtures().join("dxvkit/streams").join(group))
             .unwrap()
@@ -322,8 +345,8 @@ fn assert_exact(rows: &[Row]) {
 fn exact_path_equals_the_cpu_at_every_size() {
     let Some(g) = gpu() else { return };
     let rows = sweep(&g, true);
-    // 9 variants + the premultiplied reading of the two DXV variants with alpha, at 9 sizes.
-    assert_eq!(rows.len(), 11 * SIZES.len());
+    // 10 variants + the premultiplied reading of the two DXV variants with alpha, at 9 sizes.
+    assert_eq!(rows.len(), 12 * SIZES.len());
     assert!(rows.iter().all(|r| r.frames == FRAMES));
     assert_exact(&rows);
 }
@@ -333,11 +356,12 @@ fn exact_path_equals_the_cpu_at_every_size() {
 fn exact_path_equals_the_cpu_on_every_fixture_frame() {
     let Some(g) = gpu() else { return };
     let rows = fixture_rows(&g, true);
-    // Every frame that decodes, of 35 files (the 28 DXV ones in both alpha modes): none skipped.
-    // 43 rows (348 frames) are BC1 / BC3 / BC4 frames on `BC_EXACT_WGSL`; the 20 YCG6 / YG10 rows
-    // (140 frames) are DXV High Quality, exact on both paths.
+    // Every frame that decodes, of 41 files (the 28 DXV ones in both alpha modes): none skipped.
+    // 43 rows (348 frames) are BC1 / BC3 / BC4 frames and 6 rows (16 frames: HAP R and the five
+    // LMB7 files) BC7 frames on `BC_EXACT_WGSL`; the 20 YCG6 / YG10 rows (140 frames) are DXV High
+    // Quality, exact on both paths.
     let frames: u32 = rows.iter().map(|r| r.frames).sum();
-    assert_eq!((rows.len(), frames), (63, 488));
+    assert_eq!((rows.len(), frames), (69, 504));
     assert_exact(&rows);
 }
 
@@ -404,8 +428,8 @@ fn one_flipped_bit_is_caught() {
             }
         }
     }
-    // 9 variants + 2 premultiplied readings, HapM with two planes each checked.
-    assert_eq!(checked, 12);
+    // 10 variants + 2 premultiplied readings, HapM with two planes each checked.
+    assert_eq!(checked, 13);
 }
 
 /// The exact path through the other upload routes — persistent staging and decoding straight into
@@ -445,7 +469,7 @@ fn exact_path_through_staging_and_decode_into() {
             }
         }
     }
-    assert_eq!(frames, 11 * 2 * 2);
+    assert_eq!(frames, 12 * 2 * 2);
     // Negative control: a different frame through the same route does not match.
     let path = scratch.movie(
         Kind::Hap5,
@@ -490,7 +514,8 @@ fn the_path_is_per_renderer_and_the_default_is_sampled() {
         assert_eq!(render(&g, &mut switching, &d), on_sampled, "{name}: sampled again");
         assert_eq!(render(&g, &mut exact, &d), cpu, "{name}");
     }
-    // Exact on both paths, by the same route: HAP R (BC7, with its direct view), DXV HQ, LMBX.
+    // Exact on both paths: HAP R and LMB7 (BC7; 0.9.0: on the exact path decoded in the shader, so
+    // without a direct view there), DXV HQ and LMBX (the same route on both paths).
     let mut same = 0;
     for name in ["synthetic_hap7.mov", "tiles_ycg6.mov", "tiles_yg10.mov", "lmbx_v3_graphics_alpha_422_q32.lmbd", "lmbd_tiles_none_c2.lmbd"] {
         let (info, mut src) = open(&fixtures().join(name), AlphaMode::Straight);
@@ -499,12 +524,42 @@ fn the_path_is_per_renderer_and_the_default_is_sampled() {
             let cpu = d.to_rgba().unwrap();
             assert_eq!(render(&g, &mut exact, &d), cpu, "{name} frame {f}");
             assert_eq!(render(&g, &mut sampled, &d), cpu, "{name} frame {f}");
-            assert_eq!(exact.direct_view().is_some(), sampled.direct_view().is_some(), "{name}");
-            assert_eq!(exact.direct_view().is_some(), name.contains("hap7") || name.starts_with("lmbd_"), "{name}");
+            assert!(exact.direct_view().is_none(), "{name}");
+            assert_eq!(sampled.direct_view().is_some(), name.contains("hap7") || name.starts_with("lmbd_"), "{name}");
             same += 1;
         }
     }
     assert!(same >= 9, "{same}");
+}
+
+/// glance-core C1 finding 8: on the exact path BC7 (HAP R, LMB7 frames as planes) is decoded in the
+/// shader from integer texels like BC1 / BC3 / BC4, so reserved-mode blocks (first byte 0, which no
+/// encoder writes) are transparent black on every GPU, as `bc7::bc7_block` gives — GitHub's virtual
+/// Metal GPU returned opaque black for them in hardware. The sampled path keeps the hardware decode
+/// and its direct view.
+#[test]
+fn bc7_is_decoded_in_the_shader_on_the_exact_path() {
+    let Some(g) = gpu() else { return };
+    let scratch = Scratch::new("bc7");
+    let (mut exact, mut sampled) = (renderer(&g, true), renderer(&g, false));
+    // Every eighth block reserved, the rest the fixture's own valid blocks.
+    let (_, mut src) = open(&fixtures().join("synthetic_hap7.mov"), AlphaMode::Straight);
+    let Decoded::Planes { width, height, planes, .. } = src.decode(0).unwrap() else { panic!("planes") };
+    let mut blocks = planes[0].data.clone();
+    for b in blocks.chunks_exact_mut(16).step_by(8) {
+        b.fill(0);
+    }
+    let reserved = blocks.chunks_exact(16).filter(|b| b[0] == 0).count();
+    let path = scratch.0.join("reserved.mov");
+    std::fs::write(&path, video_movie(b"Hap7", width as u16, height as u16, &[hap_frame(0xAC, &blocks)])).unwrap();
+    let (_, mut src) = open(&path, AlphaMode::Straight);
+    let d = src.decode(0).unwrap();
+    let cpu = d.to_rgba().unwrap();
+    assert!(reserved > 0 && cpu.as_chunks::<4>().0.contains(&[0, 0, 0, 0]));
+    assert_eq!(diff(&cpu, &render(&g, &mut exact, &d)), (0, 0), "exact");
+    assert!(exact.direct_view().is_none(), "exact: BC7 is integer texels, decoded by the conversion pass");
+    render(&g, &mut sampled, &d);
+    assert!(sampled.direct_view().is_some(), "sampled: BC7 keeps the hardware decode and its direct view");
 }
 
 /// naga (the translator wgpu runs) validates every conversion shader and writes it for both

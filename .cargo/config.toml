@@ -1,0 +1,15 @@
+# The oldest macOS the binaries of this repo target, on both halves of a universal build (rustc's own
+# default is 11.0 for aarch64-apple-darwin but 10.12 for x86_64-apple-darwin). Below 10.14.4 the
+# macOS SDK links CoreMedia's Swift overlay as `@rpath/libswiftCoreMedia.dylib` (Swift was not yet
+# part of the OS), and an x86_64 binary built at 10.12 does not load: "Library not loaded:
+# @rpath/libswiftCoreMedia.dylib ... no LC_RPATH's found" (measured 2026-11-14). An environment
+# variable of the same name still wins. Crates that depend on dxvkit-plus-apple set the same in their
+# own build (docs/ARCHITECTURE.md, "Apple targets").
+#
+# iOS: with no IPHONEOS_DEPLOYMENT_TARGET set, rustc links for its default 10.0 while the cc crate
+# compiles libzstd's C for the SDK's own version (27.2), and the link fails ("Undefined symbols:
+# ___chkstk_darwin", measured 2026-11-14). Any value set aligns both (10.0 links too); 15.0 is this
+# repo's choice for its own builds; the app that ships sets its own floor.
+[env]
+MACOSX_DEPLOYMENT_TARGET = { value = "11.0", force = false }
+IPHONEOS_DEPLOYMENT_TARGET = { value = "15.0", force = false }

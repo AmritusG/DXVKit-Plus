@@ -142,7 +142,8 @@ fn probe(args: &Args) -> Result<(), String> {
             o.insert("zstd_backend".into(), serde_json::json!(ZSTD_BACKEND));
         }
         if info.kind == source::SourceKind::Dxv {
-            o.insert("dxv_variant".into(), serde_json::json!(dxv_variant(path)));
+            // The variant by its DXVKit name ("DXT1", "legacy DXT5"), as before 0.9.0.
+            o.insert("dxv_variant".into(), serde_json::json!(info.dxv_variant.map(dxvkit_plus_core::dxv::Variant::name)));
             o.insert("alpha_mode".into(), serde_json::json!(opts.alpha_mode));
         }
         if let Some(tc) = &info.timecode {
@@ -151,16 +152,6 @@ fn probe(args: &Args) -> Result<(), String> {
     }
     json_line(&v);
     Ok(())
-}
-
-/// The DXV variant of a file's first packet (`None` when it does not parse).
-fn dxv_variant(path: &str) -> Option<&'static str> {
-    use dxvkit_plus_core::container::{Codec, Movie};
-    let movie = Movie::open(Path::new(path)).ok()?;
-    let track = movie.track(Codec::Dxv)?;
-    let mut packet = Vec::new();
-    movie.read_sample(track, 0, &mut packet).ok()?;
-    dxvkit_plus_core::dxv::parse_header(&packet).ok().map(|h| h.variant.name())
 }
 
 pub fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {

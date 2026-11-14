@@ -1,0 +1,185 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 1.26s
+     Running unittests src/lib.rs (target/release/deps/glance_gpu-e4c100f862cd8ab2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/exact.rs (target/release/deps/exact-53b608e192fe2eff)
+
+running 9 tests
+test a_clip_larger_than_the_gpu_allows_is_an_error_value ... FAILED
+test hap_hdr_plays_and_matches_dxvkit_plus ... ok
+test reserved_bc7_blocks_are_shown_and_their_value_is_the_gpus ... ok
+test the_block_path_is_per_view_and_only_the_exact_one_is_exact ... ok
+test a_flipped_bit_and_the_wrong_alpha_type_are_caught ... ok
+test dxvkit_vector_pictures_hash_to_dxvkits_reference_rgba ... ok
+test os_codec_fixtures_route_to_the_os_decoder_and_show ... ok
+test every_fixture_frame_equals_the_cpu_reference ... ok
+test every_variant_at_every_size_equals_the_cpu_reference ... ok
+
+failures:
+
+---- a_clip_larger_than_the_gpu_allows_is_an_error_value stdout ----
+largest texture: default device 16384, the family's device 16384
+
+thread 'a_clip_larger_than_the_gpu_allows_is_an_error_value' (33463168) panicked at crates/glance-gpu/tests/exact.rs:248:113:
+called `Result::unwrap()` on an `Err` value: Hap("frame size 16388x4 out of range")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_clip_larger_than_the_gpu_allows_is_an_error_value
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s
+
+error: test failed, to rerun pass `-p glance-gpu --test exact`
+     Running tests/present.rs (target/release/deps/present-811c618940470f81)
+
+running 3 tests
+test straight_colour_is_multiplied_by_its_alpha ... ok
+test premultiplied_colour_goes_out_as_stored ... ok
+test the_alpha_switch_recomposites_without_a_new_frame ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/release/deps/glance_media-c1378df9763be4dc)
+
+running 3 tests
+test tests::a_dxv_variant_is_read_from_the_planes ... ok
+test tests::hap_is_named_by_fourcc_and_unknown_codecs_keep_theirs ... ok
+test tests::dxv_alpha_is_the_users_choice_and_hap_alpha_is_straight ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/routing.rs (target/release/deps/routing-5f0d9165cdfb1cf9)
+
+running 6 tests
+test a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track ... FAILED
+test every_dxv_and_hap_variant_routes_by_what_the_file_holds ... ok
+test the_committed_fixtures_route_as_their_content_says ... ok
+test what_nothing_plays_gets_swift_glances_line ... FAILED
+test hostile_files_give_a_message_never_a_crash_or_a_hang ... ok
+test amrits_test_files_come_back ... FAILED
+
+failures:
+
+---- a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track stdout ----
+
+thread 'a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track' (33464150) panicked at crates/glance-media/tests/routing.rs:128:5:
+assertion `left == right` failed
+  left: Dxv
+ right: Hap
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- what_nothing_plays_gets_swift_glances_line stdout ----
+
+thread 'what_nothing_plays_gets_swift_glances_line' (33464155) panicked at crates/glance-media/tests/routing.rs:16:21:
+<tmp>/glance-core-messages-51922/cut.MoV routed to Hap
+
+---- amrits_test_files_come_back stdout ----
+174 files, 6 refused:
+adv_garbage.mov: MOV files are not supported
+adv_trunc_hapm_50pct.mov: MOV files are not supported
+adv_trunc_hapm_no_moov.mov: MOV files are not supported
+adv_zero.mov: MOV files are not supported
+bad-audio-fixtures/bad-audio2.mov: MOV files are not supported
+YCG6-DXV3_Hap5.mov: MOV files are not supported
+
+thread 'amrits_test_files_come_back' (33464151) panicked at crates/glance-media/tests/routing.rs:252:5:
+assertion `left == right` failed
+  left: (174, 6)
+ right: (174, 7)
+
+
+failures:
+    a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track
+    amrits_test_files_come_back
+    what_nothing_plays_gets_swift_glances_line
+
+test result: FAILED. 3 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.02s
+
+error: test failed, to rerun pass `-p glance-media --test routing`
+     Running tests/swift_parity.rs (target/release/deps/swift_parity-d56e8c9c578ee1e4)
+
+running 3 tests
+test the_clip_key_is_the_documented_bytes ... ok
+test the_committed_fixtures_route_key_and_probe_as_in_swift_glance ... ok
+test amrits_test_files_route_key_and_probe_as_in_swift_glance ... FAILED
+
+failures:
+
+---- amrits_test_files_route_key_and_probe_as_in_swift_glance stdout ----
+
+thread 'amrits_test_files_route_key_and_probe_as_in_swift_glance' (33485802) panicked at crates/glance-media/tests/swift_parity.rs:98:5:
+1 differences from Swift Glance:
+adv_trunc_hapm_midframe.mov: route: Rust "hap", Swift "hap"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    amrits_test_files_route_key_and_probe_as_in_swift_glance
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+error: test failed, to rerun pass `-p glance-media --test swift_parity`
+     Running unittests src/lib.rs (target/release/deps/glance_playback-e5b2516451929f35)
+
+running 2 tests
+test tests::cadence_counts_showings_and_skips_across_the_loop_point ... ok
+test tests::percentiles_are_nearest_rank ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/glance_proof-c709497eeaaf0d37)
+
+running 2 tests
+test hapq::tests::swifts_formula_at_known_points ... ok
+test hapq::tests::the_swift_convention_here_is_swift_glances_decoder ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/release/deps/glance_ui-52459fa9c9dcc370)
+
+running 1 test
+test tests::a_picture_fits_the_space_with_its_aspect_kept ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/screen.rs (target/release/deps/screen-c23d80d4ddc7ad56)
+
+running 3 tests
+test the_checkerboard_is_8_point_squares_only_under_the_picture ... ok
+test at_one_to_one_the_screen_is_the_exact_picture ... ok
+test window_scaled_screens_are_within_1_of_the_bilinear_model ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+   Doc-tests glance_gpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests glance_media
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests glance_playback
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests glance_ui
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 3 targets failed:
+    `-p glance-gpu --test exact`
+    `-p glance-media --test routing`
+    `-p glance-media --test swift_parity`

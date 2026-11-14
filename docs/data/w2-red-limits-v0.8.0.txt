@@ -1,0 +1,30 @@
+
+running 3 tests
+test a_tall_frame_renders_where_the_device_holds_it ... ok
+test the_device_asks_for_the_adapters_largest_texture ... FAILED
+test a_frame_larger_than_the_device_is_an_error_value ... FAILED
+
+failures:
+
+---- the_device_asks_for_the_adapters_largest_texture stdout ----
+adapter limit 32768, device limit 8192
+
+thread 'the_device_asks_for_the_adapters_largest_texture' (33139987) panicked at crates/dxvkit-plus-wgpu/tests/limits.rs:48:5:
+assertion `left == right` failed
+  left: 8192
+ right: 16384
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_frame_larger_than_the_device_is_an_error_value stdout ----
+
+thread 'a_frame_larger_than_the_device_is_an_error_value' (33139985) panicked at crates/dxvkit-plus-wgpu/tests/limits.rs:65:13:
+Sampled Rgba8: wgpu raised Some(Validation { source: ContextError { fn_ident: "Device::create_texture", source: InvalidDimension(LimitExceeded { dim: Y, given: 9628, limit: 8192 }), label: "dxvkit-plus-plane" }, description: "Validation Error\n\nCaused by:\n  In Device::create_texture, label = 'dxvkit-plus-plane'\n    Dimension Y value 9628 exceeds the limit of 8192\n" })
+
+
+failures:
+    a_frame_larger_than_the_device_is_an_error_value
+    the_device_asks_for_the_adapters_largest_texture
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+error: test failed, to rerun pass `-p dxvkit-plus-wgpu --test limits`

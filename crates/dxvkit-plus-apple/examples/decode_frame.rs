@@ -5,7 +5,7 @@
 //! cargo run -p dxvkit-plus-apple --example decode_frame -- clip.mov 42
 //! ```
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use dxvkit_plus_core::source::{self, Decoded, ImportOptions};
     use dxvkit_plus_wgpu::{FrameRenderer, Gpu, NativePlanes};
@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn main() {
     eprintln!("this example needs macOS (native backend)");
 }
