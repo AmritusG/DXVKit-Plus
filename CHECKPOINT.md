@@ -1,42 +1,43 @@
 # DXVKit-Plus CHECKPOINT
 
-Wave: w1-exact-path. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-14_w1-exact-path_brief.md. Machine: Mac17,6 (Apple M5 Max, macOS 27.0.1).
+Wave: w2-probe-findings-and-api-gaps. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-14_w2-probe-findings-and-api-gaps_brief.md (with the c1-findings r2 brief and the glance-family-needs brief, FINDINGS 6). Machine: Mac17,6 (Apple M5 Max, macOS 27.0.1). Base: d2ec731 (v0.8.0). Target tag: v0.9.0.
 
 ## DONE
-- Clone: AmritusG/DXVKit-Plus @ 09f1dbc (v0.7.1) into this folder; baseline `cargo test --workspace` green (every suite `ok`).
-- DIAGNOSE 1-3 (read): renderer / `core::bc` / Glance's shader / naga 30.0.1 lowering read; facts with a source each are the DIAGNOSE section of docs/handoffs/w1-exact-path.md.
-- DIAGNOSE finding: the HAP Q CPU oracle was `f64` and rounds exact halves down: 574 662 of 200 000 000 random texels differ from the exact rational rounded half up; 2.14% of the HapY / HapM fixture texels, 7.02% of Metric_01_HapM.mov (30 frames), always by 1 (docs/data/w1-hapq-oracle.txt). No shader can equal it, so the oracle became exact integers.
-- RED first: tests/exact.rs on unmodified v0.7.1 -> `test result: FAILED. 0 passed; 2 failed`, 93 of 99 sweep rows and 35 of 63 fixture rows differ (docs/data/w1-exact-path-red-v0.7.1.txt).
-- core: `bc::bc3_block_exact` returns whole thirds / 35ths (u16), `hap::ycocg_scaled_exact` (integer, half up) replaces `ycocg_scaled_to_rgb_f`; unit test against i128 on 8 604 128 inputs; core lib tests 49 passed.
-- wgpu: `BlockPath { Sampled = 0, Exact = 1 }` (default Sampled), `FrameRenderer::with_path / set_path / path`, `BC_EXACT_WGSL` (pipeline built on first exact frame), values pinned in tests/abi.rs.
-- GREEN: tests/exact.rs `7 passed; 0 failed` with `--include-ignored`: 99 sweep rows (9 variants + 2 premultiplied readings x 9 sizes) and 63 fixture rows (488 frames) at max diff 0; bit-flip control for every variant; staged + decode_into; path switching; naga MSL + HLSL translation (docs/data/w1-exact-path-green-v0.8.0.txt).
-- CLI: `--block-path sampled|exact` for decode / bench / verify; tests/cli.rs `block_path_exact_verifies_with_zero_tolerance` passes.
-- Real clips (read-only), final release binary, `verify --block-path exact`, straight and premultiplied: 14 rows pass, 2 544 frame comparisons (1 572 distinct: only the DXT5 clip differs between alpha modes), max 0 (docs/data/w1-exact-path-verify-real-m5max.jsonl).
-- Sampled path unchanged: GPU PNG of frame 17 byte-identical between the v0.7.1 binary and 0.8.0 on Metric_01_HapM, DXT5-DXV3, glenc_hap1_1920x1080_chunks4.
-- Finding: v0.7.1's own `verify` fails on Metric_01_HapM / HapY (sampled HAP Q max 3, allowed 2). Sampled HAP Q tolerance in `verify` is now 3; documented as measured.
-- Measured (release, Arena running on the same GPU): conversion pass per 1080p layer (wall time, GPU waited for) 30-48 us sampled, 50-73 us exact (HAP Q 84-93); 16 layers 0.5-0.8 ms/step sampled, 0.8-1.5 exact (docs/data/w1-exact-path-convert-cost-m5max.jsonl). Pipelined throughput exact / sampled median 1.04 (0.70-1.25, 18 cases, 5 rounds); 16 layers with direct view 1792 / 1006 / 1279 / 671 steps/s sampled (Hap1 / Hap5 / DXT1 / DXT5, `pipelined2_direct`) vs 925 / 706 / 884 / 611 for the same variant on the exact path (docs/data/w1-exact-path-layers-m5max.jsonl).
-- Docs: README (release note, codec table, "Exact path (0.8.0)", CLI), docs/ARCHITECTURE.md ("Block paths (0.8.0)", accuracy contracts, C ABI table), CHANGELOG 0.8.0; workspace version 0.8.0.
-- Verifier (cc-kit:verifier) run on this file and the handoff draft: 28 CONFIRMED, 5 UNPROVEN, 7 WRONG; every WRONG fixed (counts and wording in docs: 8 604 128 inputs, 35 files, 59 lint sites, "one or more channels", "every tested size", "wall time" for the pass cost, sampled bounds stated as measured), every UNPROVEN restated or re-measured.
-- Gate on the final tree: `cargo fmt --all --check` ok; `cargo clippy --workspace --all-targets -- -D warnings` exit 0 (after allowing clippy 1.99's new `chunks_exact_to_as_chunks`, which fails v0.7.1 too: 59 pre-existing sites; this wave adds none); `DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace` exit 0, 123 tests passed, 0 failed; `cargo deny check licenses bans sources` -> `bans ok, licenses ok, sources ok`; fuzz 60 s x 8 threads: 12 723 491 execs, 0 crashes, 0 hangs (docs/data/w1-fuzz-60s.txt; an earlier run with the benchmarks' load: 5 254 928, 0 crashes). No file under tests/fixtures changed (sidecar hash test passes).
-- Released: commit 9bc1977 on main, annotated tag v0.8.0, both pushed (`git ls-remote`: refs/heads/main and refs/tags/v0.8.0^{} = 9bc1977).
-- Handoff: docs/handoffs/w1-exact-path.md, copied to ~/claude-handoffs/DXVKit-Plus_2026-11-14_w1-exact-path-result.md; note for glance-core: ~/claude-handoffs/glance-core_2026-11-14_note-from-DXVKit-Plus-w1-exact-path.md.
-- WAVE CLOSED 2026-11-14.
+- Read: the three briefs; glance-core (read-only) c1-exact-picture.md DIAGNOSE 1, 04-C1-RESULTS §4 / §6, route.rs, tests/routing.rs, tests/swift_parity.rs, glance-gpu open_gpu / check_size; Swift Glance PlayerModel.swift:209-229, HAPDemuxer.swift (demux, parseMoov, parseTrakIfVideo, buildFrameIndex), DXVKit mov.c read_track / open loop / build_samples, DXVDetector.swift names, AlphaType.swift probeAVFoundation, AVPlaybackController.inspect; this repo's source.rs, container.rs, wgpu lib.rs / convert.rs, bc7.rs, apple decode.rs / lib.rs, backend.rs, exact.rs.
+- A real fragmented MP4 made with AVFoundation (AVAssetWriter, CMAF segments): ftyp + moov (stsz count 0, mvex) + 2 x moof/mdat, 4 618 bytes (scratchpad; generator to be committed as scripts/make-fragmented-mp4.swift).
+
+- RED on v0.8.0 (docs/data/w2-red-*-v0.8.0.txt): core tests/probe.rs 4 failed (findings 2-5); wgpu tests/limits.rs 2 failed (finding 1; adapter 32768, device 8192); exact.rs bc7_is_decoded_in_the_shader_on_the_exact_path failed at the direct_view assertion (finding 8 — on the M5 Max the hardware already gives reserved = [0,0,0,0], so the observable RED is the route, not the value); api_gaps.rs did not compile (18 errors: finding 7 + gaps).
+- GREEN: container per-track damage (DamagedTrack, Movie::open_all, VideoTrack::index), cut-off samples kept and failed per read, first_video_fourcc(_in); probe: content first, Swift track order, ImportOptions::track, backend fallback; MediaInfo track / dxv_variant / alpha (StatedAlpha) / codec_name / container_name; names module (codec_name, codec_label, container_name, unsupported_message); NativeInfo::alpha + Default; Apple island stated alpha (Swift's rule). Core 86 tests pass; apple tests/native.rs 6 pass incl. the real fragmented MP4 (tests/fixtures/frag_h264.mp4, ours, CC0, sidecar; generator scripts/make-fragmented-mp4.swift).
+- Names: Vidvox HapVideoDRAFT.md "Names and Identifiers": Hap7 "Hap R", HapH "Hap HDR" -> "HAP R" / "HAP HDR" in the family's case.
+
+- Finding 1 GREEN: Gpu requests adapter limit min MAX_EDGE; check_device_size in create_bc_texture*, ensure_output, prepare_planes / upload_from_stage, raw textures, render_native; Apple imports refuse too. wgpu tests/limits.rs 3 pass; apple a_frame_larger_than_the_device_is_refused_by_both_imports passes.
+- Finding 8 GREEN: BC_EXACT_WGSL mode 4 (BC7, tables generated from core::bc7); exact.rs with Hap7 in the sweep (108 rows), 69 fixture rows / 504 frames (HAP R + 5 LMB7), flip control 13, staging 48 frames, reserved-block test: all max 0. Cost (convert_cost, 1080p LMB7 encoded from Metric_01_HapM, Arena running): exact 213-225 us/pass median vs sampled 36-56; 16 layers 3.4 vs 0.85 ms/step (docs/data/w2-bc7-convert-cost-m5max.jsonl, 2 rounds; round 1 medians contended).
+- Finding 6: rustup stable 1.100.0 (RUSTC/CARGO explicit; Homebrew 1.99.1 has no cross std). x86_64: check --all-targets + release build pass; binary failed to load (@rpath/libswiftCoreMedia, minos 10.12) -> .cargo/config.toml MACOSX_DEPLOYMENT_TARGET=11.0; then runs under Rosetta, verify exact on HapM / Hap7 / ProRes 4444 pass max 0. iOS: island cfg widened to ios; check passes; example links once IPHONEOS_DEPLOYMENT_TARGET is set (unset: ___chkstk_darwin, cc builds libzstd for SDK 27.2 vs rustc 10.0; explicit 10.0 also links; repo uses 15.0); not run (docs/data/w2-apple-targets.txt).
+- glance-core @ a0c2d04 run against this tree from a scratch copy (glance-core untouched): one compile change (MediaInfo literal lib.rs:88) + 5 expected test changes (docs/data/w2-glance-core-c1-tests-on-0.9.0.txt). Note written: ~/claude-handoffs/glance-core_2026-11-14_note-from-DXVKit-Plus-w2.md (commit hash placeholder until the commit).
+- Fuzz 60 s x 8: 13 562 807 execs, 0 crashes, 0 hangs (docs/data/w2-fuzz-60s.txt). cargo deny: bans ok, licenses ok, sources ok. Clippy clean on 1.99.1 and 1.100.0.
+- Gate: fmt ok; clippy -D warnings exit 0; DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace: 139 passed, 0 failed, 1 ignored; no existing fixture changed (fixture count 38 with frag_h264.mp4).
+- Docs: CHANGELOG 0.9.0, README (release note, codec table, Probing section, BC7 exact), ARCHITECTURE (Probe and routing, BC7 contract, ABI rows, Apple targets); version 0.9.0; CLI probe's dxv_variant from MediaInfo (helper deleted); homepage field removed (cargo 1.100 lint).
+
+- Real clips (release, verify --block-path exact, 167 of 174 movie files; 7 more 3840x9626 SCANTEST copies skipped, 20 min each): 129 DXV / HAP files, 24 036 block frames, max 0; scantest4 / scantest5 (3840x9626, 605 frames) pass on the 16384 device; 17 failing rows all pre-existing or deliberate (13 unplayable / damaged; 4 native seek mismatches identical on v0.8.0 = W3) (docs/data/w2-verify-testfiles-exact-m5max.jsonl). Probe v0.8.0 vs 0.9.0 over all 174: only adv_trunc_hapm_midframe.mov differs (now HAP) (docs/data/w2-probe-diff-testfiles-v0.8.0-vs-0.9.0.txt). Probe now keeps our parser's error when the backend refuses too (test in probe.rs).
+- Handoff draft: docs/handoffs/w2-probe-findings-and-api-gaps.md.
+
+- Verifier (cc-kit:verifier) on CHECKPOINT, handoff and glance-core note: 33 CONFIRMED, 9 UNPROVEN, 1 WRONG. WRONG fixed (note's location of the ".png / .lmbd" sentence). Re-measured: iOS link fails only with no deployment variable set (any value links) - docs corrected. Logs saved: docs/data/w2-native-seek-v0.8.0-vs-0.9.0.txt, w2-verify-testfiles-stderr.txt, w2-glance-core-compile-on-0.9.0.txt, w2-apple-targets.txt. Remaining unproven stated in the handoff.
+- Final gate after the last code change: fmt ok, clippy exit 0, 139 passed / 0 failed / 1 ignored (GPU required), deny ok.
+- Released: commit 70b5c74 on main, annotated tag v0.9.0, both pushed (ls-remote: main and v0.9.0^{} = 70b5c74).
+- Handoff: docs/handoffs/w2-probe-findings-and-api-gaps.md -> ~/claude-handoffs/DXVKit-Plus_2026-11-14_w2-probe-findings-and-api-gaps-result.md; note for glance-core: ~/claude-handoffs/glance-core_2026-11-14_note-from-DXVKit-Plus-w2.md.
+- WAVE CLOSED 2026-11-15.
 
 ## NEXT
-- Wave closed: nothing queued in this repo. The next waves (item 3 container timing, item 4 audio, item 6 API gaps, item 2 Windows backend, item 5 encoders) each start from their own brief from Cowork.
+- Wave closed: nothing queued here. Following waves per the brief: W3 container timing (incl. the native frame count 768/753 and the native seek mismatches seen on 4 real clips, identical on v0.8.0), W4 audio, W5 Windows backend, W6 encoders - each from its own brief.
 
 ## STATE
-- Test media (Amrit's, read-only, never committed): ~/Desktop/_M5-to-M3_2026-10-08/Movies/Testfiles/ (Metric_01_HapM.mov, Metric_01_HapY.mov, DXT5-DXV3.mov, DXT1-DXV.mov, glenc_hap1_1920x1080_chunks4.mov, glenc_hap5_1920x1080_chunks4.mov, glenc_hapm_LEAKTEST_4k.mov). Data files carry basenames only.
-- No glenc-cli / dxvtool on this Mac: the size sweep uses movies the test writes itself (stored HAP sections, stored DXV3 / DXDI packets, random blocks); nothing new is committed under tests/fixtures.
-- Brief's "backends.md §12.2 item 18" is the HAP parser on Vidvox packs (roadmap: C1), not a shader fact; §12.2 has no integer-texture item. Recorded as a mis-reference, not a blocker.
-- wgpu / naga in Cargo.lock: 30.0.1. naga is a dev-dependency of dxvkit-plus-wgpu (wgsl-in, msl-out, hlsl-out) for the translation test.
-- The exact path has run on Metal only; HLSL is translated by naga, not compiled or run (Windows wave).
-- Resolume Arena was running during every measurement (not touched): absolute steps/s are depressed and spread widely; A/B was interleaved.
+- Test media (Amrit's, read-only): ~/Desktop/_M5-to-M3_2026-10-08/Movies/Testfiles/.
+- Toolchain rustc 1.99.1; targets installed: aarch64-apple-darwin, aarch64-apple-ios, x86_64-apple-darwin, x86_64-pc-windows-msvc; iPhoneOS27.2.sdk present.
 
 ## OPEN
 
 ## IDEAS
-- Run the exactness sweep over the Vidvox HAP sample packs once they are on this Mac (the brief's §12.2 item 18 belongs to glance-core C1).
-- Convert the 59 `chunks_exact(N)` sites to `as_chunks` and drop the lint allowance (a change of its own; decoders with pinned output).
-- `dxvkit-plus bench --layers 1` reports `gpu_convert_passes_sum` 0.000 on this Mac (one pass: begin and end timestamps equal); `examples/convert_cost.rs` measures the pass instead. The CLI's timestamp bracket could batch passes the same way.
-- A scaled (bilinear) exact mode is not needed here: the renderer always converts at 1:1 and the consumer filters the RGBA8 result.
+- BC7 on the exact path: a per-block compute pre-pass (decode each block once, not per fragment) to cut its 4-6x pass cost.
+- Run the 7 skipped 3840x9626 SCANTEST copies through verify when the GPU is free (20 min each).
+- (carried) Convert the 59 `chunks_exact(N)` sites to `as_chunks` and drop the lint allowance.
+- (carried) `dxvkit-plus bench --layers 1` reports `gpu_convert_passes_sum` 0.000 on this Mac.
