@@ -146,7 +146,62 @@ container's sample count beside the frame count.
    Keep Swift's rule in both, or change both?
 
 ## Commits
-COMMIT_LINE
+- 72763ed DXVKit Plus 0.10.0 (code, tests, fixtures, data, docs) — on main, annotated tag v0.10.0, both pushed.
+- This handoff: the docs commit after it.
 
 ## RECEIPTS
-RECEIPTS_BLOCK
+```
+$ git log -1 --oneline; git ls-remote origin main refs/tags/v0.10.0^{}
+72763ed DXVKit Plus 0.10.0: container timing — every frame at its real start, on every path
+72763ed1d9171d9141e369179f1ca982e71587c9	refs/heads/main
+72763ed1d9171d9141e369179f1ca982e71587c9	refs/tags/v0.10.0^{}
+
+$ cargo fmt --all -- --check  -> exit 0
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.91s
+$ DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast  (exit 0; summed: 160 passed, 0 failed, 1 ignored)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.47s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.02s
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.20s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.32s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.72s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.09s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.71s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+$ cargo deny check licenses bans sources
+bans ok, licenses ok, sources ok
+
+$ fuzz (docs/data/w3-fuzz-60s.txt)
+fuzz: 60 s, 8 threads, corpus 223 (hap frames 41, dxv packets 82, files 67, lmbd 33), execs 12707220 (211773/s), crashes 0, hangs 0, slowest input 161.4 ms
+
+$ cross-test summaries
+{"summary": true, "equal": 168, "different": 0, "not_compared": 6}
+{"summary": true, "equal": 5, "different": 0, "not_compared": 0}
+{"summary": true, "equal": 11, "different": 0, "not_compared": 0}
+
+$ ls -la tests/fixtures/edit_* tests/fixtures/jitter_*
+-rw-r--r-- 20041 tests/fixtures/edit_dxt1_empty_trim.mov
+-rw-r--r-- 1001 tests/fixtures/edit_dxt1_empty_trim.mov.attribution
+-rw-r--r-- 8867 tests/fixtures/edit_h264_bframes.mov
+-rw-r--r-- 1031 tests/fixtures/edit_h264_bframes.mov.attribution
+-rw-r--r-- 17209 tests/fixtures/edit_hap1_empty_trim_repeat.mov
+-rw-r--r-- 1080 tests/fixtures/edit_hap1_empty_trim_repeat.mov.attribution
+-rw-r--r-- 29349 tests/fixtures/edit_hap1_scaled.mov
+-rw-r--r-- 968 tests/fixtures/edit_hap1_scaled.mov.attribution
+-rw-r--r-- 101027 tests/fixtures/jitter_prores4444_30.mov
+-rw-r--r-- 999 tests/fixtures/jitter_prores4444_30.mov.attribution
+```

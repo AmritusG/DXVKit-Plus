@@ -21,8 +21,11 @@ Wave: w3-container-timing. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-15_w3-co
 - Full Testfiles verify exact (167 rows, 42 min): 155 pass vs W2 149; fixed the 5 timing clips; broke none; 129 DXV/HAP files 24 036 block frames max 0; native 26 / 26; 12 failing = W2's deliberate damaged files (docs/data/w3-verify-testfiles-exact-m5max.jsonl).
 - Final gate: fmt ok; clippy -D warnings exit 0; DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast: 160 passed, 0 failed, 1 ignored; cargo deny ok; existing fixtures unchanged.
 
+- Released: commit 72763ed on main, annotated tag v0.10.0, both pushed (ls-remote main and v0.10.0^{} = 72763ed). glance-core note: ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w3.md. Handoff docs/handoffs/w3-container-timing.md -> ~/claude-handoffs/DXVKit-Plus_2026-11-15_w3-container-timing-result.md.
+- WAVE CLOSED 2026-11-15.
+
 ## NEXT
-- Commit + tag v0.10.0 + push; fill COMMIT / RECEIPTS in docs/handoffs/w3-container-timing.md; glance-core note; mailbox copy.
+- Wave closed. Two questions for Amrit in the handoff (transport on real frame starts; Swift's drop of a sample starting before an edit). Following waves per brief: W4 audio, W5 Windows backend, W6 encoders.
 
 ## STATE
 - Test media (Amrit's, read-only): ~/Desktop/_M5-to-M3_2026-10-08/Movies/Testfiles/.
@@ -30,7 +33,6 @@ Wave: w3-container-timing. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-15_w3-co
 - Handoff name: docs/handoffs/w3-container-timing.md (docs/handoffs/w3.md is an older, unrelated wave — do not touch).
 
 ## OPEN
-- [ ] Commit, tag v0.10.0, push; handoff receipts; glance-core note; mailbox copy
 
 ## IDEAS
 - BC7 on the exact path: a per-block compute pre-pass (decode each block once, not per fragment) to cut its 4-6x pass cost.
