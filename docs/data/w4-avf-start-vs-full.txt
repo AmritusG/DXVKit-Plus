@@ -1,0 +1,20 @@
+AVFoundation start-read (reader.timeRange from 3/2 s) vs its own full read, same frames, one run:
+hap-testclips/std_h264_audio.mov                     frames 154350 differing 146914 max 2.72e-05
+hap-testclips/std_hevc_audio.mov                     frames 154350 differing 146914 max 2.72e-05
+hap-testclips/std_indigofera_h264_audio.mp4          frames 1368256 differing 0 max 0
+mal Quality With Alpha_H.264 [00.00.00-00.00.00].mp4 frames 980400 differing 0 max 0
+l Quality With Alpha_H.264 [00.00.00-00.00.00]_2.mp4 frames 1247280 differing 0 max 0
+hap-testclips/std_prores_audio.mov                   frames 154350 differing 146914 max 2.72e-05
+hap-testclips/test-hap1-audio.mov                    frames 154010 differing 0 max 0
+bad-audio-fixtures/bad-audio.mov                     frames 168000 differing 231291 max 0.101
+bad-audio-fixtures/good-audio.mov                    frames 168000 differing 231291 max 0.101
+Second run (separate processes, ~1 h later, identical numbers):
+hap-testclips/std_h264_audio.mov                     frames 154350 differing 146914 max 2.72e-05
+hap-testclips/std_hevc_audio.mov                     frames 154350 differing 146914 max 2.72e-05
+hap-testclips/std_indigofera_h264_audio.mp4          frames 1368256 differing 0 max 0
+mal Quality With Alpha_H.264 [00.00.00-00.00.00].mp4 frames 980400 differing 0 max 0
+l Quality With Alpha_H.264 [00.00.00-00.00.00]_2.mp4 frames 1247280 differing 0 max 0
+hap-testclips/std_prores_audio.mov                   frames 154350 differing 146914 max 2.72e-05
+hap-testclips/test-hap1-audio.mov                    frames 154010 differing 0 max 0
+bad-audio-fixtures/bad-audio.mov                     frames 168000 differing 231291 max 0.101
+bad-audio-fixtures/good-audio.mov                    frames 168000 differing 231291 max 0.101

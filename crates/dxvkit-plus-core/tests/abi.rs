@@ -41,6 +41,9 @@ fn enum_values_are_pinned() {
     // 0.10.0.
     use dxvkit_plus_core::timing::RateSource as R;
     assert_eq!([R::MeanRate, R::DominantDelta, R::MinFrameDuration, R::Nominal, R::Fallback].map(|v| v as u32), [0, 1, 2, 3, 4]);
+    // 0.11.0.
+    use dxvkit_plus_core::audio::AudioCodec as A;
+    assert_eq!([A::Pcm, A::Aac, A::Other].map(|v| v as u32), [0, 1, 2]);
     assert_eq!(Direction::ALL.map(|v| v as u32), [0, 1, 2, 3]);
     assert_eq!(SyncMode::ALL.map(|v| v as u32), [0, 1, 2, 3]);
     // The transport's own index helpers agree with the ABI values.

@@ -20,7 +20,7 @@
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
 //! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `dxv::decode_blocks` (sometimes
 //! at a random size, HQ sections sometimes in parallel) + CPU RGBA straight and premultiplied, `first_video_fourcc_in`, `Movie::from_source`
-//! (damaged tracks too, 0.10.0 frame timing and its queries) + `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
+//! (damaged tracks too, 0.10.0 frame timing and its queries, 0.11.0 sound tracks: timing queries, PCM reads and seeks) + `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
 //! through a contract-checking sink, compared with it) + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
@@ -297,6 +297,34 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                     let _ = ti.frame_at(dxvkit_plus_core::timing::MediaTime::new(i64::MIN, 0));
                     if let Some(s) = ti.sample_of_frame(0) {
                         assert!(s < t.frame_count(), "a frame's sample is in the table");
+                    }
+                }
+                // 0.11.0: sound tracks — descriptions, timing queries at the ends and past them,
+                // PCM reads and seeks (an AAC track without a platform decoder must be an error).
+                for a in &m.audio {
+                    let ti = &a.timing;
+                    let n = ti.frame_count();
+                    for f in [0, n / 2, n.saturating_sub(1), n, u64::MAX] {
+                        if let Some(p) = ti.position_of(f) {
+                            let _ = ti.frame_at(p);
+                        }
+                        let _ = ti.source_frame(f);
+                    }
+                    let _ = ti.frame_at(dxvkit_plus_core::timing::MediaTime::new(i64::MIN, 0));
+                    let _ = dxvkit_plus_core::names::audio_codec_label(a);
+                }
+                for k in 0..(m.audio.len() + m.damaged_audio.len()).min(4) as u32 {
+                    if let Ok(mut rd) = dxvkit_plus_core::audio::AudioReader::open(&m, k, None) {
+                        for _ in 0..3 {
+                            if !matches!(rd.read(4096), Ok(Some(_))) {
+                                break;
+                            }
+                        }
+                        let n = rd.timing().frame_count();
+                        for at in [n / 3, n.saturating_sub(1), n] {
+                            rd.seek_frame(at);
+                            let _ = rd.read(1000);
+                        }
                     }
                 }
                 for t in m.tracks.clone() {

@@ -1,0 +1,30 @@
+AAC decode repeatability on the M5 Max (macOS 27.0.1), 2026-11-15. AAC decoder components (kAudioFormatProperty_Decoders): aac -> adec/aac /appl only; aach -> adec/aach/appl only.
+Six runs 20 s apart, SHA-256 prefixes of the f32 samples (std_h264_audio.mov, std_indigofera_h264_audio.mp4, good-audio.mov; audio_aac_priming.mov), AVFoundation (audioprobe) and DXVKit Plus (audio_dump), each its own process:
+run 1 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 1 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 1 avf fixture da7a63909f
+run 1 ours fixture da7a63909f
+run 2 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 2 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 2 avf fixture da7a63909f
+run 2 ours fixture da7a63909f
+run 3 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 3 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 3 avf fixture da7a63909f
+run 3 ours fixture da7a63909f
+run 4 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 4 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 4 avf fixture da7a63909f
+run 4 ours fixture da7a63909f
+run 5 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 5 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 5 avf fixture da7a63909f
+run 5 ours fixture da7a63909f
+run 6 avf  8a58d2fc35 abb32114f9 f695cb684a
+run 6 ours 8a58d2fc35 abb32114f9 f695cb684a 
+run 6 avf fixture da7a63909f
+run 6 ours fixture da7a63909f
+
+Windows where the hashes differed (same binaries, same files): ~10:34-10:35 (our process hashed audio_aac_priming.mov edb45b0c... in 5 runs while AVFoundation hashed da7a6390...; max difference 5.66e-07) and the run in w4-crosstest-testfiles-variant-run.jsonl / w4-crosstest-fixtures-variant-run.jsonl (every AAC track differed from AVFoundation's by <= 5.66e-07 in that pair of processes; the next runs were bit-exact again: w4-crosstest-testfiles.jsonl, w4-crosstest-fixtures.jsonl).
+
+Efficiency cores (taskpolicy -b, same session, console output, not otherwise logged): 8 runs of audio_dump and 4 of audioprobe on audio_aac_priming.mov all hashed da7a63909f452986; normal QoS 12 runs of audio_dump all da7a63909f452986. The variation was not reproduced on demand.

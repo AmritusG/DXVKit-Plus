@@ -12,7 +12,13 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.10.0**: **container timing** — edit lists (`elst`) and composition offsets
+This is release **0.11.0**: **audio tracks** — every sound track of a movie is described
+(`MediaInfo::audio`), PCM in every common layout is read as `f32` with each frame's exact position
+through the edit list, and AAC is decoded by the OS (AudioToolbox on macOS) with its priming
+trimmed as AVFoundation trims it; on the test folder the samples equal what AVFoundation serves for
+34 of its 37 audio tracks (the others: a cut-off file and FLAC, which neither reads, and one GlEnc
+file whose wrapped 16.16 rate we read as its 96 kHz media rate). The transport now maps time to frame through a clip's real frame starts
+([Audio](#audio-0110)). 0.10.0 was **container timing** — edit lists (`elst`) and composition offsets
 (`ctts`) are applied, so frame `n` is the frame that really starts `n`-th, at its exact start, on
 every path (DXV, HAP, LMBD, native) and the same frame Swift Glance's `FrameTiming` names `n`
 (cross-tested on every movie of the test folder). Native clips count the frames the OS decoder
@@ -248,8 +254,41 @@ let start = t.time_of_frame(10);            // MediaTime { value, timescale }, e
 assert_eq!(t.frame_at(start), 10);
 ```
 
-The transport (`transport::Transport`) still steps on the rate's grid; a host that shows a time as a
-frame uses `FrameTiming::frame_at`.
+0.11.0: the transport maps time to frame through the same timing when a clip carries it
+(`transport::Clip::from_timing(source.timing())`); `FrameTiming::nearest_frame` is the audio-master
+clock's pick.
+
+## Audio (0.11.0)
+
+Sound tracks for a host's audio-master clock (`core::audio`); mixing, resampling and device output
+are the host's.
+
+| Track | Read by | Notes |
+| --- | --- | --- |
+| `sowt` / `twos` (16- or 8-bit) | core | version 0 / 1 entries |
+| `in24` / `in32` / `fl32` / `fl64` | core | big-endian unless an `enda` atom says little-endian (GlEnc's `in32`) |
+| `lpcm` (version 2) | core | float or integer, either byte order, signed or unsigned, packed or aligned high / low; non-interleaved refused |
+| AAC (`mp4a` + `esds`) | the platform backend | macOS: AudioToolbox (`dxvkit-plus-apple`); Windows: W5 |
+| anything else (FLAC, MP3, ALAC…) | — | listed in `MediaInfo::audio`; `AudioReader::open` names it in an `Unsupported` error |
+
+```rust
+use dxvkit_plus_core::{audio::AudioReader, container::Movie};
+let movie = Movie::open(path)?;
+let mut r = AudioReader::open(&movie, 0, Some(&dxvkit_plus_apple::AppleBackend))?;
+r.seek(start);                                  // MediaTime: the frame playing then
+while let Some(block) = r.read(4096)? {
+    // block.samples: interleaved f32, block.channels x block.frames, at block.rate;
+    // block.position: the first frame's exact start on the movie timeline.
+}
+```
+
+- **Positions** follow AVFoundation, measured: frames kept per PCM frame through the edit list, an
+  empty edit as silence, no edit list = the track's `tkhd` duration, AAC priming in the edit (or,
+  without a `roll` sample group, AudioToolbox's 2112-frame encoder delay on top);
+  `AudioTiming::position_of(n)` is frame `n`'s real start.
+- **Values** are AVFoundation's: bit-exact on every PCM layout it reads and on the test folder;
+  AAC through the same AudioToolbox decoder, with AVFoundation's one packet of pre-roll after a seek.
+- An undecodable or damaged track is an error value; the picture never waits for it.
 
 ## Probing and routing (0.9.0)
 

@@ -1,0 +1,7 @@
+# W4: glance-core @ a0c2d04 (git archive into a scratch copy; glance-core untouched) built against this tree (path dependencies) with two compile changes: W2's (MediaInfo literal glance-media/src/lib.rs:88 + ..MediaInfo::default()) and W4's (glance-playback/src/lib.rs:46 Clip { frames, rate } -> Clip::new(frames, rate)); cargo test --workspace --release --no-fail-fast, Mac17,6, 2026-11-15.
+# Result: 27 passed, 5 failed — the same 5 tests as on 0.10.0 (docs/data/w3-glance-core-tests-on-0.10.0.txt); nothing new from W4.
+test a_clip_larger_than_the_gpu_allows_is_an_error_value ... FAILED
+test a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track ... FAILED
+test amrits_test_files_come_back ... FAILED
+test amrits_test_files_route_key_and_probe_as_in_swift_glance ... FAILED
+test what_nothing_plays_gets_swift_glances_line ... FAILED

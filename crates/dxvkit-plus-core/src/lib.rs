@@ -5,8 +5,10 @@
 //! Zstd chunks; the `zstd-rust` feature (with default features off) swaps it for the pure-Rust
 //! `ruzstd` and the crate is pure Rust again:
 //!
-//! - [`container`]: our own QuickTime / MP4 demuxer for video tracks, including the QuickTime
-//!   timecode track (`tmcd`).
+//! - [`container`]: our own QuickTime / MP4 demuxer for video and sound tracks, including the
+//!   QuickTime timecode track (`tmcd`).
+//! - [`audio`]: sound tracks — descriptions, PCM to `f32` with every frame's exact position through
+//!   the edit list, AAC through the platform backend (0.11.0).
 //! - [`dxv`]: DXV decode (DXV3 DXT1 / DXT5 / YCG6 / YG10, legacy DXV1/2 `DXDI`) to block streams —
 //!   a safe-Rust port of DXVKit's C decoder; alpha read as straight (default) or premultiplied
 //!   ([`source::AlphaMode`]).
@@ -29,6 +31,7 @@
 //!   rate (Swift Glance's FrameTiming rule), for every decode path.
 #![forbid(unsafe_code)]
 
+pub mod audio;
 pub mod backend;
 pub mod bc;
 pub mod bc7;

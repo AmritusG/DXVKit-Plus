@@ -1,41 +1,34 @@
 # DXVKit-Plus CHECKPOINT
 
-Wave: w3-container-timing. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-15_w3-container-timing_brief.md. Machine: Mac17,6 (Apple M5 Max, macOS 27.0.1). Base: 740459b (v0.9.0 + W2 handoff). Target tag: v0.10.0.
+Wave: w4-audio. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-15_w4-audio_brief.md. Machine: Mac17,6 (Apple M5 Max). Base: a826e31 (v0.10.0 + W3 handoff). Target tag: v0.11.0.
 
 ## DONE
-- Read: brief; glance CLAUDE.md:476 (FrameTiming rule) and glance@a9dc601 Sources/GlanceCore/FrameTiming.swift (210 lines) + AVPlaybackController seek use; loombda-rs@b7e6f68 crates/loombda-media/src/container.rs (read_edits :544, read_ctts :569, sync_indices :587 — parse only, no frame mapping, no tests anywhere in loombda-rs for them); this repo's container.rs, source.rs, transport.rs (grid: rate.tick_of), time.rs, apple decode.rs (grid on minFrameDuration = Swift's "wrong way" 3); W2 native seek data (4 clips: periodic +1 offsets every 20 / 24 frames).
+- Read: brief; family-needs brief FINDINGS 4 / IMPLEMENT 4; glance@a9dc601 AudioClock.swift (497 lines), FrameClock.swift (audioMasterTarget = round(seconds x fps) clamped; 0.25 s never-prime watchdog -> wall clock), DXVPlayer / HAPPlayer audio glue (first audio track; .none / .failed(reason), video plays); glance-core docs/research/glenc.md §2.12 / §4 audio trak (in32 v1 + wave/enda, lpcm v2 above 65535 Hz); loombda-rs@b7e6f68 container.rs read_audio :617 (description only, no tables, no tests); this repo's container.rs, timing.rs, transport.rs, backend.rs, source.rs MediaInfo / probe.
+- transport::Clip callers: none in this repo besides abi.rs enums; glance-core glance-playback/src/lib.rs:46 builds `Clip { frames, rate }` by literal.
+- DIAGNOSE 2: scratchpad soundinv.py over Testfiles: 37 movies with audio (one sound track each): sowt v0 (3), in32 v1 + wave/enda=1 (24 incl. one with the 16.16 rate overflowed: field 30464, mdhd 96000), lpcm v2 96 kHz s32le (1), AAC mov v1 + wave/esds (7), AAC mp4 v0 esds (3), fLaC mp4 (1).
+- AVF probe scripts/swift-audio-probe.swift (scratchpad audioprobe, avf.jsonl, avfdump/*.f32): edit lists trimmed per PCM frame (start in [mt, mt+dur) kept: 1440256 -> 1440240, 220160 -> 220148); AAC served from packet(edit start) - 1 with TrimDurationAtStart (1024 / 1536 / 1856 / 1216); overflowed-rate in32 served at 30464 Hz, 921344 frames; truncated adv_trunc fails (-11880); fLaC "Cannot Decode".
 
-- DIAGNOSE 2 measured (scratchpad/diag5.jsonl): on all 5 clips AVAssetReader serves exactly Swift's frame times (counts 30 / 615 / 434 / 300 / 751). indigofera.mp4: 768 samples, edit media_time 18000/25000 drops 17 -> 751 served; "753" = our NativeReader grid round(30.12 s / minFrameDuration 0.04). Seek offsets: simulating the old minFrameDuration-grid rule reproduces W2's problem lists exactly (1 / 26 / 18 / 15) -> cause = grid on the SHORTEST sample (19/600 or 23/600), Swift's wrong way 3.
-- DIAGNOSE 3: loombda-media parses elst/ctts (no mapping through edits, no mvhd scale, rate not applied, 1024 cap silent) and has NO tests for them (grep of loombda-rs) — brief premise "with its tests" does not hold; ported the parsers, wrote our own tests.
-- Measured: AVFoundation sample-cursor duration = next presentation time - own; last presented keeps stts delta (171 / 171 movies). Used for the rate inputs.
-- IMPLEMENT 1 core: src/timing.rs (FrameTiming::from_tables / grid, rate_of, snap, MediaTime, Edit, RateSource); container reads mvhd / elst / ctts, VideoTrack.timing. Cross-test (scripts/crosstest-frame-timing.py; example frame_times; Swift probe scratchpad/swift/ftprobe): Testfiles 168 equal / 0 diff / 6 not openable by either; Glance frame-timing fixtures 11 / 11; new edit fixtures 3 / 3 (scripts/make-edit-list-fixtures.swift: empty 7 ms edit + lcm scale, multi-edit repeat 17 frames of 14 samples, scaled edit -> grid, H.264 B-frames + trim).
+- IMPLEMENT 1-5 code: container AudioTrack (v0/v1/v2, wave/frma/enda, esds/ASC, roll sgpd, chunk table, tkhd duration), timing.rs AudioTiming (edits per PCM frame, silence round(end x rate) half-up for non-trailing empty edits, tkhd implicit edit, +2112 priming without roll) + FrameTiming end_time / nearest_frame / timescale, audio.rs (PcmFormat, AudioInfo, AudioReader; AAC pre-roll 1 packet; float -0 -> +0), backend AudioDecoder + Backend::audio_decoder (default Unsupported), apple audio.rs AacDecoder (AudioConverter, ES descriptor cookie), MediaInfo.audio, transport Clip { timing } + Clip::new / from_timing / frame_at / nearest_frame, Range on real starts. clippy -D warnings clean; core tests pass.
+- Cross-test (scratch, final data pending commit): Testfiles 36 / 37 tracks bit-exact full read (AAC incl.); overflowed-rate in32 deliberate difference (ours 96 kHz); adv_trunc both fail; FLAC both fail. Start-time 3/2: AAC mp4 + test-hap1 equal; 5 AAC mov differ ~1e-5..0.1 because AVFoundation's own started read differs from its own full read (measured). Fixtures: all PCM layouts bit-exact (20-in-24: AVF refuses), edits incl. silence bit-exact, AAC roll / noroll / mp4 variants bit-exact.
+- AudioToolbox variance: two windows where AAC hashed differently (<= 5.7e-7): ~10:34 (5 runs) and the variant cross-test run; one AAC decoder component only (adec/aac /appl). Sign-of-zero differs on 2 / 21 AAC sweep files (values equal).
+- Fixtures (tests/fixtures, CC0, byte-reproducible here): audio_pcm_formats.mov, audio_pcm_edits.mov, audio_aac_priming.mov, audio_aac_trim.mp4, audio_aac_noroll.mov; scripts/make-audio-fixtures.py + make-aac-source.swift; probe scripts/swift-audio-probe.swift; example apple audio_dump.
 
-- IMPLEMENT 2: source.rs DXV / HAP decode sample_of_frame(n); MediaInfo frames / rate from timing; FrameSource::timing(), NativeDecoder::timing() (defaulted); apple NativeReader on core timing (grid of Swift rules over AVF values only when core cannot parse: frag MP4); div_round deleted. verify --block-path exact on the 4 W2 clips + indigofera: all pass, 0 offsets, indigofera 751 frames (docs/data/w3-verify-native-clips-exact.jsonl).
-- IMPLEMENT 3-4: elst/ctts parsers ported (ATTRIBUTION row); hostile lists: past-atom / > MAX_EDITS not applied, nothing-maps / rate != 1 / negative media time / overflow -> grid, cap MAX_SAMPLES; fuzz hook queries timing. Fuzz 60 s x 8: 12 707 220 execs, 0 crashes, 0 hangs (docs/data/w3-fuzz-60s.txt).
-- Fixtures (CC0, ours): edit_dxt1_empty_trim, edit_hap1_empty_trim_repeat, edit_hap1_scaled, edit_h264_bframes, jitter_prores4444_30 (+ sidecars); scripts/make-edit-list-fixtures.swift (output differs only in header dates). Cross-test 5 / 5 equal. v0.9.0 vs now (docs/data/w3-verify-fixtures-v0.9.0-vs-0.10.0.txt): 0.9.0 counts 24 / 14 / 24 wrong, B-frame out of range, jitter offset; 0.10.0 all pass.
-- Tests: core tests/timing.rs 18 (Swift's rate cases + controls, tables, edits, hostile, fixtures through HAP / DXV, shuffled seeks); apple native.rs +3 (B-frames/edit, frag grid, jitter with 0.9.0-rule control); cli.rs fixture lists; abi.rs RateSource pinned; fixtures count 43.
-- Gate (before docs): clippy -D warnings clean; fmt ok; DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace all pass after the CLI test update; cargo deny ok. glance-core @ a0c2d04 on this tree: same 5 failures / messages as on 0.9.0 (docs/data/w3-glance-core-tests-on-0.10.0.txt).
-- Docs: CHANGELOG 0.10.0, README (release note + Frame timing section), ARCHITECTURE (native timing, Frame timing section, ABI row), ATTRIBUTION (2 code rows + fixtures), version 0.10.0. Data: docs/data/w3-{swift-frametiming-*,crosstest-*,avf-sample-durations,native-diagnosis,...}.
+- Tests: core audio.rs 9, transport.rs 5, abi AudioCodec pin, fixtures count 51, cli audio rows; apple audio.rs 4. Data: docs/data/w4-* (crosstest testfiles 34/37 bit-exact + 2 both refuse + wrapped rate; start-time 9/9; fixtures; transport 6390 times 0 diff; fuzz 60 s 5.7M execs 0 crashes; aac variance; glance-core 27 pass / same 5 fail).
+- Gate: fmt ok; clippy -D warnings ok; DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace: 178 passed 0 failed 1 ignored; cargo deny ok after ruzstd / zstd* lockfile security updates; existing fixtures unchanged.
+- Docs: CHANGELOG 0.11.0, README (release note + Audio section), ARCHITECTURE (Audio, transport, ABI rows), ATTRIBUTION (2 code rows + assets), version 0.11.0. Handoff draft docs/handoffs/w4-audio.md.
 
-- Verifier (cc-kit:verifier): 23 CONFIRMED, 5 UNPROVEN, 2 WRONG (CHANGELOG "two" -> three changed meanings; ABI row claimed repr(C) mirrors -> MediaTime / Edit now #[repr(C)]). Fixed; evidence added for the unproven served-times (docs/data/w3-native-served-times.jsonl) and stts-vs-cursor rate (w3-avf-sample-durations.txt last line); loombda grep wording corrected.
-- Full Testfiles verify exact (167 rows, 42 min): 155 pass vs W2 149; fixed the 5 timing clips; broke none; 129 DXV/HAP files 24 036 block frames max 0; native 26 / 26; 12 failing = W2's deliberate damaged files (docs/data/w3-verify-testfiles-exact-m5max.jsonl).
-- Final gate: fmt ok; clippy -D warnings exit 0; DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast: 160 passed, 0 failed, 1 ignored; cargo deny ok; existing fixtures unchanged.
-
-- Released: commit 72763ed on main, annotated tag v0.10.0, both pushed (ls-remote main and v0.10.0^{} = 72763ed). glance-core note: ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w3.md. Handoff docs/handoffs/w3-container-timing.md -> ~/claude-handoffs/DXVKit-Plus_2026-11-15_w3-container-timing-result.md.
-- WAVE CLOSED 2026-11-15.
+- Verifier: 49 confirmed / 9 unproven / 4 wrong -> fixed (counts, README/CHANGELOG wording, controls + tie test, evidence files w4-avf-v0-entry-in-mov.jsonl, w4-aac-sweep-decode-crosstest.jsonl, second start-vs-full run).
 
 ## NEXT
-- Wave closed. Two questions for Amrit in the handoff (transport on real frame starts; Swift's drop of a sample starting before an edit). Following waves per brief: W4 audio, W5 Windows backend, W6 encoders.
+- (was) Verifier on docs/handoffs/w4-audio.md; fix; commit + tag v0.11.0 + push; receipts; copy handoff to ~/claude-handoffs/DXVKit-Plus_2026-11-15_w4-audio-result.md; glance-core note ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w4.md.
 
 ## STATE
 - Test media (Amrit's, read-only): ~/Desktop/_M5-to-M3_2026-10-08/Movies/Testfiles/.
-- Swift refs read-only: ~/Documents/claude/native-builds/rust/glance-core/.ref/glance, loombda-rs.
-- Handoff name: docs/handoffs/w3-container-timing.md (docs/handoffs/w3.md is an older, unrelated wave — do not touch).
+- Swift refs read-only: ~/Documents/claude/native-builds/rust/glance-core/.ref/{glance,loombda-rs}.
+- Scratch: <tmp>/w4
+- Handoff name: docs/handoffs/w4-audio.md (docs/handoffs/w4.md is an older, unrelated wave — do not touch).
 
 ## OPEN
 
 ## IDEAS
-- BC7 on the exact path: a per-block compute pre-pass (decode each block once, not per fragment) to cut its 4-6x pass cost.
-- Run the 7 skipped 3840x9626 SCANTEST copies through verify when the GPU is free (20 min each).
-- (carried) Convert the 59 `chunks_exact(N)` sites to `as_chunks` and drop the lint allowance.
-- (carried) `dxvkit-plus bench --layers 1` reports `gpu_convert_passes_sum` 0.000 on this Mac.
+- (carried) BC7 exact-path pre-pass; 7 skipped SCANTEST copies through verify; `as_chunks` conversion; bench gpu_convert_passes_sum 0.000.

@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_priming.mov
+title: AAC-LC with the encoder priming in the edit list (QuickTime-style entry, roll group)
+author: Amrit Rosell — our own signals (procedural; AAC encoded from our own test signal by AudioToolbox)
+source: Written byte by byte by scripts/make-audio-fixtures.py (QuickTime File Format, ISO/IEC 14496-1 esds) from the AAC packets of scripts/make-aac-source.swift
+license: CC0-1.0
+added: 2026-11-15
+sha256: f0eaa489519971422721ea9d40c23d2e0fbadc32e920c33647c013631d3eb251
+notes: W4 audio. 24 AAC packets (AudioToolbox, 128 kbit/s, 44.1 kHz stereo), mp4a v1 + wave { frma, mp4a, esds }, sgpd/sbgp roll -1, edit (22050 frames from media time 2112), movie time scale 44100. AVFoundation and DXVKit Plus decode identical samples (docs/data/w4-crosstest-fixtures.jsonl).

@@ -4,7 +4,9 @@
       file.mov / file.mp4 / file.lmbd / PNG folder
                          │
               dxvkit-plus-core::source::probe ──► MediaInfo (codec + names, size, frames, exact rate, tmcd start,
-                         │                       track, DXV variant, stated alpha)
+                         │                       track, DXV variant, stated alpha, sound tracks)
+                         │   audio::AudioReader ──► AudioBlocks: f32 at the track's rate + exact positions
+                         │     (PCM in core; AAC through Backend::audio_decoder — macOS AudioToolbox)
                          │
      ┌───────────────────┼────────────────────────────┐
      │ HAP, DXV, LMBD    │ native codecs              │ PNG stills / sequences
@@ -411,12 +413,36 @@ exactly, drops a sample that starts before an edit's media time even when it ove
 (`edit_hap1_empty_trim_repeat.mov`'s third edit starts 108 / 15360 into sample 0, so source frame 5
 is not replayed); on every real clip measured the edits start on sample boundaries.
 
+## Audio (0.11.0)
+
+`container::AudioTrack` reads the sound sample description (QTFF v0 / v1 / v2; `wave` / `frma` /
+`enda`; `esds` → ES descriptor + AudioSpecificConfig; a `roll` sample group) and the tables: PCM at
+chunk level (offset, first sample, count — a 48 kHz track has millions of one-frame samples), AAC
+per packet. `timing::AudioTiming` turns the decoded stream (frames contiguous at the rate from media
+time 0, as Swift Glance's `AudioClock` plays what AVFoundation serves) into output segments through
+the edit list; each segment has an exact `MediaTime` start, silent ones fill empty edits.
+`audio::AudioReader` serves blocks inside one segment: PCM converted here (`PcmFormat::sample`), AAC
+through `backend::AudioDecoder`, a packet in and its frames out — the demux, trimming and pre-roll
+stay in core, so every platform's decoder trims the same frames.
+
+| Rule | Measured on AVFoundation (`scripts/swift-audio-probe.swift`, `docs/data/w4-*`) |
+| --- | --- |
+| Edit list per PCM frame: start in `[media_time, media_time + duration)` kept | 1 440 256 → 1 440 240 frames (edit 30.005 s at 48 kHz), 220 160 → 220 148 (an edit ending inside a frame keeps it) |
+| Empty edit = silence up to `round(end × rate)`, none after the last non-empty edit | 3 ms / 2 ms at 44.1 kHz → 132 / 89 silent frames; a trailing empty edit adds none |
+| No edit list: the `tkhd` duration | 21 ms of a 1024-frame track → 1008 frames |
+| AAC: priming in the edit's media time; without a `roll` group 2112 more frames | 1024 / 2112 trimmed; no-roll fixture 20 352 frames, not 22 050 |
+| AAC after a seek: decode from the packet before | AVFoundation's passthrough starts at packet p − 1 (p ≥ 3; an edit in packet 2 starts at 0); our decode from p − 1 equals AVFoundation's started read |
+| Float PCM `-0.0` → `+0.0`; integers `x / 2^(bits-1)`, rounded to f32 | bit-exact on 25 PCM layouts |
+
 ## Transport and cache
 
 `transport::Transport` holds the playhead as an exact integer `Tick` (254 016 000 000 per second,
 which divides every broadcast frame rate and audio rate), integrated from the host clock times a
 rational speed, so frame `k` starts exactly at `rate.tick_of(k)` — no float drift (a 29.97 clip on
-a 59.94 clock is still exact after 10 minutes). `cache::Player` keeps an LRU of decoded frames and
+a 59.94 clock is still exact after 10 minutes). 0.11.0: a `Clip` that carries a table timing maps
+the playhead (movie time from the range start) through `FrameTiming::frame_at`; each frame's start
+in ticks is rounded up, so the frame at a tick is exactly the timing's frame for that tick's time;
+the range ends at the next frame's start or `FrameTiming::end_time`. `cache::Player` keeps an LRU of decoded frames and
 decodes ahead on worker threads in playback order; a miss decodes the exact frame on the caller's
 thread, never "the nearest one ready".
 
@@ -448,6 +474,12 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `wgpu::check_device_size` | a call returning the `GpuError` code |
 | `dxv::Layout`, `dxv::Header`, `dxv::Blocks` | plain-data `#[repr(C)]` mirrors (`Blocks`' planes as pointer + length borrowed from the handle) |
 | `timing::FrameTiming` (0.10.0) | an opaque handle (from a source or track handle) with calls: frame count, rate (num, den), `RateSource` (`u32`, pinned), `time_of_frame` → (value, timescale), `frame_at(value, timescale)`, `sample_of_frame` → a flag + `u32`; `MediaTime`, `Edit` are `#[repr(C)]` plain data |
+| `audio::AudioReader` (0.11.0) | an opaque handle (from a movie handle + track index + the wrapper's backend); `read` fills a caller buffer of interleaved `f32` and returns (first frame, position value / timescale, frames, channels, rate); `seek(value, timescale)`, `seek_frame` |
+| `audio::AudioCodec` (0.11.0) | `#[repr(u32)]` (Pcm 0, Aac 1, Other 2; pinned by `core/tests/abi.rs`) |
+| `audio::AudioInfo`, `audio::PcmFormat`, `timing::AudioSegment` (0.11.0) | plain-data mirrors (numbers, bools, the FourCC as 4 bytes; codec name and error as strings through a call) |
+| `timing::AudioTiming` (0.11.0) | calls on the reader handle: frame count, `position_of(n)` → (value, timescale), `frame_at(value, timescale)` |
+| `backend::AudioDecoder` (0.11.0) | inside the platform crate only (the wrapper never implements it: no callbacks) |
+| `transport::Clip` (0.11.0) | frames + rate + an optional timing handle; `Clip::frame_at` / `nearest_frame` take a tick |
 | `Arc<dyn Backend>` | chosen by the wrapper per platform (no callbacks across the boundary) |
 
 Rules that keep it that way: no generics or lifetimes in the public decode / transport API, no

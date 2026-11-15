@@ -14,6 +14,8 @@
 //!   `newTextureWithDescriptor:iosurface:plane:` → `wgpu_hal::metal::Device::texture_from_raw` →
 //!   `wgpu::Device::create_texture_from_hal`. No pixel is copied: 4:2:0 frames arrive as an `R8`
 //!   luma plane and an `RG8` chroma plane, alpha codecs as one `BGRA8` plane.
+//! - [`audio::AacDecoder`] (0.11.0): AAC packets to `f32` through AudioToolbox's `AudioConverter`,
+//!   offered as `Backend::audio_decoder`; the core demuxes, trims the edit list and priming.
 //! - Both routes are measured by `dxvkit-plus bench --import`; the faster one (the cache route) is
 //!   the default (numbers in `docs/ARCHITECTURE.md`).
 //!
@@ -22,6 +24,8 @@
 //! there; not yet run on a device). On other targets the crate builds empty: callers never see
 //! objc2, CoreVideo or Metal types.
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub mod audio;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod decode;
 #[cfg(any(target_os = "macos", target_os = "ios"))]

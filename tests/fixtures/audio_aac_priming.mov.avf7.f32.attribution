@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_priming.mov.avf7.f32
+title: AVFoundation's decode of audio_aac_priming.mov, every 7th frame
+author: Amrit Rosell — AVAssetReader (linear PCM Float32 interleaved, the track's own rate and channels) on our own CC0 fixture
+source: scripts/swift-audio-probe.swift --dump on macOS 27.0.1 (Mac17,6); frames 0, 7, 14, ... of 22050, 2 channels, f32 little-endian interleaved
+license: CC0-1.0
+added: 2026-11-15
+sha256: b6a1ffb25427d722a3750928acc8a2e31ebf07862a5d82f76749966b1316e3a2
+notes: W4 audio. The oracle crates/dxvkit-plus-apple/tests/audio.rs compares DXVKit Plus's AAC decode with (frame count and first position exact, samples within 1e-6: AudioToolbox's own output varied by up to 5.7e-7 between runs on this Mac, docs/handoffs/w4-audio.md). Full AVFoundation hash: da7a63909f4529866ab1f6ea0cb03c7190634938e03b896abd1c6d4b0c006e1e.

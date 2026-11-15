@@ -1,11 +1,23 @@
 //! Transport — the playhead of one clip, as exact integer time.
 //!
-//! Pure logic, no I/O and no GPU: given the clip ([`Clip`]: frame count + exact frame rate), the
-//! transport settings ([`Settings`]) and the engine clock's `Tick` each evaluation, it answers which
-//! frame to show. The playhead `pos` is a [`Tick`] of media time measured from the in-point; it is
-//! integrated from the clock delta times the speed, where the speed is held as an exact rational
-//! (nano-units), so `speed = 1` advances exactly with the clock and frame `k` starts exactly at
-//! `rate.tick_of(k)` — frame-accurate by construction, with no float accumulation.
+//! Pure logic, no I/O and no GPU: given the clip ([`Clip`]: frame count + exact frame rate, and its
+//! frame timing when frames start off the rate grid), the transport settings ([`Settings`]) and the
+//! engine clock's `Tick` each evaluation, it answers which frame to show. The playhead `pos` is a
+//! [`Tick`] of media time measured from the in-point; it is integrated from the clock delta times
+//! the speed, where the speed is held as an exact rational (nano-units), so `speed = 1` advances
+//! exactly with the clock and frame `k` starts exactly at `rate.tick_of(k)` — frame-accurate by
+//! construction, with no float accumulation.
+//!
+//! **Real frame starts (0.11.0).** A clip whose [`Clip::timing`] has a table (jittered sample
+//! times, edit lists: `crate::timing::FrameTiming`) maps time to frame through
+//! [`FrameTiming::frame_at`] instead of the grid: frame `k` shows from its real start (in ticks,
+//! rounded up, so the frame at a tick is exactly `FrameTiming::frame_at` of that tick's time) to the
+//! next frame's; the range ends at the next frame's start, or at [`FrameTiming::end_time`] for the
+//! clip's last frame. With the in-point at frame 0 the playhead is movie time itself (a first frame
+//! that starts late is shown from 0, as `frame_at` holds frame 0 before it). Bounce plays the same
+//! times backward; seek, step and cues land on real starts. Random jumps and random-frame steps
+//! stay on the nominal rate (they are distances, not positions). A clip without a table (or
+//! `timing: None`) behaves exactly as before.
 //!
 //! Capabilities (feature rows in the handoff):
 //! - play modes: loop, bounce (ping-pong; each end frame shown once per cycle), once-and-hold
@@ -22,7 +34,9 @@
 //! - stills: a one-frame clip whose length is a duration in seconds or beats (`still_duration`).
 
 use crate::time::{FrameRate, TICKS_PER_SECOND, Tick};
+use crate::timing::{FrameTiming, MediaTime};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Largest |speed| (multiplier). Sized past "clearly excessive" for VJ use (Arena's knob tops out
 /// at 10x); the transport itself is exact at any rational speed.
@@ -110,12 +124,81 @@ impl SyncMode {
 }
 
 /// The clip as the transport sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clip {
     /// Frames in the file (>= 1).
     pub frames: u32,
     /// Exact nominal rate.
     pub rate: FrameRate,
+    /// The frame timing (0.11.0): with a table, time maps to frame through its real frame starts
+    /// (module doc); `None` or a grid timing: the rate grid. `frames` should equal its frame count.
+    pub timing: Option<Arc<FrameTiming>>,
+}
+
+impl Clip {
+    /// A clip on the rate grid.
+    pub fn new(frames: u32, rate: FrameRate) -> Clip {
+        Clip { frames, rate, timing: None }
+    }
+    /// A clip with a source's frame timing (`FrameSource::timing`): its frame count and rate, and
+    /// its real frame starts when it has a table.
+    pub fn from_timing(timing: Arc<FrameTiming>) -> Clip {
+        Clip { frames: timing.frame_count(), rate: timing.rate, timing: Some(timing) }
+    }
+    /// The table timing, when frames start off the grid.
+    fn table(&self) -> Option<&FrameTiming> {
+        self.timing.as_deref().filter(|t| t.has_table() && t.frame_count() > 0)
+    }
+    /// The frame showing at movie time `t` (floor: a frame's own start is that frame; clamped to
+    /// the clip): [`FrameTiming::frame_at`] on a table, the rate grid otherwise.
+    pub fn frame_at(&self, t: Tick) -> u32 {
+        let last = self.frames.max(1).saturating_sub(1);
+        match self.table() {
+            Some(ft) => ft.frame_at(media_floor(t, ft.timescale())).min(last),
+            None => u32::try_from(self.rate.frame_at(t).max(0)).unwrap_or(u32::MAX).min(last),
+        }
+    }
+    /// The frame whose start is nearest to movie time `t` (a tie goes to the later frame): the
+    /// audio-master clock's pick ([`FrameTiming::nearest_frame`]; on the grid Swift Glance's
+    /// `round(seconds x fps)`).
+    pub fn nearest_frame(&self, t: Tick) -> u32 {
+        let last = self.frames.max(1).saturating_sub(1);
+        match self.table() {
+            // The nearest start is found exactly at tick resolution: compare the two candidates.
+            Some(ft) => {
+                let k = ft.frame_at(media_floor(t, ft.timescale())).min(last);
+                if k >= last {
+                    return k;
+                }
+                let a = ticks_ceil(ft.time_of_frame(k));
+                let b = ticks_ceil(ft.time_of_frame(k.saturating_add(1)));
+                if t < a {
+                    return k;
+                }
+                if t.0.saturating_sub(a.0) >= b.0.saturating_sub(t.0) { k.saturating_add(1) } else { k }
+            }
+            None => {
+                let num = i128::from(t.0).saturating_mul(i128::from(self.rate.num)).saturating_mul(2);
+                let den = i128::from(TICKS_PER_SECOND).saturating_mul(i128::from(self.rate.den.max(1)));
+                let f = num.saturating_add(den).div_euclid(den.saturating_mul(2).max(1)).max(0);
+                u32::try_from(f).unwrap_or(u32::MAX).min(last)
+            }
+        }
+    }
+}
+
+/// `t` as a [`MediaTime`] in `timescale` units, floored (so `start <= t` compares exactly).
+fn media_floor(t: Tick, timescale: u32) -> MediaTime {
+    let v = i128::from(t.0).saturating_mul(i128::from(timescale)).div_euclid(i128::from(TICKS_PER_SECOND));
+    MediaTime::new(i64::try_from(v).unwrap_or(if v < 0 { i64::MIN } else { i64::MAX }), timescale)
+}
+
+/// A media time in ticks, rounded up (the first tick at or after it).
+fn ticks_ceil(m: MediaTime) -> Tick {
+    let ts = i128::from(m.timescale.max(1));
+    let n = i128::from(m.value).saturating_mul(i128::from(TICKS_PER_SECOND));
+    let v = n.div_euclid(ts).saturating_add(i128::from(n.rem_euclid(ts) != 0));
+    Tick(i64::try_from(v).unwrap_or(i64::MAX).clamp(Tick::MIN.0, Tick::MAX.0))
 }
 
 /// Transport settings.
@@ -228,7 +311,7 @@ pub struct Transport {
 
 /// Settings + clip resolved for one evaluation.
 #[derive(Clone, Copy, Debug)]
-struct Range {
+struct Range<'a> {
     first: u32,
     /// Frames in the play range (>= 1).
     n: u32,
@@ -236,6 +319,36 @@ struct Range {
     /// Range length (exact; a still uses its duration).
     len: Tick,
     still: bool,
+    /// Real frame starts (0.11.0): the table and the movie time (ticks) of the range's start.
+    table: Option<(&'a FrameTiming, Tick)>,
+}
+
+impl Range<'_> {
+    /// Start of range frame `k` (0..=n), relative to the range start.
+    fn start(&self, k: i64) -> Tick {
+        match self.table {
+            None => self.rate.tick_of(k),
+            Some((ft, base)) => {
+                let f = i64::from(self.first).saturating_add(k.max(0));
+                let abs =
+                    if f >= i64::from(ft.frame_count()) { ticks_ceil(ft.end_time()) } else { ticks_ceil(ft.time_of_frame(u32::try_from(f).unwrap_or(0))) };
+                tsub(abs, base)
+            }
+        }
+    }
+    /// The range frame showing at `pos` (floor); may lie outside `0..n`.
+    fn frame_at(&self, pos: Tick) -> i64 {
+        match self.table {
+            None => self.rate.frame_at(pos),
+            Some((ft, base)) => {
+                let abs = tadd(base, pos);
+                if pos.0 >= self.len.0 {
+                    return i64::from(self.n);
+                }
+                i64::from(ft.frame_at(media_floor(abs, ft.timescale()))).saturating_sub(i64::from(self.first))
+            }
+        }
+    }
 }
 
 /// splitmix64: a small deterministic generator (no external crate; reproducible from `seed`).
@@ -330,9 +443,9 @@ impl Transport {
     }
 
     /// Mirror the position inside its frame: start of frame k <-> last tick of frame k.
-    fn mirror_in_frame(&mut self, rate: FrameRate) {
-        let k = rate.frame_at(self.pos);
-        let (a, b) = (rate.tick_of(k), rate.tick_of(k.saturating_add(1)));
+    fn mirror_in_frame(&mut self, r: &Range<'_>) {
+        let k = r.frame_at(self.pos);
+        let (a, b) = (r.start(k), r.start(k.saturating_add(1)));
         self.pos = tsub(tadd(a, b), tadd(self.pos, Tick(1)));
     }
 
@@ -346,20 +459,26 @@ impl Transport {
         }
     }
 
-    fn range(clip: &Clip, s: &Settings, bpm: f64) -> Range {
+    fn range<'a>(clip: &'a Clip, s: &Settings, bpm: f64) -> Range<'a> {
         let frames = clip.frames.max(1);
         let first = s.in_frame.min(frames.saturating_sub(1));
         let end = if s.out_frame == 0 { frames } else { s.out_frame.min(frames) };
         let n = end.saturating_sub(first).max(1);
         let rate = if clip.rate.num > 0 && clip.rate.den > 0 { clip.rate } else { FrameRate::FPS_30 };
         let still = clip.frames <= 1;
-        let len = if still {
+        let mut r = Range { first, n, rate, len: Tick(1), still, table: None };
+        if still {
             let d = if s.sync == SyncMode::Beats { s.still_duration * 60.0 / bpm } else { s.still_duration };
-            seconds(d).max(Tick(1))
+            r.len = seconds(d).max(Tick(1));
+        } else if let Some(ft) = clip.table() {
+            // The range starts at movie time 0 from the first frame, else at the in-frame's start.
+            let base = if first == 0 { Tick::ZERO } else { ticks_ceil(ft.time_of_frame(first)) };
+            r.table = Some((ft, base));
+            r.len = r.start(i64::from(n)).max(Tick(1));
         } else {
-            rate.tick_of(i64::from(n))
-        };
-        Range { first, n, rate, len, still }
+            r.len = rate.tick_of(i64::from(n));
+        }
+        r
     }
 
     /// Tempo in use: the control input, else the fallback; clamped to 1..=999 BPM.
@@ -369,7 +488,7 @@ impl Transport {
     }
 
     /// The effective speed (nano-units) for timeline / beat sync.
-    fn speed(s: &Settings, r: &Range, bpm: f64) -> i64 {
+    fn speed(s: &Settings, r: &Range<'_>, bpm: f64) -> i64 {
         let base = match s.sync {
             SyncMode::Beats if !r.still => {
                 let range_s = r.len.seconds();
@@ -389,8 +508,12 @@ impl Transport {
     }
 
     /// Period of the position for the mode: loop = range length; bounce = 2(N-1) frames.
-    fn period(mode: PlayMode, r: &Range) -> Tick {
+    fn period(mode: PlayMode, r: &Range<'_>) -> Tick {
         match mode {
+            PlayMode::Bounce if r.n > 1 && !r.still && r.table.is_some() => {
+                let s = r.start(i64::from(r.n.saturating_sub(1)));
+                tadd(s, s).max(Tick(1))
+            }
             PlayMode::Bounce if r.n > 1 && !r.still => r.rate.tick_of(i64::from(r.n.saturating_sub(1)).saturating_mul(2)),
             _ => r.len,
         }
@@ -401,7 +524,7 @@ impl Transport {
     }
 
     /// Bring `pos` into the mode's canonical range; sets `ended` for once modes.
-    fn normalise(&mut self, mode: PlayMode, r: &Range, heading: i64) {
+    fn normalise(&mut self, mode: PlayMode, r: &Range<'_>, heading: i64) {
         match mode {
             PlayMode::Loop | PlayMode::RandomFrame => self.pos = Self::wrap(self.pos, r.len),
             PlayMode::Bounce => self.pos = Self::wrap(self.pos, Self::period(mode, r)),
@@ -422,11 +545,26 @@ impl Transport {
     }
 
     /// Range-relative frame index for the current position (0..n).
-    fn index(&self, mode: PlayMode, r: &Range) -> u32 {
+    fn index(&self, mode: PlayMode, r: &Range<'_>) -> u32 {
         if r.still {
             return 0;
         }
         let last = i64::from(r.n.saturating_sub(1));
+        if r.table.is_some() {
+            if mode == PlayMode::Bounce && r.n > 1 {
+                // Forward half: the frame at pos; backward half: the same times mirrored — the
+                // frame k with start(k-1) < 2 S - pos <= start(k), S = start(last).
+                let s = r.start(last);
+                if self.pos < s {
+                    return r.frame_at(self.pos).clamp(0, last) as u32;
+                }
+                let m = tsub(tadd(s, s), self.pos);
+                let f = r.frame_at(m).clamp(0, last);
+                let k = if r.start(f) == m { f } else { f.saturating_add(1) };
+                return k.clamp(0, last) as u32;
+            }
+            return r.frame_at(self.pos).clamp(0, last) as u32;
+        }
         let k = r.rate.frame_at(self.pos);
         let k = match mode {
             PlayMode::Bounce if r.n > 1 => {
@@ -463,7 +601,7 @@ impl Transport {
                 heading = speed.signum();
                 if heading != 0 && heading != self.last_heading {
                     if !r.still && self.instant.is_none() {
-                        self.mirror_in_frame(r.rate);
+                        self.mirror_in_frame(&r);
                     }
                     self.last_heading = heading;
                 }
@@ -518,13 +656,13 @@ impl Transport {
         Frame { frame: r.first.saturating_add(k), visible, ended, position, heading: if heading < 0 { -1 } else { 1 } }
     }
 
-    fn beat_len(r: &Range, s: &Settings, bpm: f64) -> Tick {
+    fn beat_len(r: &Range<'_>, s: &Settings, bpm: f64) -> Tick {
         // In beat sync the range spans `beats` beats; one beat of MEDIA time = len / beats.
         let beats = if s.beats > 0.0 && s.beats.is_finite() { s.beats } else { guess_beats(r.len.seconds(), bpm) };
         r.len.mul_ratio(1_000_000, (beats * 1_000_000.0).round().max(1.0) as i64)
     }
 
-    fn random_jump(&mut self, dt: Tick, s: &Settings, r: &Range, bpm: f64) {
+    fn random_jump(&mut self, dt: Tick, s: &Settings, r: &Range<'_>, bpm: f64) {
         let interval = if s.random_interval.is_finite() && s.random_interval > 0.0 { s.random_interval } else { 1.0 };
         let every = if s.sync == SyncMode::Beats { seconds(interval * 60.0 / bpm) } else { seconds(interval) };
         if every.0 <= 0 {
@@ -550,7 +688,7 @@ impl Transport {
     pub fn seek(&mut self, frame: u32, clip: &Clip, s: &Settings) {
         let r = Self::range(clip, s, 120.0);
         let k = frame.saturating_sub(r.first).min(r.n.saturating_sub(1));
-        self.pos = r.rate.tick_of(i64::from(k));
+        self.pos = r.start(i64::from(k));
         self.ended = false;
         self.instant = None;
         // Re-anchor: the next evaluation shows exactly this frame (the jump happens "now"). Playing
@@ -561,7 +699,7 @@ impl Transport {
             self.last_heading = h;
         }
         if self.last_heading < 0 {
-            self.mirror_in_frame(r.rate);
+            self.mirror_in_frame(&r);
         }
     }
 
@@ -583,12 +721,12 @@ impl Transport {
             PlayMode::OnceHold | PlayMode::OnceEject => k.clamp(0, n_frames.saturating_sub(1)),
             _ => k.rem_euclid(n_frames.max(1)),
         };
-        self.pos = r.rate.tick_of(k);
+        self.pos = r.start(k);
         self.ended = false;
         self.instant = None;
         self.last = None;
         if self.last_heading < 0 {
-            self.mirror_in_frame(r.rate);
+            self.mirror_in_frame(&r);
         }
     }
 
@@ -644,7 +782,7 @@ mod tests {
     const FPS: FrameRate = FrameRate::FPS_30;
 
     fn clip(n: u32) -> Clip {
-        Clip { frames: n, rate: FPS }
+        Clip::new(n, FPS)
     }
 
     /// Frames shown at each program frame `t = i / prog_rate` for `count` ticks.
@@ -661,7 +799,7 @@ mod tests {
         // 60 Hz program, 30 fps clip: every frame twice.
         assert_eq!(run(&clip(3), &s, FrameRate::FPS_60, 8), vec![0, 0, 1, 1, 2, 2, 0, 0]);
         // NTSC: 29.97 clip on a 59.94 clock stays exact after a long time (no drift).
-        let c = Clip { frames: 100_000, rate: FrameRate::FPS_29_97 };
+        let c = Clip::new(100_000, FrameRate::FPS_29_97);
         let mut t = Transport::new(0);
         let mut f = 0;
         for i in 0..=36_000i64 {
@@ -871,7 +1009,7 @@ mod tests {
             ..Settings::default()
         };
         let mut t = Transport::new(0);
-        for c in [clip(0), clip(1), clip(u32::MAX), Clip { frames: 5, rate: FrameRate { num: 0, den: 0 } }] {
+        for c in [clip(0), clip(1), clip(u32::MAX), Clip::new(5, FrameRate { num: 0, den: 0 })] {
             for now in [Tick::MIN, Tick::ZERO, Tick::MAX, Tick(-5)] {
                 let f = t.advance(now, &c, &s, &Inputs { bpm: Some(f64::NAN), timecode: [Some(f64::INFINITY), None] });
                 assert!(f.frame < c.frames.max(1));

@@ -98,3 +98,31 @@ fn matroska_codec(path: &Path) -> Option<String> {
     };
     Some(name.to_string())
 }
+
+/// An audio track's display name (0.11.0): `PCM 16-bit integer LE`, `PCM 32-bit float BE`, `AAC`,
+/// a few well-known compressed formats by FourCC / object type, else the FourCC.
+pub fn audio_codec_label(track: &crate::container::AudioTrack) -> String {
+    if let Some(f) = track.pcm {
+        let kind = if f.float {
+            "float"
+        } else if f.signed {
+            "integer"
+        } else {
+            "unsigned integer"
+        };
+        let order = if f.bytes > 1 { if f.big_endian { " BE" } else { " LE" } } else { "" };
+        return format!("PCM {}-bit {kind}{order}", f.bits);
+    }
+    let named = match (&track.fourcc, track.object_type) {
+        (b"mp4a", 0x40 | 0x66 | 0x67 | 0x68) => "AAC",
+        (b"mp4a", 0x69 | 0x6B) | (b".mp3", _) => "MP3",
+        (b"fLaC", _) => "FLAC",
+        (b"alac", _) => "Apple Lossless",
+        (b"ac-3", _) => "AC-3",
+        (b"ec-3", _) => "E-AC-3",
+        (b"Opus", _) => "Opus",
+        (b"lpcm", _) => "PCM",
+        _ => return codec_label(&track.fourcc),
+    };
+    named.to_string()
+}

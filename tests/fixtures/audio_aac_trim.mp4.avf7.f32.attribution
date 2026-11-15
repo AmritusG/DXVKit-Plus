@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_trim.mp4.avf7.f32
+title: AVFoundation's decode of audio_aac_trim.mp4, every 7th frame
+author: Amrit Rosell — AVAssetReader (linear PCM Float32 interleaved, the track's own rate and channels) on our own CC0 fixture
+source: scripts/swift-audio-probe.swift --dump on macOS 27.0.1 (Mac17,6); frames 0, 7, 14, ... of 11466, 2 channels, f32 little-endian interleaved
+license: CC0-1.0
+added: 2026-11-15
+sha256: ff33a7c6e135a27127cc4e739dfe9aedccb95c916ff7d69267d79a9593289f95
+notes: W4 audio. The oracle crates/dxvkit-plus-apple/tests/audio.rs compares DXVKit Plus's AAC decode with (frame count and first position exact, samples within 1e-6: AudioToolbox's own output varied by up to 5.7e-7 between runs on this Mac, docs/handoffs/w4-audio.md). Full AVFoundation hash: ea38a0d5a9b92f51dd0f1e04da8eaa81149cfcdfc245bb6245ed428b919efd09.

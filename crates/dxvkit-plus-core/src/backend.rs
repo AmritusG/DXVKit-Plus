@@ -132,6 +132,21 @@ pub trait NativeDecoder: Send {
     }
 }
 
+/// A platform audio packet decoder (0.11.0): compressed packets in, interleaved `f32` out. The
+/// core demuxes, trims the edit list and priming, and seeks (`crate::audio::AudioReader`); the
+/// decoder only turns one packet into its frames, at the track's own rate and channel count.
+pub trait AudioDecoder: Send {
+    /// Output frames per second.
+    fn rate(&self) -> u32;
+    fn channels(&self) -> u32;
+    /// Frames one packet decodes to (AAC 1024).
+    fn frames_per_packet(&self) -> u32;
+    /// Decode one packet, appending its frames (interleaved) to `out`; returns the frame count.
+    fn decode(&mut self, packet: &[u8], out: &mut Vec<f32>) -> Result<u32, MediaError>;
+    /// Forget the state carried between packets (before decoding from another place).
+    fn reset(&mut self) -> Result<(), MediaError>;
+}
+
 /// A platform decoder backend.
 pub trait Backend: Send + Sync {
     /// A short name for logs and `probe` output (`"avfoundation"`, `"media-foundation"`).
@@ -139,4 +154,9 @@ pub trait Backend: Send + Sync {
     /// Open `path`'s first video track, delivering frames in `layout`. (`source::probe` offers a
     /// backend only the movie's first video track, or a file its own parser cannot read.)
     fn open(&self, path: &Path, layout: PixelLayout) -> Result<Box<dyn NativeDecoder>, MediaError>;
+    /// A decoder for a compressed sound track (0.11.0; macOS: AAC through AudioToolbox). The
+    /// default: `Unsupported`, naming the codec.
+    fn audio_decoder(&self, track: &crate::container::AudioTrack) -> Result<Box<dyn AudioDecoder>, MediaError> {
+        Err(MediaError::Unsupported(format!("{} audio: the {} backend has no audio decoder", crate::names::audio_codec_label(track), self.name())))
+    }
 }

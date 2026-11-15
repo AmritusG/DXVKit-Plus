@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_noroll.mov
+title: AAC-LC without a roll sample group (AVFoundation trims the encoder delay after the edit too)
+author: Amrit Rosell — our own signals (procedural; AAC encoded from our own test signal by AudioToolbox)
+source: Written byte by byte by scripts/make-audio-fixtures.py (QuickTime File Format, ISO/IEC 14496-1 esds) from the AAC packets of scripts/make-aac-source.swift
+license: CC0-1.0
+added: 2026-11-15
+sha256: 1741480ee8961b1ae9e23032ba5e70af542b1329def7da7499f7a3d8b7a4f539
+notes: W4 audio. audio_aac_priming.mov without its sgpd/sbgp roll: AVFoundation (and DXVKit Plus) start 2112 frames after the edit media time 2112, so 20352 frames play. AVFoundation and DXVKit Plus decode identical samples (docs/data/w4-crosstest-fixtures.jsonl).

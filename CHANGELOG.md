@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.11.0 — 2026-11-15
+
+**Audio tracks, and the transport on real frame starts** (W4). The input glance-core's audio-master
+clock needs: every sound track described, its PCM frames as `f32` with each frame's exact position
+through the edit list, AAC decoded by the OS, and a transport that maps time to frame through the
+clip's `FrameTiming`. No mixing, resampling or device output (glance-core's glance-audio). Every API
+change is an addition, except `transport::Clip` (below).
+
+- **`core::audio`** (new): `AudioReader::open(movie, track, backend)` → `read(max_frames)` gives
+  `AudioBlock`s (interleaved `f32` at the track's own rate, the exact `MediaTime` of the first frame;
+  a block never spans an edit boundary), `seek(MediaTime)` / `seek_frame(n)` for random access.
+  `AudioCodec` (`#[repr(u32)]` Pcm 0 / Aac 1 / Other 2, pinned), `PcmFormat`, `AudioInfo`. PCM:
+  `sowt` / `twos` (16 / 8-bit), `in24` / `in32` / `fl32` / `fl64` (big-endian unless `enda`),
+  `lpcm` v2 with its flags (float / integer, either byte order, signed / unsigned, packed or aligned
+  high / low in a wider container; non-interleaved is refused by name). Values are AVFoundation's:
+  bit-exact on every layout it reads (`audio_pcm_formats.mov`, 25 tracks) and on the test folder's
+  PCM tracks (25 of 26; the cut-off one fails on both sides, and one GlEnc file with a wrapped 16.16
+  rate is read at its 96 kHz media rate, the same samples AVFoundation labels 30 464 Hz).
+- **Sound tracks in the container**: `Movie::audio` (`AudioTrack`: sound sample description v0 / v1 /
+  v2, `wave` / `frma` / `enda`, `esds` → ES descriptor + AudioSpecificConfig, `roll` sample group,
+  chunk-level PCM tables, per-packet AAC tables, `tkhd` duration) and `Movie::damaged_audio` (a sound
+  track that does not parse never fails the movie). The description fields are ported from Loombda-rs
+  `loombda-media` `read_audio` (Amrit's, MIT by the author's leave). `MediaInfo::audio` lists every
+  sound track (codec, display name, channels, rate, bits, frames; an error for a damaged one).
+- **`timing::AudioTiming`** (new): where every output frame starts — the decoded frames, contiguous
+  at the rate from media time 0, through the edit list per PCM frame (start in `[media_time,
+  media_time + duration)` kept; one starting before an edit's media time dropped), empty edits as
+  silence up to `round(edit end × rate)` (none after the last non-empty edit), no edit list = the
+  `tkhd` duration, an AAC track without a `roll` group trims AudioToolbox's 2112-frame encoder delay
+  after the edit too. `position_of(n)` is the one function giving a frame's real start. All of it is
+  AVFoundation's behaviour, measured (`docs/data/w4-*`).
+- **AAC on macOS**: `backend::AudioDecoder` (new trait) and `Backend::audio_decoder` (new, defaulted to
+  `Unsupported` naming the codec); `dxvkit-plus-apple::audio::AacDecoder` decodes packets with
+  AudioToolbox's `AudioConverter` (the ES descriptor as magic cookie). The core demuxes, trims and
+  seeks (one packet of pre-roll after a seek, AVFoundation's), so Windows (W5) will trim the same
+  frames. Equal to AVFoundation on every AAC track of the test folder and the fixtures (frame counts,
+  first positions and samples; see the handoff for AudioToolbox's own run-to-run spread).
+  The 2112-frame no-`roll` rule and the silence rule were measured on our fixtures.
+- **Undecodable audio** (FLAC, MP3, AAC without a platform decoder, non-interleaved `lpcm`) is an
+  error value naming the codec from `AudioReader::open`; never a panic, never touching the picture.
+- **`timing::FrameTiming`**: `end_time()` (the track's end on the movie timeline), `nearest_frame(t)`
+  (the audio-master clock's pick: Swift's `round(seconds × fps)` on the grid, the nearest real start
+  on a table; a tie goes to the later frame), `timescale()`. timing.rs documents that a sample starting
+  before an edit's media time but overlapping it is dropped on every path (Cowork's answer, W3 Q2).
+- **`transport::Clip`** carries the frame timing (`timing: Option<Arc<FrameTiming>>`, `Clip::new`,
+  `Clip::from_timing`, `Clip::frame_at`, `Clip::nearest_frame`): with a table, time maps to frame
+  through `FrameTiming::frame_at` (equal at every frame start, mid-frame and last tick on the four W3
+  clips, indigofera and the timed fixtures); the range ends at the next frame's start or the track's
+  end; seek / step / cues land on real starts; bounce plays the same times backward. A grid clip is
+  unchanged. **Source change**: `Clip` is no longer `Copy`, and a struct literal needs the new field
+  (`Clip { frames, rate, timing: None }`, or `Clip::new(frames, rate)`).
+- **Fixtures** (CC0, ours, `scripts/make-audio-fixtures.py` + `make-aac-source.swift`):
+  `audio_pcm_formats.mov` (27 PCM layouts), `audio_pcm_edits.mov`, `audio_aac_priming.mov`,
+  `audio_aac_trim.mp4`, `audio_aac_noroll.mov`, and AVFoundation's decode of the AAC ones as the
+  tests' oracle. Cross-test probe `scripts/swift-audio-probe.swift`; example
+  `dxvkit-plus-apple --example audio_dump`; `core --example transport_timing`.
+- **Dependencies** (security, lockfile only): `ruzstd` 0.9.0 → 0.9.1 (RUSTSEC-2026-0344, a
+  decompression bomb in the pure-Rust LMBD backend), `zstd` 0.14.2 → 0.14.4, `zstd-safe` 8.1.0 →
+  8.3.0, `zstd-sys` 2.1.1 → 2.1.3 (RUSTSEC-2026-0391 / 0398 / 0403 / 0410), published since 0.10.0;
+  LMBD vectors and fixtures unchanged on both backends.
+
 ## 0.10.0 — 2026-11-15
 
 **Container timing: every frame at its real start, on every path** (W3). Frame `n` is now the same

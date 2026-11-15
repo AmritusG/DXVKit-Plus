@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_pcm_formats.mov
+title: Every PCM layout DXVKit Plus reads, one sound track each
+author: Amrit Rosell — our own signals (procedural; AAC encoded from our own test signal by AudioToolbox)
+source: Written byte by byte by scripts/make-audio-fixtures.py (QuickTime File Format, ISO/IEC 14496-1 esds)
+license: CC0-1.0
+added: 2026-11-15
+sha256: 42280e127ed38e3837f6bdd623cbb524d402f694ca62485a922160538cfde776
+notes: W4 audio. Sound tracks in order: track 0 sowt 16; track 1 twos 16; track 2 twos 8; track 3 in24 BE; track 4 in24 LE; track 5 in32 BE; track 6 in32 LE; track 7 fl32 BE; track 8 fl32 LE; track 9 fl64 BE; track 10 fl64 LE; track 11 lpcm f32 LE; track 12 lpcm f32 BE; track 13 lpcm f64 LE; track 14 lpcm f64 BE; track 15 lpcm s16 LE; track 16 lpcm s16 BE; track 17 lpcm s24 LE; track 18 lpcm s24 BE; track 19 lpcm s32 LE; track 20 lpcm s32 BE; track 21 lpcm s8; track 22 lpcm u8; track 23 lpcm s24 in 32 high LE; track 24 lpcm s24 in 32 low LE; track 25 lpcm s20 in 24 high BE; track 26 lpcm s16 non-interleaved (refused). AVFoundation serves every track identically to DXVKit Plus except two: the 20-bit-in-24 track (AVFoundation refuses it, kAudioFormatUnsupportedDataFormatError; DXVKit Plus reads it) and the non-interleaved track (both refuse it; AVFoundation does not list it). Without an edit list each track plays its tkhd duration, 21 ms = 1008 of its 1024 frames (docs/data/w4-crosstest-fixtures.jsonl).

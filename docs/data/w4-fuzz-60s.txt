@@ -1,0 +1,2 @@
+# W4: cargo run --release -p dxvkit-plus-core --example fuzz -- 60 8, DXVKit Plus 0.11.0 tree (sound tracks: descriptions, AudioTiming queries, PCM reads and seeks added to the movie target; the five audio fixtures in the corpus), Mac17,6, 2026-11-15
+fuzz: 60 s, 8 threads, corpus 243 (hap frames 56, dxv packets 82, files 72, lmbd 33), execs 5698477 (94956/s), crashes 0, hangs 0, slowest input 45.6 ms

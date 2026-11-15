@@ -285,13 +285,444 @@ pub struct Movie {
     /// Video tracks whose tables did not parse (0.9.0). [`Movie::open`] fails only when no video
     /// track parses.
     pub damaged: Vec<DamagedTrack>,
+    /// Sound tracks whose description and tables parsed, file order (0.11.0; at most
+    /// [`MAX_AUDIO_TRACKS`]).
+    pub audio: Vec<AudioTrack>,
+    /// Sound tracks whose description or tables did not parse (0.11.0; [`DamagedTrack::index`]
+    /// counts among the audio tracks). A damaged sound track never fails the movie.
+    pub damaged_audio: Vec<DamagedTrack>,
     source: Arc<dyn ReadAt>,
 }
 
 impl std::fmt::Debug for Movie {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Movie").field("tracks", &self.tracks).field("timecode", &self.timecode).field("damaged", &self.damaged).finish()
+        f.debug_struct("Movie")
+            .field("tracks", &self.tracks)
+            .field("timecode", &self.timecode)
+            .field("damaged", &self.damaged)
+            .field("audio", &self.audio)
+            .field("damaged_audio", &self.damaged_audio)
+            .finish()
     }
+}
+
+/// Largest compressed audio packet accepted (an AAC packet is at most 768 bytes per channel).
+pub const MAX_AUDIO_PACKET_BYTES: u32 = 1 << 20;
+/// Most sound tracks read from one movie (0.11.0).
+pub const MAX_AUDIO_TRACKS: usize = 64;
+/// AudioToolbox's AAC-LC encoder delay in frames (Apple Technical Note TN2258): what AVFoundation
+/// trims after the edit's media time when an AAC track has no `roll` sample group (0.11.0).
+pub const AAC_ENCODER_DELAY: u64 = 2112;
+
+/// A run of samples stored back to back (`stsc` + `stco` / `co64`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chunk {
+    /// File offset of the chunk's first sample.
+    pub offset: u64,
+    /// Index of the chunk's first sample in the track.
+    pub first: u64,
+    pub samples: u32,
+}
+
+/// One sound track (0.11.0): its description (sound sample description version 0 / 1 / 2, Apple
+/// QuickTime File Format; the parse of the entry's version / channel / size / rate fields is
+/// ported from Loombda-rs `loombda-media` `container.rs` `read_audio`, Amrit Rosell, MIT by the
+/// author's leave — `ATTRIBUTION.md`), its tables and its timing ([`crate::timing::AudioTiming`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioTrack {
+    pub track_id: u32,
+    /// Position among the movie's sound tracks in file order, damaged ones counted.
+    pub index: u32,
+    /// The sample-entry FourCC; for an entry that wraps its format in a `wave` atom, the `frma` one.
+    pub fourcc: [u8; 4],
+    pub codec: crate::audio::AudioCodec,
+    /// Sound sample description version (0, 1, 2).
+    pub version: u16,
+    pub channels: u32,
+    /// The sample rate the entry states (version 0 / 1: 16.16 fixed point; version 2: `f64`).
+    pub stated_rate: f64,
+    /// PCM: valid bits per sample; compressed: 0.
+    pub bits: u32,
+    /// PCM: how a sample is stored; `None` for compressed tracks.
+    pub pcm: Option<crate::audio::PcmFormat>,
+    /// PCM: bytes of one frame (all channels).
+    pub bytes_per_frame: u32,
+    /// Decoded frames per stored sample (PCM 1; AAC 1024, HE-AAC 2048).
+    pub frames_per_packet: u32,
+    /// AAC: the `esds` ES descriptor (the magic cookie a platform decoder takes) and its
+    /// AudioSpecificConfig; empty otherwise.
+    pub esds: Vec<u8>,
+    pub audio_specific_config: Vec<u8>,
+    /// MPEG-4 object type indication from `esds` (0x40 = MPEG-4 audio); 0 without one.
+    pub object_type: u8,
+    /// The AAC pre-roll distance from a `roll` sample group (`sgpd`), in packets (Apple's writers
+    /// store -1); `None` without one (then [`AAC_ENCODER_DELAY`] is trimmed, as AVFoundation does).
+    pub roll: Option<i16>,
+    /// Media timescale and duration (`mdhd`).
+    pub timescale: u32,
+    pub duration: u64,
+    /// `stts` runs: (sample count, delta).
+    pub stts: Vec<(u32, u32)>,
+    /// Number of stored samples (`stsz` count).
+    pub sample_count: u32,
+    /// PCM: where the samples are, chunk by chunk.
+    pub chunks: Vec<Chunk>,
+    /// Compressed: per packet, decode order, (file offset, size).
+    pub packets: Vec<(u64, u32)>,
+    pub edits: Option<Vec<Edit>>,
+    pub movie_timescale: u32,
+    /// Where every output frame starts (`crate::timing::AudioTiming`).
+    pub timing: crate::timing::AudioTiming,
+}
+
+/// The rate a classic (version 0 / 1) entry means: its 16.16 field, unless the field is the media
+/// time scale wrapped at 65 536 (writers that put 88.2 / 96 kHz in the 16.16 field: 96 000 is
+/// stored as 30 464; GlEnc's documented bug, glance-core docs/research/glenc.md §4) — then the time
+/// scale. AVFoundation takes the wrapped field (and plays such a file at the wrong speed).
+fn classic_rate(field: u32, timescale: u32) -> f64 {
+    let stated = f64::from(field) / 65536.0;
+    if timescale > 65535 && field.trailing_zeros() >= 16 && (field >> 16) == timescale & 0xFFFF { f64::from(timescale) } else { stated }
+}
+
+/// The `esds` ES descriptor's object type and DecoderSpecificInfo (ISO/IEC 14496-1 §7.2.6: tags 3
+/// ES_Descr, 4 DecoderConfigDescr, 5 DecSpecificInfo; sizes in 7-bit groups).
+fn read_esds(body: &[u8]) -> (u8, Vec<u8>) {
+    fn descr(b: &[u8], at: usize) -> Option<(u8, usize, usize)> {
+        let tag = *b.get(at)?;
+        let mut len = 0usize;
+        let mut p = at.checked_add(1)?;
+        for _ in 0..4 {
+            let c = *b.get(p)?;
+            p = p.checked_add(1)?;
+            len = (len << 7) | usize::from(c & 0x7F);
+            if c & 0x80 == 0 {
+                break;
+            }
+        }
+        Some((tag, p, len))
+    }
+    let es = body.get(4..).unwrap_or_default();
+    let Some((3, mut p, _)) = descr(es, 0) else { return (0, Vec::new()) };
+    let flags = es.get(p.saturating_add(2)).copied().unwrap_or(0);
+    p = p.saturating_add(3);
+    if flags & 0x80 != 0 {
+        p = p.saturating_add(2);
+    }
+    if flags & 0x40 != 0 {
+        p = p.saturating_add(1).saturating_add(usize::from(es.get(p).copied().unwrap_or(0)));
+    }
+    if flags & 0x20 != 0 {
+        p = p.saturating_add(2);
+    }
+    let Some((4, q, _)) = descr(es, p) else { return (0, Vec::new()) };
+    let oti = es.get(q).copied().unwrap_or(0);
+    let Some((5, d, len)) = descr(es, q.saturating_add(13)) else { return (oti, Vec::new()) };
+    (oti, es.get(d..d.saturating_add(len)).unwrap_or_default().to_vec())
+}
+
+/// AAC output rate, channels and frames per packet from an AudioSpecificConfig (ISO/IEC 14496-3
+/// §1.6.2.1): object type (5 bits, 31 = escape), sampling frequency index (4 bits, 15 = explicit 24),
+/// channel configuration (4 bits); explicit SBR (object type 5 / 29) doubles the frames per packet
+/// at the extension rate. `None` when it does not parse.
+fn read_asc(asc: &[u8]) -> Option<(u32, u32, u32)> {
+    const RATES: [u32; 13] = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    let mut bit = 0usize;
+    let mut take = |n: usize| -> Option<u32> {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let byte = *asc.get(bit / 8)?;
+            v = (v << 1) | u32::from(byte.checked_shr(7u32.saturating_sub((bit % 8) as u32)).unwrap_or(0) & 1);
+            bit = bit.checked_add(1)?;
+        }
+        Some(v)
+    };
+    let mut object = take(5)?;
+    if object == 31 {
+        object = 32u32.checked_add(take(6)?)?;
+    }
+    let rate_of = |t: &mut dyn FnMut(usize) -> Option<u32>| -> Option<u32> {
+        let i = t(4)?;
+        if i == 15 { t(24) } else { RATES.get(i as usize).copied() }
+    };
+    let rate = rate_of(&mut take)?;
+    let channels = take(4)?;
+    if object == 5 || object == 29 {
+        let ext = rate_of(&mut take)?;
+        return Some((ext, channels, 2048));
+    }
+    Some((rate, channels, 1024))
+}
+
+/// Parse one `trak` as a sound track. `Ok(None)` for any other track.
+fn read_audio_track(trak: Span<'_>, file_size: u64, movie_ts: u32) -> Result<Option<AudioTrack>, MediaError> {
+    use crate::audio::{AudioCodec, PcmFormat};
+    let Some(hdlr) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"hdlr")])? else { return Ok(None) };
+    if be32(hdlr.0, 8) != Some(fourcc(b"soun")) {
+        return Ok(None);
+    }
+    let stbl = find_path(trak, &[fourcc(b"mdia"), fourcc(b"minf"), fourcc(b"stbl")])?.ok_or_else(|| corrupt("sound track without a sample table"))?;
+    let stsd = find(stbl, fourcc(b"stsd"))?.ok_or_else(|| corrupt("sound track without stsd"))?;
+    let s = stsd.0;
+    if s.len() < 16 || be32(s, 4).unwrap_or(0) < 1 {
+        return Err(corrupt("sound track with an empty sample description"));
+    }
+    let entry = s.get(8..).unwrap_or_default();
+    let entry_size = be32(entry, 0).unwrap_or(0) as usize;
+    if entry_size < 36 || entry_size > entry.len() {
+        return Err(corrupt("sound sample entry shorter than 36 bytes or past its atom"));
+    }
+    let e = entry.get(..entry_size).unwrap_or_default();
+    let mut cc = be32(e, 4).unwrap_or(0).to_be_bytes();
+    let version = be16(e, 16).unwrap_or(0) as u16;
+    let (mut timescale, mut duration) = (0u32, 0u64);
+    if let Some(m) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"mdhd")])? {
+        let m = m.0;
+        match m.first() {
+            Some(0) if m.len() >= 24 => (timescale, duration) = (be32(m, 12).unwrap_or(0), u64::from(be32(m, 16).unwrap_or(0))),
+            Some(1) if m.len() >= 36 => (timescale, duration) = (be32(m, 20).unwrap_or(0), be64(m, 24).unwrap_or(0)),
+            _ => {}
+        }
+    }
+    // The description: version 0 / 1 share the first 20 bytes after the entry header; version 2 is
+    // its own layout (QTFF "Sound Sample Description (Version 2)").
+    let (channels, field_bits, rate, ext_at, v1_bpf, v2) = match version {
+        2 => {
+            if e.len() < 72 {
+                return Err(corrupt("version 2 sound sample entry shorter than 72 bytes"));
+            }
+            let struct_size = be32(e, 36).unwrap_or(72) as usize;
+            let rate = f64::from_bits(be64(e, 40).unwrap_or(0));
+            let v2 = (be32(e, 56).unwrap_or(0), be32(e, 60).unwrap_or(0), be32(e, 64).unwrap_or(0), be32(e, 68).unwrap_or(0));
+            (be32(e, 48).unwrap_or(0), 0u32, rate, struct_size.max(72), 0u32, Some(v2))
+        }
+        _ => {
+            let ch = be16(e, 24).unwrap_or(0);
+            let bits = be16(e, 26).unwrap_or(0);
+            let rate = classic_rate(be32(e, 32).unwrap_or(0), timescale);
+            let (at, bpf) = if version == 1 && e.len() >= 52 { (52usize, be32(e, 44).unwrap_or(0)) } else { (36usize, 0) };
+            (ch, bits, rate, at, bpf, None)
+        }
+    };
+    // Extension atoms (also inside `wave`): frma (the real format), enda (little-endian), esds.
+    let (mut little, mut esds) = (false, Vec::new());
+    fn walk(b: &[u8], depth: u8, cc: &mut [u8; 4], little: &mut bool, esds: &mut Vec<u8>) {
+        let mut it = 0usize;
+        while let Ok(Some((ty, body))) = next_atom(Span(b), &mut it) {
+            match &ty.to_be_bytes() {
+                b"wave" if depth == 0 => walk(body.0, 1, cc, little, esds),
+                b"frma" => {
+                    if let Some(f) = be32(body.0, 0) {
+                        *cc = f.to_be_bytes();
+                    }
+                }
+                b"enda" => *little = be16(body.0, 0).unwrap_or(0) != 0,
+                b"esds" => *esds = body.0.to_vec(),
+                _ => {}
+            }
+        }
+    }
+    walk(e.get(ext_at..).unwrap_or_default(), 0, &mut cc, &mut little, &mut esds);
+    let (object_type, asc) = if esds.is_empty() { (0, Vec::new()) } else { read_esds(&esds) };
+    let es_descriptor = esds.get(4..).unwrap_or_default().to_vec();
+    let int = |bits: u16, bytes: u8, big: bool| PcmFormat { bits, bytes, float: false, big_endian: big, signed: true, aligned_high: false };
+    let pcm = match (&cc, v2) {
+        (b"lpcm", Some((bits_per_ch, flags, bytes_per_packet, frames_per_packet))) => {
+            if flags & 0x20 != 0 {
+                return Err(MediaError::Unsupported("non-interleaved lpcm audio".into()));
+            }
+            if frames_per_packet != 1 || channels == 0 {
+                return Err(corrupt("lpcm audio with frames per packet other than 1 or no channels"));
+            }
+            let bytes = bytes_per_packet.checked_div(channels).unwrap_or(0);
+            Some(PcmFormat {
+                bits: u16::try_from(bits_per_ch).unwrap_or(0),
+                bytes: u8::try_from(bytes).unwrap_or(0),
+                float: flags & 1 != 0,
+                big_endian: flags & 2 != 0,
+                signed: flags & 4 != 0,
+                aligned_high: flags & 0x10 != 0,
+            })
+        }
+        (b"sowt", _) => Some(int(if field_bits == 8 { 8 } else { 16 }, if field_bits == 8 { 1 } else { 2 }, false)),
+        (b"twos", _) => Some(int(if field_bits == 8 { 8 } else { 16 }, if field_bits == 8 { 1 } else { 2 }, true)),
+        (b"in24", _) => Some(int(24, 3, !little)),
+        (b"in32", _) => Some(int(32, 4, !little)),
+        (b"fl32", _) => Some(PcmFormat { bits: 32, bytes: 4, float: true, big_endian: !little, signed: true, aligned_high: false }),
+        (b"fl64", _) => Some(PcmFormat { bits: 64, bytes: 8, float: true, big_endian: !little, signed: true, aligned_high: false }),
+        _ => None,
+    };
+    let aac = &cc == b"mp4a" && matches!(object_type, 0x40 | 0x66 | 0x67 | 0x68);
+    let codec = if pcm.is_some() {
+        AudioCodec::Pcm
+    } else if aac {
+        AudioCodec::Aac
+    } else {
+        AudioCodec::Other
+    };
+    let (mut rate, mut frames_per_packet) = (rate, 1u32);
+    let mut channels = channels;
+    if codec == AudioCodec::Aac {
+        let (r, c, f) = read_asc(&asc).ok_or_else(|| corrupt("AAC audio with an unreadable AudioSpecificConfig"))?;
+        rate = f64::from(r);
+        frames_per_packet = f;
+        if c != 0 {
+            channels = c;
+        }
+    }
+    if channels == 0 || channels > 64 {
+        return Err(corrupt("sound track with 0 or more than 64 channels"));
+    }
+    let bytes_per_frame = match pcm {
+        Some(f) => {
+            let tight = u32::from(f.bytes).saturating_mul(channels);
+            match v2 {
+                Some((_, _, bpp, _)) => bpp,
+                None if v1_bpf >= tight => v1_bpf,
+                None => tight,
+            }
+        }
+        None => 0,
+    };
+    // A PCM frame holds every channel's sample and at most 16 bytes per channel (an `f64` with
+    // room): a larger stated size is hostile (it would size every read).
+    if let Some(f) = pcm
+        && (bytes_per_frame < u32::from(f.bytes).saturating_mul(channels) || bytes_per_frame > channels.saturating_mul(16))
+    {
+        return Err(corrupt("PCM audio whose bytes per frame do not fit its channels and sample size"));
+    }
+    let bits = pcm.map_or(0, |f| u32::from(f.bits));
+    // Tables.
+    let mut stts = Vec::new();
+    if let Some(t) = find(stbl, fourcc(b"stts"))? {
+        let n = (be32(t.0, 4).unwrap_or(0) as usize).min(t.0.len().saturating_sub(8) / 8);
+        for i in 0..n {
+            let at = 8usize.saturating_add(i.saturating_mul(8));
+            if let (Some(c), Some(d)) = (be32(t.0, at), be32(t.0, at.saturating_add(4))) {
+                stts.push((c, d));
+            }
+        }
+    }
+    let stsz = find(stbl, fourcc(b"stsz"))?.ok_or_else(|| corrupt("no stsz"))?;
+    let stsc = find(stbl, fourcc(b"stsc"))?.ok_or_else(|| corrupt("no stsc"))?;
+    let (stco, co64) = match find(stbl, fourcc(b"stco"))? {
+        Some(s) => (s, false),
+        None => (find(stbl, fourcc(b"co64"))?.ok_or_else(|| corrupt("no stco/co64"))?, true),
+    };
+    let sample_count = be32(stsz.0, 8).unwrap_or(0);
+    let (chunks, packets) = if codec == AudioCodec::Pcm {
+        (chunk_table(stsc.0, stco.0, co64, sample_count)?, Vec::new())
+    } else {
+        let (packets, largest) = sample_table(stsz.0, stsc.0, stco.0, co64, file_size)?;
+        if largest > MAX_AUDIO_PACKET_BYTES {
+            return Err(corrupt("audio packet larger than 1 MB"));
+        }
+        (Vec::new(), packets)
+    };
+    let edits = find_path(trak, &[fourcc(b"edts"), fourcc(b"elst")])?.and_then(|e| read_edits(e.0));
+    // A `roll` sample group (sgpd, ISO/IEC 14496-12 §10.1: AAC pre-roll) says the edit list holds
+    // the priming; without one AVFoundation trims AudioToolbox's AAC-LC encoder delay of 2112 frames
+    // (Apple TN2258) after the edit's media time too (measured: docs/data/w4-crosstest-fixtures.jsonl).
+    let mut roll = None;
+    let mut it = 0usize;
+    while let Ok(Some((ty, body))) = next_atom(stbl, &mut it) {
+        if ty == fourcc(b"sgpd") && be32(body.0, 4) == Some(fourcc(b"roll")) {
+            // version 1: default_length at 8, count at 12, the first entry's int16 at 16; version 0
+            // (no default length): count at 8, entry at 12.
+            let at = if body.0.first() == Some(&1) { 16 } else { 12 };
+            roll = Some(be16(body.0, at).unwrap_or(0) as i16);
+        }
+    }
+    let priming = if codec == AudioCodec::Aac && frames_per_packet == 1024 && roll.is_none() { AAC_ENCODER_DELAY } else { 0 };
+    // tkhd: version 0 id at 12, duration at 20 (32-bit); version 1 id at 20, duration at 28 (64-bit).
+    let (track_id, track_duration) = match find(trak, fourcc(b"tkhd"))?.map(|t| t.0) {
+        Some(t) if t.first() == Some(&1) => (be32(t, 20).unwrap_or(0), be64(t, 28).unwrap_or(0)),
+        Some(t) => (be32(t, 12).unwrap_or(0), u64::from(be32(t, 20).unwrap_or(0))),
+        None => (0, 0),
+    };
+    // An integer output rate (a fractional one has no exact frame grid).
+    let rate_hz = if rate.is_finite() && rate >= 1.0 && rate.fract() == 0.0 && rate <= f64::from(u32::MAX) { rate as u32 } else { 0 };
+    let decoded_frames = u64::from(sample_count).saturating_mul(u64::from(frames_per_packet));
+    let media_duration = stts.iter().fold(0u64, |a, &(c, d)| a.saturating_add(u64::from(c).saturating_mul(u64::from(d))));
+    let timing = crate::timing::AudioTiming::from_tables(&crate::timing::AudioTables {
+        decoded_frames,
+        rate: rate_hz,
+        timescale,
+        media_duration,
+        edits: edits.as_deref(),
+        movie_timescale: movie_ts,
+        track_duration,
+        priming,
+    });
+    if rate_hz == 0 {
+        return Err(corrupt("sound track without an integer sample rate"));
+    }
+    Ok(Some(AudioTrack {
+        track_id,
+        index: 0,
+        fourcc: cc,
+        codec,
+        version,
+        channels,
+        stated_rate: rate,
+        bits,
+        pcm,
+        bytes_per_frame,
+        frames_per_packet,
+        esds: es_descriptor,
+        audio_specific_config: asc,
+        object_type,
+        roll,
+        timescale,
+        duration,
+        stts,
+        sample_count,
+        chunks,
+        packets,
+        edits,
+        movie_timescale: movie_ts,
+        timing,
+    }))
+}
+
+/// Chunk-level sample table (PCM: billions of one-frame samples are never listed one by one).
+fn chunk_table(stsc: &[u8], stco: &[u8], co64: bool, count: u32) -> Result<Vec<Chunk>, MediaError> {
+    let entry_bytes = if co64 { 8usize } else { 4 };
+    if count == 0 {
+        return Err(corrupt("sound track without samples"));
+    }
+    let runs = be32(stsc, 4).unwrap_or(0);
+    if runs == 0 || (stsc.len().saturating_sub(8) / 12) < runs as usize {
+        return Err(corrupt("stsc shorter than its count"));
+    }
+    let chunks = be32(stco, 4).unwrap_or(0);
+    if chunks == 0 || stco.len().saturating_sub(8).checked_div(entry_bytes).unwrap_or(0) < chunks as usize {
+        return Err(corrupt("stco shorter than its count"));
+    }
+    let mut out = Vec::with_capacity((chunks as usize).min(1 << 20));
+    let mut sample = 0u64;
+    for r in 0..runs {
+        let e = 8usize.saturating_add((r as usize).saturating_mul(12));
+        let first = be32(stsc, e).unwrap_or(0);
+        let per_chunk = be32(stsc, e.saturating_add(4)).unwrap_or(0);
+        let last = if r.saturating_add(1) < runs { be32(stsc, e.saturating_add(12)).unwrap_or(0) } else { chunks.saturating_add(1) };
+        if first == 0 || (r == 0 && first != 1) || last <= first || last > chunks.saturating_add(1) || per_chunk == 0 {
+            return Err(corrupt("stsc run out of order or out of range"));
+        }
+        for c in first..last {
+            if sample >= u64::from(count) {
+                break;
+            }
+            let o = 8usize.saturating_add((c.saturating_sub(1) as usize).saturating_mul(entry_bytes));
+            let offset = if co64 { be64(stco, o).unwrap_or(u64::MAX) } else { u64::from(be32(stco, o).unwrap_or(u32::MAX)) };
+            let n = u64::from(per_chunk).min(u64::from(count).saturating_sub(sample)) as u32;
+            out.push(Chunk { offset, first: sample, samples: n });
+            sample = sample.saturating_add(u64::from(n));
+        }
+    }
+    if sample != u64::from(count) {
+        return Err(corrupt("sample-to-chunk table does not cover every sample"));
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Copy)]
@@ -611,6 +1042,12 @@ fn track_video_fourcc(source: &dyn ReadAt, trak: Atom) -> Option<[u8; 4]> {
 
 /// Per-sample offsets and sizes from stsz, stsc and stco / co64.
 fn build_samples(t: &mut VideoTrack, stsz: &[u8], stsc: &[u8], stco: &[u8], co64: bool, file_size: u64) -> Result<(), MediaError> {
+    (t.samples, t.max_sample) = sample_table(stsz, stsc, stco, co64, file_size)?;
+    Ok(())
+}
+
+/// Per-sample (offset, size) and the largest size, from stsz, stsc and stco / co64.
+fn sample_table(stsz: &[u8], stsc: &[u8], stco: &[u8], co64: bool, file_size: u64) -> Result<(Vec<(u64, u32)>, u32), MediaError> {
     let entry_bytes = if co64 { 8usize } else { 4 };
     if stsz.len() < 12 || stsc.len() < 8 || stco.len() < 8 {
         return Err(corrupt("sample table atoms too short"));
@@ -674,9 +1111,7 @@ fn build_samples(t: &mut VideoTrack, stsz: &[u8], stsc: &[u8], stco: &[u8], co64
     if sample != count {
         return Err(corrupt("sample-to-chunk table does not cover every sample"));
     }
-    t.samples = samples;
-    t.max_sample = max;
-    Ok(())
+    Ok((samples, max))
 }
 
 fn printable(b: &[u8]) -> bool {
@@ -755,10 +1190,32 @@ impl Movie {
         let mut damaged = Vec::new();
         let mut timecode = None;
         let mut index = 0u32;
+        let (mut audio, mut damaged_audio, mut audio_index) = (Vec::new(), Vec::new(), 0u32);
         let mut it = 0usize;
         let movie_ts = movie_timescale(Span(&buf));
         while let Some((ty, body)) = next_atom(Span(&buf), &mut it)? {
             if ty != fourcc(b"trak") {
+                continue;
+            }
+            let mut audio_index_used = false;
+            match read_audio_track(body, size, movie_ts) {
+                Ok(Some(mut a)) => {
+                    a.index = audio_index;
+                    if audio.len() < MAX_AUDIO_TRACKS {
+                        audio.push(a);
+                    }
+                    audio_index_used = true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if damaged_audio.len() < MAX_AUDIO_TRACKS {
+                        damaged_audio.push(DamagedTrack { index: audio_index, fourcc: sample_entry_fourcc(body), error });
+                    }
+                    audio_index_used = true;
+                }
+            }
+            if audio_index_used {
+                audio_index = audio_index.saturating_add(1);
                 continue;
             }
             match read_track(body, size, movie_ts) {
@@ -779,7 +1236,16 @@ impl Movie {
                 }
             }
         }
-        Ok(Movie { tracks, timecode, damaged, source })
+        Ok(Movie { tracks, timecode, damaged, audio, damaged_audio, source })
+    }
+
+    /// Fill `buf` from file offset `offset` (audio blocks; 0.11.0).
+    pub(crate) fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), MediaError> {
+        let file = self.source.size();
+        if offset > file || buf.len() as u64 > file.saturating_sub(offset) {
+            return Err(MediaError::Corrupt("read past the end of the file".into()));
+        }
+        self.source.read_exact_at(offset, buf).map_err(|e| MediaError::Io(e.to_string()))
     }
 
     /// Every video track, parsed or damaged.

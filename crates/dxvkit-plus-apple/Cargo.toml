@@ -57,5 +57,6 @@ objc2-core-media = { workspace = true }
 objc2-av-foundation = { workspace = true, features = ["objc2-core-media"] }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 dxvkit-plus-wgpu = { workspace = true }
 wgpu = { workspace = true }

@@ -36,9 +36,10 @@ const TIMED: [(&str, u64, u32); 5] = [
 #[test]
 fn every_command_works_on_every_fixture() {
     let files = fixtures();
-    // 16 tile movies, HAP R and HAP HDR, (0.9.0) a fragmented MP4 only the platform reads, and
-    // (0.10.0) four movies with edit lists / composition offsets and one on jittered timing.
-    assert_eq!(files.len(), 24);
+    // 16 tile movies, HAP R and HAP HDR, (0.9.0) a fragmented MP4 only the platform reads,
+    // (0.10.0) four movies with edit lists / composition offsets and one on jittered timing, and
+    // (0.11.0) five movies with sound tracks (scripts/make-audio-fixtures.py; 16x16 Hap1 video).
+    assert_eq!(files.len(), 29);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     for f in &files {
@@ -51,7 +52,13 @@ fn every_command_works_on_every_fixture() {
             assert_eq!((p["kind"].as_str(), p["frames"].as_u64(), p["codec_name"].as_str()), (Some("native"), Some(60), Some("H.264")), "{name}");
         } else if let Some(&(_, frames, _)) = TIMED.iter().find(|t| t.0 == name) {
             assert_eq!(p["frames"].as_u64(), Some(frames), "{name}");
+        } else if name.starts_with("audio_") {
+            // probe lists the sound tracks (0.11.0): 27 PCM layouts, else one track.
+            let tracks = p["audio"].as_array().map_or(0, Vec::len);
+            assert_eq!(tracks, if name == "audio_pcm_formats.mov" { 27 } else { 1 }, "{name}");
+            assert_eq!(p["frames"].as_u64(), Some(if name.starts_with("audio_aac") { 15 } else { 3 }), "{name}");
         } else {
+            assert!(p["audio"].as_array().is_some_and(Vec::is_empty), "{name}: control, no sound tracks");
             assert_eq!(p["frames"].as_u64(), Some(3), "{name}");
         }
         let (w, h) = (p["width"].as_u64().unwrap() as u32, p["height"].as_u64().unwrap() as u32);
@@ -89,9 +96,10 @@ fn every_command_works_on_every_fixture() {
         files.iter().filter(|f| !f.to_str().unwrap().contains("frag_")).partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
     let v = run(bin().args(["verify", "--tiles", "--source-tolerance", "255"]).args(&tile_files));
     let v2 = run(bin().arg("verify").args(&synthetic));
-    // HAP R, HAP HDR and (0.10.0) the five timed fixtures, verified without frame identity (their
-    // frame n shows another source frame by design; checked above and in core's tests/timing.rs).
-    assert_eq!((v.len(), v2.len()), (16, 7));
+    // HAP R, HAP HDR, (0.10.0) the five timed fixtures, verified without frame identity (their
+    // frame n shows another source frame by design; checked above and in core's tests/timing.rs),
+    // and (0.11.0) the five audio fixtures' black Hap1 video.
+    assert_eq!((v.len(), v2.len()), (16, 12));
     // DXV: probe names the variant; both alpha modes verify.
     let dxv: Vec<&PathBuf> =
         tile_files.iter().copied().filter(|f| f.to_str().unwrap().contains("tiles_dxt") || f.to_str().unwrap().contains("tiles_y")).collect();

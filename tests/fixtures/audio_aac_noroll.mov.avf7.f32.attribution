@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_noroll.mov.avf7.f32
+title: AVFoundation's decode of audio_aac_noroll.mov, every 7th frame
+author: Amrit Rosell — AVAssetReader (linear PCM Float32 interleaved, the track's own rate and channels) on our own CC0 fixture
+source: scripts/swift-audio-probe.swift --dump on macOS 27.0.1 (Mac17,6); frames 0, 7, 14, ... of 20352, 2 channels, f32 little-endian interleaved
+license: CC0-1.0
+added: 2026-11-15
+sha256: c29a87f4231e0c15c16d1638d6178ee7307831f788efa7b657fc561d6fc291e8
+notes: W4 audio. The oracle crates/dxvkit-plus-apple/tests/audio.rs compares DXVKit Plus's AAC decode with (frame count and first position exact, samples within 1e-6: AudioToolbox's own output varied by up to 5.7e-7 between runs on this Mac, docs/handoffs/w4-audio.md). Full AVFoundation hash: 0eef5dfa4494256cf53c308a0dc2e03e91dffa8857d6db7139bfefb0db028f7c.

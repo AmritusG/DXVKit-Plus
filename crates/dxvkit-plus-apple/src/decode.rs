@@ -56,6 +56,9 @@ impl Backend for AppleBackend {
     fn open(&self, path: &Path, layout: PixelLayout) -> Result<Box<dyn NativeDecoder>, MediaError> {
         Ok(Box::new(NativeReader::open(path, layout)?))
     }
+    fn audio_decoder(&self, track: &dxvkit_plus_core::container::AudioTrack) -> Result<Box<dyn dxvkit_plus_core::backend::AudioDecoder>, MediaError> {
+        Ok(Box::new(crate::audio::AacDecoder::open(track)?))
+    }
 }
 
 /// The concrete handle inside a [`NativeFrame`] produced here.

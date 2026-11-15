@@ -66,6 +66,9 @@ pub struct MediaInfo {
     pub codec_name: String,
     /// The container's display name ([`crate::names::container_name`]). 0.9.0.
     pub container_name: String,
+    /// The movie's sound tracks, file order, damaged ones included (`crate::audio`; empty for
+    /// files that are not movies we parse). 0.11.0.
+    pub audio: Vec<crate::audio::AudioInfo>,
 }
 
 impl Default for MediaInfo {
@@ -85,6 +88,7 @@ impl Default for MediaInfo {
             alpha: StatedAlpha::None,
             codec_name: String::new(),
             container_name: String::new(),
+            audio: Vec::new(),
         }
     }
 }
@@ -372,7 +376,39 @@ fn pick<'a>(movie: &'a Movie, opts: &ImportOptions) -> Result<Pick<'a>, MediaErr
     })
 }
 
+/// A movie's sound tracks as `MediaInfo::audio` lists them (0.11.0).
+pub fn audio_infos(movie: &Movie) -> Vec<crate::audio::AudioInfo> {
+    use crate::audio::{AudioCodec, AudioInfo};
+    let mut out: Vec<AudioInfo> = movie
+        .audio
+        .iter()
+        .map(|t| AudioInfo {
+            index: t.index,
+            track_id: t.track_id,
+            fourcc: String::from_utf8_lossy(&t.fourcc).into_owned(),
+            codec: t.codec,
+            codec_name: crate::names::audio_codec_label(t),
+            channels: t.channels,
+            sample_rate: t.timing.rate,
+            bits: t.bits,
+            frames: t.timing.frame_count(),
+            error: t.pcm.and_then(|f| f.supported().err()),
+        })
+        .collect();
+    out.extend(movie.damaged_audio.iter().map(|d| AudioInfo {
+        index: d.index,
+        fourcc: d.fourcc.map(|f| String::from_utf8_lossy(&f).into_owned()).unwrap_or_default(),
+        codec: AudioCodec::Other,
+        codec_name: d.fourcc.map(|f| crate::names::codec_label(&f)).unwrap_or_default(),
+        error: Some(d.error.to_string()),
+        ..AudioInfo::default()
+    }));
+    out.sort_by_key(|a| a.index);
+    out
+}
+
 fn probe_movie(base: MediaInfo, movie: &Movie, opts: &ImportOptions) -> Result<MediaInfo, MediaError> {
+    let base = MediaInfo { audio: audio_infos(movie), ..base };
     let track = match pick(movie, opts)? {
         Pick::Track(t) => t,
         // A damaged DXV / HAP track: our parser's error (the platform decodes neither format).

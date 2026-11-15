@@ -13,9 +13,17 @@
 //!   outside every edit are dropped; a sample inside two edits is two frames. The starts, sorted, are
 //!   the frames: frame `n` is the `n`-th of them, [`FrameTiming::time_of_frame`] its real start
 //!   (an exact rational), [`FrameTiming::frame_at`] the inverse (floor: a frame's own start is that
-//!   frame), [`FrameTiming::sample_of_frame`] the sample that shows it. Empty edits only shift the
-//!   later edits (they are not frames). Without non-empty edits the frames are the samples'
-//!   presentation times as stored (no shift).
+//!   frame), [`FrameTiming::nearest_frame`] the frame whose start is nearest (the audio-master
+//!   clock's pick, 0.11.0), [`FrameTiming::sample_of_frame`] the sample that shows it. Empty edits
+//!   only shift the later edits (they are not frames). Without non-empty edits the frames are the
+//!   samples' presentation times as stored (no shift).
+//! - **A sample that starts before an edit's media time but overlaps it is dropped** (Swift's rule,
+//!   kept on every path — Cowork's answer to W3's question, 2026-11-15): only the start decides
+//!   whether a sample is in an edit. For audio the same rule runs per decoded PCM frame
+//!   ([`AudioTiming`]), where a frame never overlaps a boundary that lies on the frame grid.
+//! - **End** ([`FrameTiming::end_time`], 0.11.0): where the track ends on the movie timeline — the
+//!   summed edit durations, or without edits the last presented sample's start plus its `stts`
+//!   delta; on the grid `count x frame duration`. The transport loops there.
 //! - **Rate**, an exact rational, by Swift's rules in order: the mean (sample count / the samples'
 //!   summed duration, else / the track duration) snapped to a standard rate within 0.1 %; the
 //!   dominant sample duration, snapped the same way; the shortest sample duration when it agrees
@@ -225,6 +233,8 @@ pub struct FrameTiming {
     /// Table: the sample (decode order) of every frame. Grid: the samples in presentation order.
     samples: Vec<u32>,
     count: u32,
+    /// Table: the track's end on the movie timeline, in `timescale` units (0.11.0).
+    end: i64,
 }
 
 /// Inputs of [`FrameTiming::from_tables`]: a track's tables as stored.
@@ -250,7 +260,7 @@ impl FrameTiming {
     /// `count` frames at `rate` on the grid (`n x frame duration`); frame `n` is sample `n`.
     pub fn grid(rate: FrameRate, count: u32, source: RateSource) -> FrameTiming {
         let samples = (0..count.min(MAX_SAMPLES)).collect();
-        FrameTiming { rate, source, timescale: 0, starts: Vec::new(), samples, count }
+        FrameTiming { rate, source, timescale: 0, starts: Vec::new(), samples, count, end: 0 }
     }
 
     /// The timing of a track from its tables (module doc).
@@ -302,17 +312,67 @@ impl FrameTiming {
         let (rate, source) =
             rate_of(&RateInputs { durations: &durations, timescale: t.timescale, track_seconds, min_frame_duration: min.map(|v| (v, t.timescale)), nominal });
         match map_times(&pts, &order, t, edits) {
-            Some((timescale, mapped)) => {
+            Some((timescale, mapped, end)) => {
                 let count = u32::try_from(mapped.len()).unwrap_or(0);
+                let last_start = mapped.last().map_or(0, |&(s, _)| s);
+                // Without edits: the last presented sample's start plus its stts delta.
+                let end = end.unwrap_or_else(|| order.last().map_or(0, |&s| pts.get(s as usize).copied().unwrap_or(0).saturating_add(stts_delta(t.stts, s))));
                 let (starts, samples) = mapped.into_iter().unzip();
-                FrameTiming { rate, source, timescale, starts, samples, count }
+                FrameTiming { rate, source, timescale, starts, samples, count, end: end.max(last_start) }
             }
             None => {
                 let count = (track_seconds * rate.num as f64 / rate.den as f64).round();
                 let count = if count.is_finite() && count > 0.0 { (count.min(f64::from(MAX_SAMPLES))) as u32 } else { 0 };
-                FrameTiming { rate, source, timescale: 0, starts: Vec::new(), samples: order, count }
+                FrameTiming { rate, source, timescale: 0, starts: Vec::new(), samples: order, count, end: 0 }
             }
         }
+    }
+
+    /// The time scale [`FrameTiming::time_of_frame`] counts in for a table (0 on the grid, whose
+    /// times count in the rate's numerator). 0.11.0.
+    pub fn timescale(&self) -> u32 {
+        if self.has_table() { self.timescale } else { u32::try_from(self.rate.num).unwrap_or(u32::MAX) }
+    }
+
+    /// Where the track ends on the movie timeline (module doc), exact. 0.11.0.
+    pub fn end_time(&self) -> MediaTime {
+        if self.has_table() {
+            return MediaTime::new(self.end, self.timescale);
+        }
+        let d = self.frame_duration();
+        MediaTime::new(i64::from(self.count).saturating_mul(d.value), d.timescale)
+    }
+
+    /// The frame whose start is nearest to `t` (a tie goes to the later frame), clamped to the
+    /// track: the audio-master clock's pick (Swift Glance `FrameClock.audioMasterTarget`:
+    /// `round(seconds x fps)` on its grid — the same frame here on the grid; on a table, the
+    /// nearest real start). 0.11.0.
+    pub fn nearest_frame(&self, t: MediaTime) -> u32 {
+        if self.count == 0 {
+            return 0;
+        }
+        if self.has_table() {
+            let k = self.frame_at(t);
+            if k >= self.last() {
+                return k;
+            }
+            let (a, b) = (self.time_of_frame(k), self.time_of_frame(k.saturating_add(1)));
+            if t.cmp_time(a) == Ordering::Less {
+                return k;
+            }
+            // t - a >= b - t  <=>  2t >= a + b (exact, over a common scale).
+            let s = |m: MediaTime, ts: u32| i128::from(m.value).saturating_mul(i128::from(ts));
+            let (ta, tb) = (t.timescale.max(1), a.timescale.max(1));
+            // Compare 2 * t / ta with (a + b) / tb  (a and b share a time scale).
+            let lhs = s(t, tb).saturating_mul(2);
+            let rhs = i128::from(a.value).saturating_add(i128::from(b.value)).saturating_mul(i128::from(ta));
+            return if lhs >= rhs { k.saturating_add(1) } else { k };
+        }
+        // round(t x num / (den x ts)) = floor((2 t num + den ts) / (2 den ts)), exact.
+        let num = i128::from(t.value).saturating_mul(i128::from(self.rate.num)).saturating_mul(2);
+        let den = i128::from(self.rate.den).saturating_mul(i128::from(t.timescale.max(1)));
+        let f = num.saturating_add(den).div_euclid(den.saturating_mul(2).max(1)).max(0);
+        u32::try_from(f).unwrap_or(u32::MAX).min(self.last())
     }
 
     /// Number of frames.
@@ -375,6 +435,19 @@ impl FrameTiming {
     }
 }
 
+/// The `stts` delta of sample `s` (decode order); 0 past the table.
+fn stts_delta(stts: &[(u32, u32)], s: u32) -> i64 {
+    let mut first = 0u64;
+    for &(count, delta) in stts {
+        let next = first.saturating_add(u64::from(count));
+        if u64::from(s) < next {
+            return i64::from(delta);
+        }
+        first = next;
+    }
+    0
+}
+
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
         (a, b) = (b, a.checked_rem(b).unwrap_or(0));
@@ -383,8 +456,9 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 }
 
 /// Media presentation times -> sorted movie-timeline times through the edit list (Swift's
-/// `FrameTiming.movieTimes`), with the sample of each. `None` = the grid fallback.
-fn map_times(pts: &[i64], order: &[u32], t: &Tables<'_>, edits: Option<&[Edit]>) -> Option<(u32, Vec<(i64, u32)>)> {
+/// `FrameTiming.movieTimes`), with the sample of each and, with edits, the end of the last edit
+/// (ceiled to the common scale). `None` = the grid fallback.
+fn map_times(pts: &[i64], order: &[u32], t: &Tables<'_>, edits: Option<&[Edit]>) -> Option<(u32, Vec<(i64, u32)>, Option<i64>)> {
     let m = t.timescale;
     if m == 0 {
         return None;
@@ -393,7 +467,7 @@ fn map_times(pts: &[i64], order: &[u32], t: &Tables<'_>, edits: Option<&[Edit]>)
     if all.iter().all(Edit::is_empty) {
         // No non-empty edit: the presentation times as stored.
         let out = order.iter().map(|&s| (pts.get(s as usize).copied().unwrap_or(0), s)).collect::<Vec<_>>();
-        return (!out.is_empty()).then_some((m, out));
+        return (!out.is_empty()).then_some((m, out, None));
     }
     let v = t.movie_timescale;
     if v == 0 || all.iter().any(|e| !e.is_empty() && (e.rate != Edit::RATE_ONE || e.media_time < 0)) {
@@ -437,5 +511,237 @@ fn map_times(pts: &[i64], order: &[u32], t: &Tables<'_>, edits: Option<&[Edit]>)
         return None;
     }
     out.sort_unstable();
-    Some((ts, out))
+    // The end: all edits' durations (movie units) in the common scale, ceiled.
+    let end = i64::try_from(ceil_div(i128::from(acc).saturating_mul(fv), i128::from(v))).ok();
+    Some((ts, out, end))
+}
+
+/// `ceil(a / b)` for `b > 0`.
+fn ceil_div(a: i128, b: i128) -> i128 {
+    let b = b.max(1);
+    a.div_euclid(b).saturating_add(i128::from(a.rem_euclid(b) != 0))
+}
+
+/// The inputs of [`AudioTiming::from_tables`]: an audio track's decoded stream and its tables.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AudioTables<'a> {
+    /// PCM frames the track's samples decode to (PCM: one per sample; AAC: 1024 per packet).
+    pub decoded_frames: u64,
+    /// The output sample rate (frames per second).
+    pub rate: u32,
+    /// Media (`mdhd`) time scale.
+    pub timescale: u32,
+    /// The media's length in media units: the summed `stts` deltas.
+    pub media_duration: u64,
+    /// The edit list, `None` without one.
+    pub edits: Option<&'a [Edit]>,
+    /// Movie (`mvhd`) time scale.
+    pub movie_timescale: u32,
+    /// The track's duration (`tkhd`, movie units): without an edit list the track plays that long.
+    pub track_duration: u64,
+    /// Frames trimmed after every edit's media time on top of it: an AAC track that does not state
+    /// its pre-roll (no `roll` sample group) has AudioToolbox's encoder delay, 2112 frames, trimmed
+    /// as AVFoundation does; 0 otherwise.
+    pub priming: u64,
+}
+
+/// A run of output frames: `frames` frames of the decoded stream from frame `first` (or, `silent`,
+/// that many frames of silence for an empty edit), the first starting at `start` on the movie
+/// timeline, the rest every `1 / rate` after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct AudioSegment {
+    pub start: MediaTime,
+    pub first: u64,
+    pub frames: u64,
+    pub silent: bool,
+}
+
+/// An audio track's timing (0.11.0): where every output PCM frame starts on the movie timeline.
+///
+/// The decoded stream is the track's PCM frames in decode order, contiguous at the output rate from
+/// media time 0 (Swift Glance's `AudioClock` plays the frames AVFoundation serves back to back at
+/// the stream's rate): frame `j` starts at media time `j / rate`. Frames at or past the media's end
+/// (the summed `stts` deltas; an AAC track's last packet may be shorter than it decodes) are not
+/// part of the media. Through the edit list, as [`FrameTiming`] maps video samples: for each
+/// non-empty edit, the frames whose start lies in `[media_time, media_time + duration)` play,
+/// starting at the edit's start on the movie timeline plus their offset from `media_time`; frames
+/// outside every edit are dropped, a frame starting before an edit's media time is dropped even
+/// when it overlaps it. An empty edit is silence: as many silent frames as bring the output to
+/// `round(edit end x rate)` frames (half up; none when the output is already there), none after the
+/// last non-empty edit. Without an edit list the track plays from media time 0 for its `tkhd`
+/// duration (an implicit edit). An AAC track without a `roll` sample group has 2112 more frames
+/// (AudioToolbox's encoder delay) trimmed after each edit's media time ([`AudioTables::priming`]).
+/// That is what AVFoundation serves, measured on every audio track of
+/// the test folder and on the fixtures (`docs/data/w4-crosstest-*.jsonl`): an AAC track with
+/// priming in `media_time` (e.g. 1024 or 2112) starts at its first real frame; an edit that ends
+/// between two frames keeps the frame starting inside it (220 160 frames, edit 4.992 s at 44.1 kHz:
+/// 220 148 served); empty edits of 3 ms and 2 ms at 44.1 kHz give 132 and 89 silent frames. An edit
+/// at another speed, a negative media time other than an empty edit's, or a missing movie time
+/// scale: the edit list is not applied (every frame from 0), as [`FrameTiming`] falls back to its
+/// grid; so is an edit list without a non-empty edit.
+///
+/// The output frames play back to back at the rate (frame `n` at `n / rate` on a clock that counts
+/// them, as Swift Glance's `AudioClock` does); [`AudioTiming::position_of`] is the one function
+/// giving a frame's real start on the movie timeline, exact — the two differ by less than a frame
+/// per edit boundary that falls between frames.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioTiming {
+    pub rate: u32,
+    segments: Vec<AudioSegment>,
+    count: u64,
+}
+
+impl AudioTiming {
+    /// The timing of an audio track from its tables (type doc).
+    pub fn from_tables(t: &AudioTables<'_>) -> AudioTiming {
+        let (rate, m) = (t.rate, t.timescale);
+        if rate == 0 || m == 0 {
+            return AudioTiming { rate, segments: Vec::new(), count: 0 };
+        }
+        // Frames with j / rate < media_duration / m.
+        let media = ceil_div(i128::from(t.media_duration).saturating_mul(i128::from(rate)), i128::from(m));
+        let n = i128::from(t.decoded_frames).min(media).max(0);
+        let implicit = [Edit { duration: t.track_duration, media_time: 0, rate: Edit::RATE_ONE }];
+        let all = match t.edits {
+            Some(e) => e,
+            None if t.track_duration > 0 => &implicit[..],
+            None => &[],
+        };
+        let v = t.movie_timescale;
+        let apply = !all.iter().all(Edit::is_empty) && v > 0 && all.iter().all(|e| e.is_empty() || (e.rate == Edit::RATE_ONE && e.media_time >= 0));
+        let mut segments = Vec::new();
+        if !apply {
+            if n > 0 {
+                segments.push(AudioSegment { start: MediaTime::new(0, rate), first: 0, frames: u64::try_from(n).unwrap_or(0), silent: false });
+            }
+        } else {
+            let (r, m, v) = (i128::from(rate), i128::from(m), i128::from(v));
+            let last_media = all.iter().rposition(|e| !e.is_empty()).unwrap_or(0);
+            let mut acc = 0i128;
+            let mut out = 0i128;
+            for (i, e) in all.iter().enumerate() {
+                let target = acc;
+                acc = acc.saturating_add(i128::from(e.duration));
+                if e.is_empty() {
+                    // Silence up to round(end x rate), half up: floor((2 end r + v) / 2 v).
+                    let to = acc.saturating_mul(r).saturating_mul(2).saturating_add(v).div_euclid(v.saturating_mul(2).max(1));
+                    let frames = to.saturating_sub(out);
+                    if i < last_media && frames > 0 {
+                        segments.push(AudioSegment {
+                            start: rational_time(target, v, lcm(v, r)),
+                            first: 0,
+                            frames: u64::try_from(frames).unwrap_or(0),
+                            silent: true,
+                        });
+                        out = out.saturating_add(frames);
+                    }
+                    continue;
+                }
+                // The edit's media time, plus the unstated priming (in media units, exact: rate / m
+                // frames per unit is applied through the cross products below).
+                let mt = i128::from(e.media_time).saturating_add(ceil_div(i128::from(t.priming).saturating_mul(m), r));
+                // First frame starting at or after media_time: j0 = ceil(mt * rate / m).
+                let j0 = ceil_div(mt.saturating_mul(r), m).min(n);
+                // Frames with j / rate < mt / m + duration / v:  j < (mt * r * v + d * r * m) / (m * v).
+                let bound = mt.saturating_mul(r).saturating_mul(v).saturating_add(i128::from(e.duration).saturating_mul(r).saturating_mul(m));
+                let j1 = ceil_div(bound, m.saturating_mul(v)).min(n);
+                if j1 <= j0 {
+                    continue;
+                }
+                // Start: target / v + (j0 / rate - mt / m)  =  (target * r * m + (j0 * m - mt * r) * v) / (v * r * m).
+                let num =
+                    target.saturating_mul(r).saturating_mul(m).saturating_add(j0.saturating_mul(m).saturating_sub(mt.saturating_mul(r)).saturating_mul(v));
+                let den = v.saturating_mul(r).saturating_mul(m);
+                let start = rational_time(num, den, lcm(v, r));
+                segments.push(AudioSegment {
+                    start,
+                    first: u64::try_from(j0).unwrap_or(0),
+                    frames: u64::try_from(j1.saturating_sub(j0)).unwrap_or(0),
+                    silent: false,
+                });
+                out = out.saturating_add(j1.saturating_sub(j0));
+            }
+        }
+        let count = segments.iter().fold(0u64, |a, s| a.saturating_add(s.frames));
+        AudioTiming { rate, segments, count }
+    }
+
+    /// Output frames: the frames that play, through the edit list.
+    pub fn frame_count(&self) -> u64 {
+        self.count
+    }
+    /// The runs of output frames, movie order.
+    pub fn segments(&self) -> &[AudioSegment] {
+        &self.segments
+    }
+    /// The segment holding output frame `n`: (segment, its first output frame).
+    fn segment_of(&self, n: u64) -> Option<(&AudioSegment, u64)> {
+        let mut at = 0u64;
+        for s in &self.segments {
+            let next = at.saturating_add(s.frames);
+            if n < next {
+                return Some((s, at));
+            }
+            at = next;
+        }
+        None
+    }
+    /// The real start of output frame `n` on the movie timeline, exact; `None` past the end.
+    pub fn position_of(&self, n: u64) -> Option<MediaTime> {
+        let (s, at) = self.segment_of(n)?;
+        Some(add_frames(s.start, n.saturating_sub(at), self.rate))
+    }
+    /// The decoded-stream frame output frame `n` plays; `None` past the end or in silence.
+    pub fn source_frame(&self, n: u64) -> Option<u64> {
+        let (s, at) = self.segment_of(n)?;
+        (!s.silent).then(|| s.first.saturating_add(n.saturating_sub(at)))
+    }
+    /// The output frame playing at `t`: in the last segment starting at or before `t`, the frame
+    /// whose span `[start, start + 1 / rate)` holds `t` (a silent segment's last frame may reach past
+    /// the next segment's exact start: the later segment wins); past that segment's end (a gap) the
+    /// next segment's first frame; before the first frame 0; past the end the frame count.
+    pub fn frame_at(&self, t: MediaTime) -> u64 {
+        let idx = self.segments.partition_point(|s| s.start.cmp_time(t) != Ordering::Greater);
+        let Some(i) = idx.checked_sub(1) else { return 0 };
+        let at: u64 = self.segments.iter().take(i).fold(0u64, |a, s| a.saturating_add(s.frames));
+        let Some(s) = self.segments.get(i) else { return self.count };
+        // k = floor((t - start) * rate)
+        let (ts, ss) = (i128::from(t.timescale.max(1)), i128::from(s.start.timescale.max(1)));
+        let num = i128::from(t.value).saturating_mul(ss).saturating_sub(i128::from(s.start.value).saturating_mul(ts)).saturating_mul(i128::from(self.rate));
+        let k = num.div_euclid(ts.saturating_mul(ss).max(1));
+        if k < i128::from(s.frames) { at.saturating_add(u64::try_from(k).unwrap_or(0)) } else { at.saturating_add(s.frames) }
+    }
+}
+
+fn lcm(a: i128, b: i128) -> i128 {
+    let g = gcd(a.unsigned_abs() as u64, b.unsigned_abs() as u64).max(1);
+    a.checked_div(i128::from(g)).unwrap_or(0).saturating_mul(b)
+}
+
+/// `num / den` seconds as a [`MediaTime`]: in `preferred` units when exact there, else in the
+/// reduced denominator when it fits, else floored to `preferred`.
+fn rational_time(num: i128, den: i128, preferred: i128) -> MediaTime {
+    let den = den.max(1);
+    let scaled = num.saturating_mul(preferred);
+    if let Ok(ts) = u32::try_from(preferred)
+        && scaled.rem_euclid(den) == 0
+        && let Ok(v) = i64::try_from(scaled.div_euclid(den))
+    {
+        return MediaTime::new(v, ts);
+    }
+    let g = i128::from(gcd(num.unsigned_abs().min(u128::from(u64::MAX)) as u64, den.unsigned_abs().min(u128::from(u64::MAX)) as u64).max(1));
+    if let (Some(n), Some(d)) = (num.checked_div(g), den.checked_div(g))
+        && let (Ok(v), Ok(ts)) = (i64::try_from(n), u32::try_from(d))
+    {
+        return MediaTime::new(v, ts);
+    }
+    MediaTime::new(i64::try_from(scaled.div_euclid(den)).unwrap_or(0), u32::try_from(preferred).unwrap_or(1))
+}
+
+/// `start + n / rate`, exact in `lcm(start.timescale, rate)` when that fits a `u32`.
+fn add_frames(start: MediaTime, n: u64, rate: u32) -> MediaTime {
+    let (ts, r) = (i128::from(start.timescale.max(1)), i128::from(rate.max(1)));
+    let l = lcm(ts, r);
+    let num = i128::from(start.value).saturating_mul(r).saturating_add(i128::from(n).saturating_mul(ts));
+    rational_time(num, ts.saturating_mul(r), l)
 }

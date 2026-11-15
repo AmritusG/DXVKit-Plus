@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_pcm_edits.mov
+title: PCM sound track with an edit list (gaps, a repeat, an edit ending inside a frame, one running past the media)
+author: Amrit Rosell — our own signals (procedural; AAC encoded from our own test signal by AudioToolbox)
+source: Written byte by byte by scripts/make-audio-fixtures.py (QuickTime File Format, ISO/IEC 14496-1 esds)
+license: CC0-1.0
+added: 2026-11-15
+sha256: 3724c4913f0d419ad87d86e6e9eea735a15ba73be5560110f8321f8655cb91eb
+notes: W4 audio. sowt mono 44.1 kHz, 4410 frames; movie time scale 1000; edits (duration ms, media time): (3, empty), (50, 441), (2, empty), (3, 100), (20, 4000), (5, empty). AVFoundation and DXVKit Plus serve the same frames at the same times (docs/data/w4-crosstest-fixtures.jsonl).

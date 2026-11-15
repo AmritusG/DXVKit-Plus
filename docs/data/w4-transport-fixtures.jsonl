@@ -1,0 +1,6 @@
+{"file":"jitter_prores4444_30.mov","frames":24,"grid_transport_differs":3,"rate":[30,1],"table":true,"times_checked":72,"transport_differs":0}
+{"file":"edit_hap1_empty_trim_repeat.mov","frames":17,"grid_transport_differs":24,"rate":[30,1],"table":true,"times_checked":51,"transport_differs":0}
+{"file":"edit_dxt1_empty_trim.mov","frames":9,"grid_transport_differs":9,"rate":[30,1],"table":true,"times_checked":27,"transport_differs":0}
+{"file":"edit_h264_bframes.mov","frames":18,"grid_transport_differs":0,"rate":[30,1],"table":true,"times_checked":54,"transport_differs":0}
+{"file":"tiles_hap1.mov","frames":24,"grid_transport_differs":0,"rate":[30,1],"table":true,"times_checked":72,"transport_differs":0}
+{"file":"tiles_prores4444.mov","frames":24,"grid_transport_differs":0,"rate":[30,1],"table":true,"times_checked":72,"transport_differs":0}

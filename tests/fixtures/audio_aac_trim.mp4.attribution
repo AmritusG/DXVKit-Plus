@@ -1,0 +1,8 @@
+asset: tests/fixtures/audio_aac_trim.mp4
+title: AAC-LC trimmed by an edit list (ISO-style entry in an MP4, roll group)
+author: Amrit Rosell — our own signals (procedural; AAC encoded from our own test signal by AudioToolbox)
+source: Written byte by byte by scripts/make-audio-fixtures.py (QuickTime File Format, ISO/IEC 14496-1 esds) from the AAC packets of scripts/make-aac-source.swift
+license: CC0-1.0
+added: 2026-11-15
+sha256: b2ccc5315477164b394f4b947e5f4989cf511ca6a6e3e144a9d8484063e1215b
+notes: W4 audio. The packets of audio_aac_priming.mov, mp4a v0 + esds, sgpd/sbgp roll -1, ftyp mp42, edits: empty 441 / 44100 s, then 11025 frames from media time 3112 (priming + 1000). AVFoundation and DXVKit Plus decode identical samples (docs/data/w4-crosstest-fixtures.jsonl).
