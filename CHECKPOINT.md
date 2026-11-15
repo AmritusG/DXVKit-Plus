@@ -19,8 +19,11 @@ Wave: w4-audio. Brief: ~/claude-handoffs/DXVKit-Plus_2026-11-15_w4-audio_brief.m
 
 - Verifier: 49 confirmed / 9 unproven / 4 wrong -> fixed (counts, README/CHANGELOG wording, controls + tie test, evidence files w4-avf-v0-entry-in-mov.jsonl, w4-aac-sweep-decode-crosstest.jsonl, second start-vs-full run).
 
+- Released: 29fa9f5 on main + annotated tag v0.11.0, pushed (ls-remote main and v0.11.0^{} = 29fa9f5). Handoff docs/handoffs/w4-audio.md -> ~/claude-handoffs/DXVKit-Plus_2026-11-15_w4-audio-result.md; glance-core note ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w4.md.
+- WAVE CLOSED 2026-11-15.
+
 ## NEXT
-- (was) Verifier on docs/handoffs/w4-audio.md; fix; commit + tag v0.11.0 + push; receipts; copy handoff to ~/claude-handoffs/DXVKit-Plus_2026-11-15_w4-audio-result.md; glance-core note ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w4.md.
+- Wave closed. Two one-line questions for Amrit in the handoff (wrapped-rate GlEnc file; FLAC later?). Next waves per brief: W5 Windows backend (incl. Media Foundation AAC), W6 encoders.
 
 ## STATE
 - Test media (Amrit's, read-only): ~/Desktop/_M5-to-M3_2026-10-08/Movies/Testfiles/.

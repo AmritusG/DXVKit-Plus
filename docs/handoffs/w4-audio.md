@@ -193,8 +193,42 @@ pins its enums only). glance-core `crates/glance-playback/src/lib.rs:46` builds
 
 ## Commits
 
-(filled at release)
+- 29fa9f5 — DXVKit Plus 0.11.0 (code, tests, fixtures, data, docs); annotated tag v0.11.0; pushed.
+- The handoff commit that follows it (this file and CHECKPOINT.md).
+- glance-core note: ~/claude-handoffs/glance-core_2026-11-15_note-from-DXVKit-Plus-w4.md.
 
 ## RECEIPTS
 
-(filled at release)
+```
+$ git log -1 --oneline; git ls-remote origin main refs/tags/v0.11.0^{}
+29fa9f5 DXVKit Plus 0.11.0: audio tracks (PCM + AAC on macOS) and the transport on real frame starts
+29fa9f5a183f5f80f5f82e2ff1604e6e2d87fbb7	refs/heads/main
+29fa9f5a183f5f80f5f82e2ff1604e6e2d87fbb7	refs/tags/v0.11.0^{}
+$ cargo fmt --all -- --check && echo FMT_OK
+FMT_OK
+$ cargo clippy --workspace --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+$ DXVKIT_PLUS_REQUIRE_GPU=1 cargo test --workspace --no-fail-fast   (summed test-result lines)
+179 passed 0 failed 1 ignored
+$ cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+$ cargo run --release -p dxvkit-plus-core --example fuzz -- 60 8
+fuzz: 60 s, 8 threads, corpus 243 (hap frames 56, dxv packets 82, files 72, lmbd 33), execs 5698477 (94956/s), crashes 0, hangs 0, slowest input 45.6 ms
+$ ls -la tests/fixtures/audio_*
+-rw-r--r-- 8238 tests/fixtures/audio_aac_noroll.mov
+-rw-r--r-- 787 tests/fixtures/audio_aac_noroll.mov.attribution
+-rw-r--r-- 23264 tests/fixtures/audio_aac_noroll.mov.avf7.f32
+-rw-r--r-- 867 tests/fixtures/audio_aac_noroll.mov.avf7.f32.attribution
+-rw-r--r-- 8292 tests/fixtures/audio_aac_priming.mov
+-rw-r--r-- 809 tests/fixtures/audio_aac_priming.mov.attribution
+-rw-r--r-- 25200 tests/fixtures/audio_aac_priming.mov.avf7.f32
+-rw-r--r-- 869 tests/fixtures/audio_aac_priming.mov.avf7.f32.attribution
+-rw-r--r-- 8252 tests/fixtures/audio_aac_trim.mp4
+-rw-r--r-- 779 tests/fixtures/audio_aac_trim.mp4.attribution
+-rw-r--r-- 13104 tests/fixtures/audio_aac_trim.mp4.avf7.f32
+-rw-r--r-- 863 tests/fixtures/audio_aac_trim.mp4.avf7.f32.attribution
+-rw-r--r-- 10306 tests/fixtures/audio_pcm_edits.mov
+-rw-r--r-- 769 tests/fixtures/audio_pcm_edits.mov.attribution
+-rw-r--r-- 218034 tests/fixtures/audio_pcm_formats.mov
+-rw-r--r-- 1450 tests/fixtures/audio_pcm_formats.mov.attribution
+```
