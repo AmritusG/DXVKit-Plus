@@ -1,0 +1,8 @@
+asset: tests/fixtures/jitter_prores4444_30.mov
+title: ProRes 4444 at 30 fps on jittered timing
+author: Amrit Rosell — derived from our own CC0 fixtures (procedural pattern dxvkit_plus_core::testpattern::tiles; the top tile row encodes the source frame index)
+source: Written by scripts/make-edit-list-fixtures.swift with AVFoundation (AVAssetWriter, ProRes 4444, media and movie scale 600) on macOS 27.0.1 from tiles_prores4444.mov: 24 frames at 20 ticks, frames 3, 10 and 17 one tick late (stts 20 / 21 / 19)
+license: CC0-1.0
+added: 2026-11-15
+sha256: a41a19a9bd50fd39fd3819592db3da38689460f04935220e46f0d0046ad9ad39
+notes: W3 container timing: the shortest sample (19 / 600) is not the frame period. DXVKit Plus 0.9.0's native grid on it read 31.58 fps and seeked one frame off; Swift Glance FrameTiming and DXVKit Plus 0.10.0 agree on every frame start (docs/data/w3-crosstest-fixtures.jsonl). The script's output differs from the committed bytes only in the mvhd / mdhd / tkhd creation dates.

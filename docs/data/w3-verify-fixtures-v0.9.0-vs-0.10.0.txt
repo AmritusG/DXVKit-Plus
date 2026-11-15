@@ -1,0 +1,12 @@
+# W3: dxvkit-plus verify --block-path exact on the committed W3 fixtures, v0.9.0 (git archive v0.9.0, release) vs this tree (release). Frame identity of these clips is checked by core tests/timing.rs and apple tests/native.rs (frame n shows another source frame by design).
+0.9.0 | edit_dxt1_empty_trim.mov | pass True | frames 24 | []
+0.9.0 | edit_h264_bframes.mov | pass False | frames None | ['frame 18: frame 18 is out of range (clip has 18)']
+0.9.0 | edit_hap1_empty_trim_repeat.mov | pass True | frames 14 | []
+0.9.0 | edit_hap1_scaled.mov | pass True | frames 24 | []
+0.9.0 | jitter_prores4444_30.mov | pass False | frames 24 | ['asked for frame 10, got 11', 'seek mismatch on frames [10]']
+0.10.0 | edit_dxt1_empty_trim.mov | pass True | frames 9 | []
+0.10.0 | edit_h264_bframes.mov | pass True | frames 18 | []
+0.10.0 | edit_hap1_empty_trim_repeat.mov | pass True | frames 17 | []
+0.10.0 | edit_hap1_scaled.mov | pass True | frames 36 | []
+0.10.0 | jitter_prores4444_30.mov | pass True | frames 24 | []
+# expected frames (Swift FrameTiming): edit_dxt1_empty_trim 9, edit_h264_bframes 18, edit_hap1_empty_trim_repeat 17, edit_hap1_scaled 36, jitter_prores4444_30 24

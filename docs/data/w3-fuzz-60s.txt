@@ -1,0 +1,2 @@
+# W3: cargo run --release -p dxvkit-plus-core --example fuzz -- 60 8, DXVKit Plus 0.10.0 tree (frame timing queries added to the movie target), Mac17,6, 2026-11-15 (cargo test running at the same time)
+fuzz: 60 s, 8 threads, corpus 223 (hap frames 41, dxv packets 82, files 67, lmbd 33), execs 12707220 (211773/s), crashes 0, hangs 0, slowest input 161.4 ms

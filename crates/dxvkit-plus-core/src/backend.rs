@@ -54,9 +54,11 @@ impl YuvMatrix {
 pub struct NativeInfo {
     pub width: u32,
     pub height: u32,
-    /// Frames on the nominal grid: round(duration / frame_duration).
+    /// Frames the decoder serves (0.10.0: the frame count of its [`NativeDecoder::timing`]; up to
+    /// 0.9.0 round(duration / minimum frame duration)).
     pub frame_count: u32,
-    /// Exact frame duration as (value, timescale).
+    /// Exact frame period as (value, timescale): one frame at the timing's rate (0.10.0; up to
+    /// 0.9.0 the track's minimum frame duration, its shortest sample).
     pub frame_duration: (i64, i32),
     /// Track start as (value, timescale).
     pub start: (i64, i32),
@@ -114,8 +116,14 @@ impl std::fmt::Debug for NativeFrame {
 /// A frame-accurate decoder for one clip. Used from one thread at a time (`&mut self`).
 pub trait NativeDecoder: Send {
     fn info(&self) -> &NativeInfo;
-    /// Decode frame `index` exactly (on the nominal grid).
+    /// Decode frame `index` exactly: the frame [`NativeDecoder::timing`] numbers `index` (0.10.0;
+    /// up to 0.9.0 the nominal grid).
     fn frame(&mut self, index: u32) -> Result<NativeFrame, MediaError>;
+    /// The frame timing the decoder numbers its frames by (`crate::timing`), when it has one.
+    /// 0.10.0; the default is `None`.
+    fn timing(&self) -> Option<&crate::timing::FrameTiming> {
+        None
+    }
     /// The frame as tight straight RGBA8 through a CPU read — for `Bgra` frames, as a test oracle
     /// or for thumbnails. Playback never reads pixels on the CPU.
     fn cpu_rgba(&self, frame: &NativeFrame) -> Result<Vec<u8>, MediaError> {

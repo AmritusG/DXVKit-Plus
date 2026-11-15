@@ -183,10 +183,17 @@ IOSurface-backed, Metal-compatible pixel buffers:
   (alpha), MJPEG, unknown files — so no 4:2:2 / 4:4:4 chroma is thrown away (measured: ProRes 422
   forced through 4:2:0 lands 13.4 mean RGB error from the source vs 10.8 as BGRA).
 
-Frame `i` is the sample presented at `start + i * minFrameDuration` (exact rationals). Sequential
-reads reuse the reader; any other request restarts it one frame early and skips to the target's
-presentation time, so seeks are exact for intra and long-GOP codecs alike (verified: shuffled-order
-decodes are identical to sequential ones, every frame, every fixture).
+Frame `i` is frame `i` of core's `FrameTiming` of the same file (0.10.0; see
+[Frame timing](#frame-timing-0100)): the reader seeks to `time_of_frame(i)` and names each decoded
+sample by `frame_at(pts)` (floor). AVAssetReader's output presentation times are the edited movie
+times, and equal the timing's starts on every clip measured (`docs/data/w3-native-diagnosis.txt`).
+Only where core cannot parse the file (fragmented MP4) is the grid of Swift's rate rules over
+AVFoundation's own `minFrameDuration`, `nominalFrameRate` and duration used. Up to 0.9.0 the grid
+was `start + i * minFrameDuration` — the shortest sample, so jittered clips (ProRes at 1/600 with
+19 / 20 / 21-tick samples) were read at 31.58 fps and seeked one frame off. Sequential reads reuse
+the reader; any other request restarts it at the previous frame's start and skips to the target, so
+seeks are exact for intra and long-GOP codecs alike (verified: shuffled-order decodes are identical
+to sequential ones, every frame, every fixture, and on the real clips of the test folder).
 
 **Zero-copy import.** The pixel buffer's IOSurface planes become `MTLTexture`s
 (through a `CVMetalTextureCache`, or directly with `newTextureWithDescriptor:iosurface:plane:`), adopted by `wgpu_hal::metal::Device::texture_from_raw`
@@ -371,6 +378,39 @@ is 0.62; the allocation is the rest. The GPU side was never the limit (1.2-1.7 m
   the driver lays the blocks out for the GPU on the CPU — to save a 0.3 ms GPU blit, and it cannot
   take `decode_into`. No unsafe was added; the native path is unchanged (0 copies, 0 blits).
 
+## Frame timing (0.10.0)
+
+`core::timing::FrameTiming` is Swift Glance's `GlanceCore.FrameTiming` (glance@a9dc601) over the
+container's tables instead of AVFoundation's sample cursor and track segments (Apple, QuickTime File
+Format: `stts`, `ctts`, `elst`, `mdhd` / `mvhd` time scales):
+
+| Swift (AVFoundation) | Here (container) |
+| --- | --- |
+| sample cursor presentation time | decode time (cumulative `stts`) + `ctts` offset, media units |
+| `currentSampleDuration` | next presentation time − own; the last presented sample keeps its `stts` delta (measured equal on 173 / 173 movies, `docs/data/w3-avf-sample-durations.txt`) |
+| `segments` (`timeMapping`, `isEmpty`) | `elst` entries; target start = sum of the earlier edit durations (movie units); media time −1 = empty |
+| `minFrameDuration` / `nominalFrameRate` | shortest sample duration / sample count ÷ summed duration |
+| `timeRange.duration` (grid count only) | sum of the edit durations, else the media duration |
+
+Frames: for every non-empty edit at rate 1, the samples whose presentation time `t` lies in
+`[media_time, media_time + duration)` start at `t − media_time + target start`; sorted, they are
+the frames (a sample in two edits is two frames; samples outside every edit are dropped). Without a
+non-empty edit, the stored presentation times. Starts are exact integers in one time scale — the
+media's, or `lcm(media, movie)` when an edit starts between media ticks (it must fit an i32, a
+`CMTime` time scale). Grid fallback (Swift's): an edit at another rate (here also a non-empty edit with a negative media time other than −1), nothing maps, or the times
+do not fit — `round(track seconds × rate)` frames on `n × period`, frame `n` showing the `n`-th
+sample in presentation order (the last past the end). Hostile tables: `stts` / `ctts` loops bounded
+by the sample count, an `elst` past its atom or above `MAX_EDITS` not applied, mapped frames capped
+at `MAX_SAMPLES`, edits found by binary search (never samples × edits), all arithmetic saturating or
+checked; the fuzzer queries every parsed track's timing.
+
+Every path reads it: `DxvSource` / `HapSource` decode `sample_of_frame(n)`; probe's
+`MediaInfo::frames` / `rate` are its count and rate; the Apple `NativeReader` seeks and names frames
+by it (`NativeDecoder::timing`); `FrameSource::timing` hands it to hosts. Swift's rule, followed
+exactly, drops a sample that starts before an edit's media time even when it overlaps the edit
+(`edit_hap1_empty_trim_repeat.mov`'s third edit starts 108 / 15360 into sample 0, so source frame 5
+is not replayed); on every real clip measured the edits start on sample boundaries.
+
 ## Transport and cache
 
 `transport::Transport` holds the playhead as an exact integer `Tick` (254 016 000 000 per second,
@@ -407,6 +447,7 @@ The public API is kept wrappable by a thin `extern "C"` crate without redesign:
 | `names::*` | functions returning strings (a call that fills a caller buffer) |
 | `wgpu::check_device_size` | a call returning the `GpuError` code |
 | `dxv::Layout`, `dxv::Header`, `dxv::Blocks` | plain-data `#[repr(C)]` mirrors (`Blocks`' planes as pointer + length borrowed from the handle) |
+| `timing::FrameTiming` (0.10.0) | an opaque handle (from a source or track handle) with calls: frame count, rate (num, den), `RateSource` (`u32`, pinned), `time_of_frame` → (value, timescale), `frame_at(value, timescale)`, `sample_of_frame` → a flag + `u32`; `MediaTime`, `Edit` are `#[repr(C)]` plain data |
 | `Arc<dyn Backend>` | chosen by the wrapper per platform (no callbacks across the boundary) |
 
 Rules that keep it that way: no generics or lifetimes in the public decode / transport API, no

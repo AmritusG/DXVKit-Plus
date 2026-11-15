@@ -12,7 +12,12 @@ no FFmpeg, GStreamer or libmpv.
 > DXVKit Plus is an independent, clean-room project. It is not affiliated with or endorsed by
 > Resolume or Vidvox; DXV and HAP are named only to describe compatibility.
 
-This is release **0.9.0**: the **probe opens files the way Swift Glance does**, and the exact path
+This is release **0.10.0**: **container timing** — edit lists (`elst`) and composition offsets
+(`ctts`) are applied, so frame `n` is the frame that really starts `n`-th, at its exact start, on
+every path (DXV, HAP, LMBD, native) and the same frame Swift Glance's `FrameTiming` names `n`
+(cross-tested on every movie of the test folder). Native clips count the frames the OS decoder
+serves and no longer seek one frame off on jittered timing ([Frame timing](#frame-timing-0100)).
+0.9.0: the **probe opens files the way Swift Glance does**, and the exact path
 covers **BC7**. Which track of a movie plays follows Swift Glance's order (DXV first; HAP only when
 it is the first video track; else the platform decoder), and a chosen track can be opened; the
 content decides before the file name; a file cut off in its sample data plays up to the cut; a movie
@@ -217,6 +222,34 @@ and High Quality With Alpha (`YG10`: Y + A BC5 + CoCg BC5), stored payloads, and
   un-premultiplies on output, per clip — the counterpart of Arena's per-clip "Alpha Type". That
   reading is what ffmpeg assumes for DXT5; on a straight-alpha test card our premultiplied mode
   is within 1.9/255 (CPU) / 2.6/255 (GPU) of ffmpeg's output as shown.
+
+## Frame timing (0.10.0)
+
+What "frame `n`" means is one rule for every path, Swift Glance's `GlanceCore.FrameTiming`, applied
+to the container's own tables (`core::timing`):
+
+- **Frames** are the samples in presentation order (decode time + `ctts` offset) mapped through the
+  edit list onto the movie timeline: samples outside every edit are dropped, a sample in two edits
+  plays twice, empty edits shift what follows. `FrameTiming::time_of_frame(n)` is frame `n`'s real
+  start as an exact rational, `frame_at(t)` the frame showing at `t` (floor), `sample_of_frame(n)`
+  the sample DXV / HAP decode for it.
+- **Rate** is exact (`30000/1001`, not 29.97): the mean snapped to a standard rate, else the
+  dominant sample duration, else the shortest sample when it agrees with the mean, else the nominal
+  rate — never the shortest sample alone (a jittered 25 fps ProRes is not 26.09 fps).
+- **Native clips** use the same timing of the same file, so the platform decoder's frame `n` is the
+  picture DXV / HAP / Swift Glance call `n`, and `MediaInfo::frames` is what it serves (a trimmed
+  H.264 clip: 751, not the 768 samples nor the 753 of duration / shortest sample).
+- `FrameSource::timing()` gives any open source's timing (LMBD, sequences and stills: their grid).
+
+```rust
+let movie = dxvkit_plus_core::container::Movie::open(path)?;
+let t = &movie.first().unwrap().timing;
+let start = t.time_of_frame(10);            // MediaTime { value, timescale }, exact
+assert_eq!(t.frame_at(start), 10);
+```
+
+The transport (`transport::Transport`) still steps on the rate's grid; a host that shows a time as a
+frame uses `FrameTiming::frame_at`.
 
 ## Probing and routing (0.9.0)
 

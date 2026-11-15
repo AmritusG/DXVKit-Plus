@@ -1,0 +1,8 @@
+asset: tests/fixtures/edit_dxt1_empty_trim.mov
+title: DXV3 DXT1 with an empty edit and a trimming edit
+author: Amrit Rosell — derived from our own CC0 fixtures (procedural pattern dxvkit_plus_core::testpattern::tiles; the top tile row encodes the source frame index)
+source: Written by scripts/make-edit-list-fixtures.swift with AVFoundation (AVMutableMovie edits, AVAssetWriter for the H.264) on macOS 27.0.1 from tiles_dxt1.mov: an empty edit of 7 ms (movie scale 1000), then source frames 4..12 (all 24 samples copied, the rest of the time removed; 9 frames play)
+license: CC0-1.0
+added: 2026-11-15
+sha256: 9d63f653b8a7daaff184560b141571309db6b4114df9f439c324d7c0a71a7d70
+notes: W3 container timing (edit lists / composition offsets). Self-contained (one self-reference dref entry, no paths). Swift Glance FrameTiming and DXVKit Plus agree on every frame start (docs/data/w3-crosstest-fixtures.jsonl). The script's output differs from the committed bytes only in the movie header creation dates.

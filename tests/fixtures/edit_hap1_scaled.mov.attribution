@@ -1,0 +1,8 @@
+asset: tests/fixtures/edit_hap1_scaled.mov
+title: Hap1 with an edit at rate 1/2
+author: Amrit Rosell — derived from our own CC0 fixtures (procedural pattern dxvkit_plus_core::testpattern::tiles; the top tile row encodes the source frame index)
+source: Written by scripts/make-edit-list-fixtures.swift with AVFoundation (AVMutableMovie edits, AVAssetWriter for the H.264) on macOS 27.0.1 from tiles_hap1.mov: source frames 0..11 scaled to twice their length, then 12..23 (Swift FrameTiming falls back to the grid: 36 frames at 30 fps)
+license: CC0-1.0
+added: 2026-11-15
+sha256: 9164fb590501e5197262742534fadc7a38488ed92f491e36f54fd9a8a7a78755
+notes: W3 container timing (edit lists / composition offsets). Self-contained (one self-reference dref entry, no paths). Swift Glance FrameTiming and DXVKit Plus agree on every frame start (docs/data/w3-crosstest-fixtures.jsonl). The script's output differs from the committed bytes only in the movie header creation dates.

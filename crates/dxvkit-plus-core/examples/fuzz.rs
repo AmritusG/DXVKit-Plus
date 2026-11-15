@@ -20,7 +20,7 @@
 //! mutations (bit flips, interesting values over u8/u16/u32 fields, insert / delete / duplicate /
 //! shorten) and runs it through one target: `hap::decode` + CPU RGBA, `dxv::decode_blocks` (sometimes
 //! at a random size, HQ sections sometimes in parallel) + CPU RGBA straight and premultiplied, `first_video_fourcc_in`, `Movie::from_source`
-//! (damaged tracks too) + `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
+//! (damaged tracks too, 0.10.0 frame timing and its queries) + `read_sample` + the codec + CPU RGBA, or `LmbdFile::from_source` + `decode_frame` (and `decode_frame_into`
 //! through a contract-checking sink, compared with it) + CPU RGBA. A panic is a crash (caught, counted, the input saved); an
 //! input slower than 2 s is a hang. Prints one summary line; exit status 1 on any crash or hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing, clippy::arithmetic_side_effects)]
@@ -284,6 +284,20 @@ fn run_one(seed: &Seed, data: &[u8], r: &mut Rng) {
                 // A cut-off track's last sample: the read past the end must be an error, not a panic.
                 if let Some(t) = m.tracks.first() {
                     let _ = m.read_sample(t, t.frame_count().saturating_sub(1), &mut Vec::new());
+                }
+                // 0.10.0: the frame timing (stts + ctts + elst, built in `Movie::from_source`) and
+                // its queries at the ends and past them.
+                for t in &m.tracks {
+                    let ti = &t.timing;
+                    let n = ti.frame_count();
+                    for f in [0, n / 2, n.saturating_sub(1), n, u32::MAX] {
+                        let at = ti.time_of_frame(f);
+                        let _ = (ti.frame_at(at), ti.sample_of_frame(f));
+                    }
+                    let _ = ti.frame_at(dxvkit_plus_core::timing::MediaTime::new(i64::MIN, 0));
+                    if let Some(s) = ti.sample_of_frame(0) {
+                        assert!(s < t.frame_count(), "a frame's sample is in the table");
+                    }
                 }
                 for t in m.tracks.clone() {
                     // Bound the frame size the fuzzer lets a hostile header allocate (memory on a

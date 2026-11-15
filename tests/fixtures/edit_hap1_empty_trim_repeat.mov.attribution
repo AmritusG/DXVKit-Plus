@@ -1,0 +1,8 @@
+asset: tests/fixtures/edit_hap1_empty_trim_repeat.mov
+title: Hap1 with an empty edit, copied ranges and a repeating edit
+author: Amrit Rosell — derived from our own CC0 fixtures (procedural pattern dxvkit_plus_core::testpattern::tiles; the top tile row encodes the source frame index)
+source: Written by scripts/make-edit-list-fixtures.swift with AVFoundation (AVMutableMovie edits, AVAssetWriter for the H.264) on macOS 27.0.1 from tiles_hap1.mov: an empty edit of 7 ms (movie scale 1000, media 15360: the edit starts between media ticks), source frames 5..14 and 2..5 copied (14 samples), then a second edit playing 5..7 again (17 frames play)
+license: CC0-1.0
+added: 2026-11-15
+sha256: fa501fe2fcc1d751c2368a7311ad1d7a72605c30548c773329b9fea16ac04ef0
+notes: W3 container timing (edit lists / composition offsets). Self-contained (one self-reference dref entry, no paths). Swift Glance FrameTiming and DXVKit Plus agree on every frame start (docs/data/w3-crosstest-fixtures.jsonl). The script's output differs from the committed bytes only in the movie header creation dates.

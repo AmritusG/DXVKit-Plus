@@ -231,3 +231,86 @@ fn a_frame_larger_than_the_device_is_refused_by_both_imports() {
     // Control: at the limit the size passes and the (fake) handle is what fails.
     assert!(!matches!(import(&g.device, &frame(limit)), Err(dxvkit_plus_core::MediaError::Unsupported(_)) | Ok(_)));
 }
+
+/// W3 (0.10.0): a native clip with B-frames (ctts) and a trimming edit list numbers its frames by
+/// core's timing — the frames AVAssetReader serves, at their real starts — so frame n shows source
+/// frame 3 + n on sequential and shuffled reads, and the count is the 18 frames served, not the 22
+/// samples in the table.
+#[test]
+fn edit_lists_and_composition_offsets_number_native_frames() {
+    let path = fixture("edit_h264_bframes.mov");
+    let g = Gpu::headless().unwrap();
+    let mut r = FrameRenderer::new(&g.device);
+    let core = dxvkit_plus_core::container::Movie::open(&path).unwrap();
+    let track = core.first().unwrap();
+    // Control: the table holds 22 samples and composition offsets.
+    assert_eq!((track.frame_count(), track.ctts.iter().any(|&o| o != 0)), (22, true));
+    let mut rd = AppleBackend.open(&path, PixelLayout::Bgra).unwrap();
+    assert_eq!(rd.info().frame_count, 18);
+    assert_eq!(rd.timing(), Some(&track.timing), "the decoder numbers frames by core's timing");
+    assert_eq!(rd.info().frame_duration, (1, 30));
+    let mut seq = Vec::new();
+    for f in 0..18 {
+        let fr = rd.frame(f).unwrap();
+        assert_eq!(fr.index, f);
+        let px = to_rgba(&g, &mut r, &fr, None);
+        assert_eq!(read_frame_id(&px, 128, 72), Some(3 + f), "frame {f}");
+        seq.push(px);
+    }
+    assert!(rd.frame(18).is_err(), "past the served frames is an error");
+    let mut s = AppleBackend.open(&path, PixelLayout::Bgra).unwrap();
+    for f in [11u32, 2, 17, 0, 9, 9, 16, 1, 13, 4] {
+        let fr = s.frame(f).unwrap();
+        assert_eq!(fr.index, f);
+        assert_eq!(to_rgba(&g, &mut r, &fr, None), seq[f as usize], "seek to {f}");
+    }
+    // The probe agrees: 18 frames at 30 fps.
+    let opts = dxvkit_plus_core::source::ImportOptions { backend: Some(std::sync::Arc::new(AppleBackend)), ..Default::default() };
+    let info = dxvkit_plus_core::source::probe(path.to_str().unwrap(), &opts).unwrap();
+    assert_eq!((info.frames, info.rate), (18, dxvkit_plus_core::time::FrameRate::FPS_30));
+}
+
+/// W3: a file core cannot parse (the fragmented MP4) gets the grid from Swift's rate rules over
+/// AVFoundation's own timing: 60 frames at 30 fps.
+#[test]
+fn a_fragmented_mp4_gets_the_grid_timing() {
+    let rd = AppleBackend.open(&fixture("frag_h264.mp4"), PixelLayout::Bgra).unwrap();
+    let t = rd.timing().unwrap();
+    assert!(!t.has_table());
+    assert_eq!((t.frame_count(), t.rate), (60, dxvkit_plus_core::time::FrameRate::FPS_30));
+    // Control: core's parser does refuse the file.
+    assert!(dxvkit_plus_core::container::Movie::open(&fixture("frag_h264.mp4")).is_err());
+}
+
+/// W3: jittered native timing (frames 3, 10, 17 one tick late at 1/600, shortest sample 19 ticks).
+/// Every frame decodes as itself at 30 fps, sequentially and on seeks, and the count is 24.
+#[test]
+fn jittered_native_timing_is_frame_exact() {
+    use dxvkit_plus_core::timing::MediaTime;
+    let path = fixture("jitter_prores4444_30.mov");
+    let g = Gpu::headless().unwrap();
+    let mut r = FrameRenderer::new(&g.device);
+    let mut rd = AppleBackend.open(&path, PixelLayout::Bgra).unwrap();
+    let t = rd.timing().unwrap().clone();
+    assert_eq!((rd.info().frame_count, t.rate), (24, dxvkit_plus_core::time::FrameRate::FPS_30));
+    assert_eq!(t.time_of_frame(3), MediaTime::new(61, 600), "the real start, one tick late");
+    // Control: 0.9.0's rule — the grid of the shortest sample (19 / 600), rounded to the nearest
+    // point — names frame 3's start (61 ticks) frame 3 but frame 10's (201) frame 11, and counts
+    // round(480 / 19) = 25 frames.
+    let old = |ticks: i64| (ticks * 2 + 19) / (2 * 19);
+    assert_eq!((old(61), old(201), old(480)), (3, 11, 25));
+    let mut seq = Vec::new();
+    for f in 0..24 {
+        let fr = rd.frame(f).unwrap();
+        assert_eq!(fr.index, f);
+        let px = to_rgba(&g, &mut r, &fr, None);
+        assert_eq!(read_frame_id(&px, 128, 72), Some(f), "frame {f}");
+        seq.push(px);
+    }
+    let mut s = AppleBackend.open(&path, PixelLayout::Bgra).unwrap();
+    for f in [10u32, 3, 17, 11, 4, 18, 0, 23, 9, 10] {
+        let fr = s.frame(f).unwrap();
+        assert_eq!(fr.index, f);
+        assert_eq!(to_rgba(&g, &mut r, &fr, None), seq[f as usize], "seek to {f}");
+    }
+}

@@ -412,8 +412,9 @@ fn probe_movie(base: MediaInfo, movie: &Movie, opts: &ImportOptions) -> Result<M
         codec_name: crate::names::codec_label(&track.fourcc),
         width: track.width,
         height: track.height,
-        frames: track.frame_count(),
-        rate: track.frame_rate().unwrap_or(FrameRate::FPS_30),
+        // The frames that play and their exact rate (`crate::timing`, 0.10.0).
+        frames: track.frames(),
+        rate: track.timing.rate,
         has_alpha,
         timecode: movie.timecode,
         track: Some(track.index),
@@ -488,12 +489,17 @@ fn no_backend(path: &str) -> MediaError {
 }
 
 fn native_probe(info: &mut MediaInfo, track: &VideoTrack, opts: &ImportOptions) -> Result<(), MediaError> {
-    // The platform must be able to open it; the container's sample count and stts rate are exact.
+    // The platform must be able to open it. Frames and rate are the track's timing (the decoder
+    // numbers its frames by the same timing, built from the same tables); the count is the one the
+    // decoder serves when the two differ (never more than the container's frames).
     let backend = opts.backend.as_ref().ok_or_else(|| no_backend(&info.path))?;
     let dec = backend.open(Path::new(&info.path), layout_for(info.codec.as_bytes(), info.has_alpha))?;
     if track.frame_rate().is_none() {
         let (v, ts) = dec.info().frame_duration;
         info.rate = FrameRate::new(i64::from(ts), v);
+    }
+    if dec.info().frame_count > 0 {
+        info.frames = info.frames.min(dec.info().frame_count);
     }
     // The alpha as the platform's format description states it (Swift Glance's rule), when the
     // backend can tell; else the sample entry's (depth 32 on an alpha-capable codec).
@@ -783,6 +789,13 @@ pub trait FrameSource: Send {
     fn info(&self) -> &MediaInfo;
     fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError>;
     fn fork(&self) -> Option<Box<dyn FrameSource>>;
+    /// What "frame n" means for this source (`crate::timing`): every frame's real start, the exact
+    /// rate, and (movies) the sample that shows it. 0.10.0; the default is the grid of
+    /// [`MediaInfo::frames`] at [`MediaInfo::rate`].
+    fn timing(&self) -> crate::timing::FrameTiming {
+        let info = self.info();
+        crate::timing::FrameTiming::grid(info.rate, info.frames, crate::timing::RateSource::Fallback)
+    }
     /// CPU RGBA of a decoded frame, through the backend for native frames (test oracle,
     /// thumbnails). Never used by playback.
     fn cpu_rgba(&self, decoded: &Decoded) -> Result<Vec<u8>, MediaError> {
@@ -921,6 +934,12 @@ fn probed_track(movie: &Movie, info: &MediaInfo, codec: Codec) -> Result<VideoTr
     t.filter(|t| t.codec == codec).cloned().ok_or(MediaError::NoVideoTrack)
 }
 
+/// The sample that shows frame `frame` of a track (its timing: edit list and composition offsets
+/// applied, 0.10.0); past the last frame is `Range`.
+fn sample_of(track: &VideoTrack, frame: u32) -> Result<u32, MediaError> {
+    track.timing.sample_of_frame(frame).ok_or(MediaError::Range { index: frame, count: track.frames() })
+}
+
 /// LMBD (LMB7): each frame decodes to one BC7 block plane at the coded (block-rounded) size,
 /// shaded as stored RGBA. The values are sRGB-encoded unless the header says linear; renderers
 /// that want linear light sample the texture through an sRGB view.
@@ -994,7 +1013,7 @@ impl FrameSource for DxvSource {
     }
     fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
         let (w, h) = (self.track.width, self.track.height);
-        self.movie.read_sample(&self.track, frame, &mut self.buf)?;
+        self.movie.read_sample(&self.track, sample_of(&self.track, frame)?, &mut self.buf)?;
         let b = crate::dxv::decode_blocks(&self.buf, w, h, self.parallel).map_err(dxv_error)?;
         let l = b.layout;
         let planes = b
@@ -1022,6 +1041,9 @@ impl FrameSource for DxvSource {
     }
     fn layout(&self) -> Option<FrameLayout> {
         self.layout.clone()
+    }
+    fn timing(&self) -> crate::timing::FrameTiming {
+        self.track.timing.clone()
     }
 }
 
@@ -1074,7 +1096,7 @@ impl FrameSource for HapSource {
     }
     fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
         let (w, h) = (self.track.width, self.track.height);
-        self.movie.read_sample(&self.track, frame, &mut self.buf)?;
+        self.movie.read_sample(&self.track, sample_of(&self.track, frame)?, &mut self.buf)?;
         let f = hap::decode(&self.buf, w, h, self.parallel)?;
         let (shading, planes) = hap::planes(f, w, h)?;
         Ok(Decoded::Planes { index: frame, width: w, height: h, shading, planes })
@@ -1090,6 +1112,9 @@ impl FrameSource for HapSource {
     }
     fn layout(&self) -> Option<FrameLayout> {
         hap_layout(&self.track.fourcc, self.track.width, self.track.height)
+    }
+    fn timing(&self) -> crate::timing::FrameTiming {
+        self.track.timing.clone()
     }
 }
 
@@ -1128,7 +1153,7 @@ impl FrameSource for NativeSource {
         &self.info
     }
     fn decode(&mut self, frame: u32) -> Result<Decoded, MediaError> {
-        // The container's sample count and the platform's grid can differ by a frame at the end;
+        // The decoder's frames (its timing) and the probe's agree when both read the same tables;
         // the shorter one bounds the clip. Past it is an error, never a silent clamp.
         let count = self.decoder.info().frame_count.min(self.info.frames.max(1));
         if frame >= count {
@@ -1138,6 +1163,10 @@ impl FrameSource for NativeSource {
     }
     fn fork(&self) -> Option<Box<dyn FrameSource>> {
         None
+    }
+    fn timing(&self) -> crate::timing::FrameTiming {
+        let grid = || crate::timing::FrameTiming::grid(self.info.rate, self.info.frames, crate::timing::RateSource::Fallback);
+        self.decoder.timing().cloned().unwrap_or_else(grid)
     }
     fn cpu_rgba(&self, decoded: &Decoded) -> Result<Vec<u8>, MediaError> {
         match decoded {

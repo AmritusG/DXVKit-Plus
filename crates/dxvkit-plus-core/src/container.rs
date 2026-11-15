@@ -8,9 +8,12 @@
 //! No third-party demuxer crate: the media stack stays small and ours (no FFmpeg, GStreamer or
 //! libmpv anywhere, `docs/PROVENANCE.md`); the container subset intra-frame codecs need is ~300 lines.
 //!
-//! Limits (documented, not silently wrong): edit lists (`elst`) and composition offsets (`ctts`) are
-//! not applied — DXV / HAP / ProRes / MJPEG are intra-only and written without them; long-GOP native
-//! codecs are timed by AVFoundation in the island, which applies them. Fragmented MP4 (`moof`) is
+//! Timing (0.10.0): edit lists (`elst`) and composition offsets (`ctts`) are read and applied —
+//! every track carries its [`FrameTiming`] ([`VideoTrack::timing`], `crate::timing`: Swift Glance's
+//! FrameTiming rule over `stts` + `ctts` + `elst`, `mdhd` and `mvhd` time scales), so frame `n` is
+//! the same picture on every decode path. The `elst` / `ctts` readers are ported from Loombda-rs
+//! `loombda-media` `container.rs` (`read_edits`, `read_ctts`; Amrit Rosell, MIT by the author's
+//! leave, `ATTRIBUTION.md`). Fragmented MP4 (`moof`) is
 //! not read: its `moov` has empty sample tables, so the track is [`DamagedTrack`] and
 //! `source::probe` offers the file to the platform backend.
 //!
@@ -24,6 +27,7 @@
 use crate::bytes::{be16, be32, be64};
 use crate::error::MediaError;
 use crate::time::{FrameRate, Tick};
+use crate::timing::{Edit, FrameTiming, Tables};
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -34,6 +38,9 @@ pub const MAX_SAMPLES: u32 = 1 << 24;
 /// Largest single sample accepted (bytes): a 16384² BC7 frame is 256 MB uncompressed; HAP adds a
 /// few bytes of headers.
 pub const MAX_SAMPLE_BYTES: u32 = 300 << 20;
+/// Most edit-list entries read; a longer list (or one whose count runs past its atom) is not
+/// applied (0.10.0).
+pub const MAX_EDITS: u32 = 1 << 16;
 
 const fn fourcc(s: &[u8; 4]) -> u32 {
     u32::from_be_bytes(*s)
@@ -146,6 +153,17 @@ pub struct VideoTrack {
     /// Position among the movie's video tracks in file order, damaged ones counted (0.9.0;
     /// `ImportOptions::track` chooses by it).
     pub index: u32,
+    /// The edit list (`edts > elst`) as stored; `None` without one, or when it cannot be read whole
+    /// (then it is not applied). 0.10.0.
+    pub edits: Option<Vec<Edit>>,
+    /// Composition offsets (`ctts`) per sample, decode order, in media units; empty without one.
+    /// 0.10.0.
+    pub ctts: Vec<i64>,
+    /// The movie (`mvhd`) time scale the edit durations count in; 0 if missing. 0.10.0.
+    pub movie_timescale: u32,
+    /// The track's frame timing (`crate::timing`): frame count, exact rate, every frame's real start
+    /// and the sample that shows it. 0.10.0.
+    pub timing: FrameTiming,
 }
 
 /// A video track whose tables did not parse (0.9.0): where it is and what was wrong.
@@ -166,16 +184,19 @@ impl DamagedTrack {
 }
 
 impl VideoTrack {
+    /// Number of samples in the table (decode order). The number of frames that play is
+    /// [`VideoTrack::frames`] — it differs when the edit list trims or repeats samples.
     pub fn frame_count(&self) -> u32 {
         self.samples.len() as u32
     }
-    /// The nominal frame rate: timescale / first stts delta (exact rational). `None` if unknown.
+    /// Number of frames that play: the frames of [`VideoTrack::timing`] (0.10.0).
+    pub fn frames(&self) -> u32 {
+        self.timing.frame_count()
+    }
+    /// The frame rate, exact, by Swift Glance's FrameTiming rules ([`VideoTrack::timing`]; up to
+    /// 0.9.0 timescale / first stts delta). `None` when nothing in the track states one.
     pub fn frame_rate(&self) -> Option<FrameRate> {
-        let (_, delta) = *self.stts.first()?;
-        if self.timescale == 0 || delta == 0 {
-            return None;
-        }
-        Some(FrameRate::new(i64::from(self.timescale), i64::from(delta)))
+        (self.timing.source != crate::timing::RateSource::Fallback).then_some(self.timing.rate)
     }
     /// Media duration as an exact [`Tick`].
     pub fn duration_ticks(&self) -> Tick {
@@ -336,8 +357,62 @@ fn corrupt(m: &str) -> MediaError {
     MediaError::Corrupt(m.to_string())
 }
 
+/// `elst` entries (version 0: 32-bit duration / signed media time; version 1: 64-bit). Ported from
+/// Loombda-rs `loombda-media` `read_edits`; 0.10.0 refuses (`None`: not applied) a list whose count
+/// runs past its atom or exceeds [`MAX_EDITS`] instead of keeping the first 1024 entries.
+fn read_edits(e: &[u8]) -> Option<Vec<Edit>> {
+    let version = e.first().copied().unwrap_or(0);
+    let n = be32(e, 4)?;
+    let size = if version == 1 { 20usize } else { 12 };
+    if n > MAX_EDITS || e.len().saturating_sub(8).checked_div(size).unwrap_or(0) < n as usize {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n as usize {
+        let at = 8usize.saturating_add(i.saturating_mul(size));
+        let edit = if version == 1 {
+            Edit { duration: be64(e, at)?, media_time: be64(e, at.saturating_add(8))? as i64, rate: be32(e, at.saturating_add(16))? as i32 }
+        } else {
+            Edit {
+                duration: u64::from(be32(e, at)?),
+                media_time: i64::from(be32(e, at.saturating_add(4))? as i32),
+                rate: be32(e, at.saturating_add(8))? as i32,
+            }
+        };
+        out.push(edit);
+    }
+    Some(out)
+}
+
+/// Per-sample composition offsets from `ctts` (signed, QTFF "Composition offset: a 32-bit signed
+/// integer"; ISO version 0 offsets are read as signed too, as writers commonly use them), at most
+/// `count`. Ported from Loombda-rs `loombda-media` `read_ctts`.
+fn read_ctts(c: &[u8], count: usize) -> Vec<i64> {
+    let n = be32(c, 4).unwrap_or(0) as usize;
+    let mut out = Vec::with_capacity(count.min(1 << 20));
+    for i in 0..n {
+        let at = 8usize.saturating_add(i.saturating_mul(8));
+        let (Some(k), Some(off)) = (be32(c, at), be32(c, at.saturating_add(4))) else { break };
+        let take = (k as usize).min(count.saturating_sub(out.len()));
+        out.extend(std::iter::repeat_n(i64::from(off as i32), take));
+        if out.len() >= count {
+            break;
+        }
+    }
+    out
+}
+
+/// The movie time scale from `mvhd` (version 0 / 1); 0 if missing.
+fn movie_timescale(moov: Span<'_>) -> u32 {
+    let Ok(Some(m)) = find(moov, fourcc(b"mvhd")) else { return 0 };
+    match m.0.first() {
+        Some(1) => be32(m.0, 20).unwrap_or(0),
+        _ => be32(m.0, 12).unwrap_or(0),
+    }
+}
+
 /// Parse one `trak`. `Ok(None)` for a non-video track or one without a sample table.
-fn read_track(trak: Span<'_>, file_size: u64) -> Result<Option<VideoTrack>, MediaError> {
+fn read_track(trak: Span<'_>, file_size: u64, movie_ts: u32) -> Result<Option<VideoTrack>, MediaError> {
     let Some(stbl) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"minf"), fourcc(b"stbl")])? else { return Ok(None) };
     if let Some(hdlr) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"hdlr")])?
         && let Some(handler) = be32(hdlr.0, 8)
@@ -379,6 +454,10 @@ fn read_track(trak: Span<'_>, file_size: u64) -> Result<Option<VideoTrack>, Medi
         samples: Vec::new(),
         max_sample: 0,
         index: 0,
+        edits: None,
+        ctts: Vec::new(),
+        movie_timescale: movie_ts,
+        timing: FrameTiming::default(),
     };
     // timing
     if let Some(m) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"mdhd")])? {
@@ -417,6 +496,21 @@ fn read_track(trak: Span<'_>, file_size: u64) -> Result<Option<VideoTrack>, Medi
     if track.width == 0 || track.height == 0 {
         return Err(corrupt("video track with a zero dimension"));
     }
+    if let Some(elst) = find_path(trak, &[fourcc(b"edts"), fourcc(b"elst")])? {
+        track.edits = read_edits(elst.0);
+    }
+    if let Some(c) = find(stbl, fourcc(b"ctts"))? {
+        track.ctts = read_ctts(c.0, track.samples.len());
+    }
+    track.timing = FrameTiming::from_tables(&Tables {
+        samples: track.frame_count(),
+        timescale: track.timescale,
+        media_duration: track.duration,
+        stts: &track.stts,
+        ctts: &track.ctts,
+        edits: track.edits.as_deref(),
+        movie_timescale: movie_ts,
+    });
     Ok(Some(track))
 }
 
@@ -662,11 +756,12 @@ impl Movie {
         let mut timecode = None;
         let mut index = 0u32;
         let mut it = 0usize;
+        let movie_ts = movie_timescale(Span(&buf));
         while let Some((ty, body)) = next_atom(Span(&buf), &mut it)? {
             if ty != fourcc(b"trak") {
                 continue;
             }
-            match read_track(body, size) {
+            match read_track(body, size, movie_ts) {
                 Ok(Some(mut t)) => {
                     t.index = index;
                     tracks.push(t);

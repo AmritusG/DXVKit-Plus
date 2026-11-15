@@ -38,6 +38,9 @@ fn enum_values_are_pinned() {
     use HapTexture as H;
     assert_eq!([H::Bc1Rgb, H::Bc3Rgba, H::Bc3YCoCg, H::Bc7Rgba, H::Bc4Alpha, H::Bc6hUfloat, H::Bc6hSfloat].map(|v| v as u32), [0, 1, 2, 3, 4, 5, 6]);
     assert_eq!(PlayMode::ALL.map(|v| v as u32), [0, 1, 2, 3, 4]);
+    // 0.10.0.
+    use dxvkit_plus_core::timing::RateSource as R;
+    assert_eq!([R::MeanRate, R::DominantDelta, R::MinFrameDuration, R::Nominal, R::Fallback].map(|v| v as u32), [0, 1, 2, 3, 4]);
     assert_eq!(Direction::ALL.map(|v| v as u32), [0, 1, 2, 3]);
     assert_eq!(SyncMode::ALL.map(|v| v as u32), [0, 1, 2, 3]);
     // The transport's own index helpers agree with the ABI values.

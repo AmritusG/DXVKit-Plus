@@ -4,17 +4,26 @@
 //! (`kCVPixelBufferIOSurfacePropertiesKey`, `kCVPixelBufferMetalCompatibilityKey`) in the requested
 //! [`PixelLayout`] — `'420v'` for 4:2:0 codecs (no conversion), `'BGRA'` for alpha codecs.
 //!
-//! Frame `i` is the sample presented at `start + i * frame_duration` (the track's `timeRange.start`
-//! and `minFrameDuration`, exact rationals). Sequential reads reuse one reader; any other request
-//! restarts the reader with `timeRange` starting one frame before the target and skips samples
-//! until the target's presentation time — exact for intra-frame codecs (ProRes, MJPEG) and for
-//! long-GOP ones (AVFoundation decodes from the preceding sync sample internally). Variable frame
-//! rate clips are indexed on the nominal grid (documented limit).
+//! Frame `i` is frame `i` of the track's [`FrameTiming`] (0.10.0, `dxvkit_plus_core::timing`:
+//! Swift Glance's FrameTiming rule — every sample's presentation time through the edit list, exact
+//! rationals), built by core from the container's own tables, so the native path numbers frames
+//! exactly as the DXV / HAP paths and Swift Glance do. AVAssetReader serves those very times
+//! (measured: every served presentation time equals the timing's start on the W3 clips). A file
+//! core cannot parse (fragmented MP4) gets the grid from Swift's rate rules over AVFoundation's own
+//! minimum frame duration, nominal rate and duration. Up to 0.9.0 the grid of `minFrameDuration`
+//! (the SHORTEST sample) was used: jittered clips seeked one frame off and the count was
+//! duration / that minimum (W3 handoff).
+//!
+//! Sequential reads reuse one reader; any other request restarts the reader with `timeRange`
+//! starting at the previous frame's start and skips samples until the target (the frame whose start
+//! is the last at or before the sample's presentation time) — exact for intra-frame codecs (ProRes,
+//! MJPEG) and long-GOP ones (AVFoundation decodes from the preceding sync sample internally).
 
 use crate::objc::{PixelBuffer, cmtime, cmtime_numeric, cmtime_pos_inf, dict, ns, number_bool, number_u32};
 use dxvkit_plus_core::MediaError;
 use dxvkit_plus_core::backend::{Backend, NativeDecoder, NativeFrame, NativeInfo, PixelLayout, YuvMatrix};
 use dxvkit_plus_core::source::StatedAlpha;
+use dxvkit_plus_core::timing::{FrameTiming, MediaTime, RateInputs};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
@@ -67,6 +76,7 @@ pub struct NativeReader {
     /// The index the next `copyNextSampleBuffer` will deliver, when reading sequentially.
     next: Option<u32>,
     info: NativeInfo,
+    timing: FrameTiming,
 }
 
 // SAFETY: AVAsset / AVAssetTrack / AVAssetReader may be used from any thread as long as calls are
@@ -78,13 +88,11 @@ fn platform(m: impl Into<String>) -> MediaError {
     MediaError::Platform(m.into())
 }
 
-/// `a / b` rounded to nearest for positive denominators (i128, never panics).
-fn div_round(a: i128, b: i128) -> i128 {
-    if b == 0 {
-        return 0;
-    }
-    let half = b.checked_div(2).unwrap_or(0);
-    a.checked_add(if a >= 0 { half } else { half.saturating_neg() }).and_then(|x| x.checked_div(b)).unwrap_or(0)
+/// The timing of the movie's first video track from core's own parse of the container (the track
+/// AVFoundation's `tracksWithMediaType` lists first); `None` when core cannot read it.
+fn core_timing(path: &Path) -> Option<FrameTiming> {
+    let movie = dxvkit_plus_core::container::Movie::open(path).ok()?;
+    movie.track_at(0).map(|t| t.timing.clone()).filter(|t| t.frame_count() > 0)
 }
 
 /// The alpha the track's first format description states — Swift Glance's rule
@@ -151,24 +159,20 @@ impl NativeReader {
             // SAFETY: property reads on a valid track.
             let (size, min, range, fps) = unsafe { (track.naturalSize(), track.minFrameDuration(), track.timeRange(), track.nominalFrameRate()) };
             let fps = f64::from(fps);
-            let frame_duration = if cmtime_numeric(&min) && min.value > 0 {
-                (min.value, min.timescale)
-            } else if fps.is_finite() && fps > 0.0 {
-                (1000, (fps * 1000.0).round().clamp(1.0, f64::from(i32::MAX)) as i32)
-            } else {
-                return Err(platform(format!("{p}: the video track has no frame duration")));
-            };
             let start = if cmtime_numeric(&range.start) { (range.start.value, range.start.timescale) } else { (0, 1) };
             let dur = range.duration;
-            let frames = if cmtime_numeric(&dur) {
-                // duration / frame_duration = (d / D) / (f / F) = d * F / (D * f)
-                let num = i128::from(dur.value).saturating_mul(i128::from(frame_duration.1));
-                let den = i128::from(dur.timescale).saturating_mul(i128::from(frame_duration.0));
-                div_round(num, den)
-            } else {
-                0
-            };
-            let frame_count = u32::try_from(frames.clamp(0, i128::from(u32::MAX))).unwrap_or(0);
+            let seconds = if cmtime_numeric(&dur) && dur.timescale > 0 { dur.value as f64 / f64::from(dur.timescale) } else { 0.0 };
+            let timing = core_timing(path).unwrap_or_else(|| {
+                // Swift's rules without a sample table: AVFoundation's own inputs, then the grid.
+                let min = (cmtime_numeric(&min) && min.value > 0).then(|| u32::try_from(min.timescale).ok().map(|ts| (min.value, ts))).flatten();
+                let (rate, source) =
+                    dxvkit_plus_core::timing::rate_of(&RateInputs { track_seconds: seconds, min_frame_duration: min, nominal: fps, ..RateInputs::default() });
+                let count = (seconds * rate.num as f64 / rate.den as f64).round();
+                let count = if count.is_finite() && count > 0.0 { count.min(f64::from(u32::MAX)) as u32 } else { 0 };
+                FrameTiming::grid(rate, count, source)
+            });
+            let frame_duration = (timing.rate.den, i32::try_from(timing.rate.num).unwrap_or(i32::MAX));
+            let frame_count = timing.frame_count();
             if frame_count == 0 {
                 return Err(platform(format!("{p}: the video track has no frames")));
             }
@@ -178,29 +182,23 @@ impl NativeReader {
             }
             let alpha = stated_alpha(&track);
             let info = NativeInfo { width: w.round() as u32, height: h.round() as u32, frame_count, frame_duration, start, nominal_fps: fps, layout, alpha };
-            Ok(NativeReader { asset, track, reader: None, next: None, info })
+            Ok(NativeReader { asset, track, reader: None, next: None, info, timing })
         })
     }
 
-    /// Presentation time of frame `i` as (value, timescale) in the frame-duration timescale.
+    /// Start of frame `i` (the timing's exact start, clamped to the track).
     fn time_of(&self, i: u32) -> CMTime {
-        let (fv, ft) = self.info.frame_duration;
-        let (sv, st) = self.info.start;
-        // start converted to the frame timescale (rounded), plus i frames.
-        let start = div_round(i128::from(sv).saturating_mul(i128::from(ft)), i128::from(st.max(1)));
-        let v = start.saturating_add(i128::from(i).saturating_mul(i128::from(fv)));
-        cmtime(i64::try_from(v).unwrap_or(i64::MAX), ft)
+        let t = self.timing.time_of_frame(i);
+        cmtime(t.value, i32::try_from(t.timescale).unwrap_or(i32::MAX))
     }
 
-    /// Nominal grid index of a presentation time, rounded to the nearest grid point.
+    /// The frame a presentation time shows: the last frame starting at or before it (floor), Swift
+    /// FrameTiming's `frame(at:)`.
     fn index_of(&self, t: &CMTime) -> i64 {
-        let (fv, ft) = self.info.frame_duration;
-        let (sv, st) = self.info.start;
-        let (tv, tt) = (t.value, t.timescale);
-        // (t - start) / f = (tv/tt - sv/st) / (fv/ft) = (tv*st - sv*tt) * ft / (tt*st*fv)
-        let num = i128::from(tv).saturating_mul(i128::from(st)).saturating_sub(i128::from(sv).saturating_mul(i128::from(tt))).saturating_mul(i128::from(ft));
-        let den = i128::from(tt).saturating_mul(i128::from(st)).saturating_mul(i128::from(fv));
-        i64::try_from(div_round(num, den)).unwrap_or(i64::MAX)
+        match u32::try_from(t.timescale) {
+            Ok(ts) if ts > 0 => i64::from(self.timing.frame_at(MediaTime::new(t.value, ts))),
+            _ => -1,
+        }
     }
 
     fn start_reader(&mut self, from: CMTime) -> Result<(), MediaError> {
@@ -272,7 +270,7 @@ impl NativeReader {
         }
     }
 
-    /// Decode frame `index` exactly (on the nominal grid).
+    /// Decode frame `index` exactly (frame `index` of the track's timing).
     pub fn decode_frame(&mut self, index: u32) -> Result<NativeFrame, MediaError> {
         if index >= self.info.frame_count {
             return Err(MediaError::Range { index, count: self.info.frame_count });
@@ -282,10 +280,9 @@ impl NativeReader {
                 // One whole frame early. A reader whose time range starts INSIDE a sample delivers
                 // that sample with its presentation time moved up to the range start (measured: no
                 // trim attachment on decoded output), which would make the previous frame look like
-                // the target. Starting on the previous grid point means any such trimmed sample is
+                // the target. Starting at the previous frame's start means any such trimmed sample is
                 // identified as <= index - 1 and skipped; the target arrives with its own time.
-                let t = self.time_of(index.saturating_sub(1));
-                let from = cmtime(t.value.max(self.time_of(0).value), t.timescale);
+                let from = self.time_of(index.saturating_sub(1));
                 self.start_reader(from)?;
                 self.next = None;
             }
@@ -346,6 +343,9 @@ impl NativeDecoder for NativeReader {
     }
     fn frame(&mut self, index: u32) -> Result<NativeFrame, MediaError> {
         self.decode_frame(index)
+    }
+    fn timing(&self) -> Option<&FrameTiming> {
+        Some(&self.timing)
     }
     fn cpu_rgba(&self, frame: &NativeFrame) -> Result<Vec<u8>, MediaError> {
         cpu_rgba(frame)

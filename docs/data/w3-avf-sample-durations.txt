@@ -1,0 +1,178 @@
+# W3: AVFoundation AVSampleCursor.currentSampleDuration vs the container, per movie (cursor dumps of scripts/swift-frametiming-probe.swift --cursor; Mac17,6, macOS 27.0.1, 2026-11-15).
+# Hypothesis: duration = next presentation time (presentation order, ties by decode order) - own; the last sample presented keeps its stts (decode) delta.
+# file | samples | matches hypothesis | samples whose stts delta != the cursor duration
+_master_hapm_3840x2160.mov | 90 | True | 0
+_master_hapm_512x512.mov | 90 | True | 0
+_master_hapm_540x960.mov | 90 | True | 0
+adv_corrupt_inner.mov | 90 | True | 0
+adv_corrupt_outer.mov | 90 | True | 0
+adv_named_hap5_is_hapY.mov | 90 | True | 0
+adv_not_hap_h264.mov | 90 | True | 0
+adv_stsd_hap5_is_hapY.mov | 90 | True | 0
+adv_stsd_hapm_is_hap5.mov | 90 | True | 0
+adv_trunc_hapm_midframe.mov | 90 | True | 0
+bad-audio-fixtures/bad-audio.mov | 125 | True | 0
+bad-audio-fixtures/bad-audio2_DXV Normal Quality With Alpha.mov | 150 | True | 0
+bad-audio-fixtures/bad-audio2.mp4 | 150 | True | 0
+bad-audio-fixtures/good-audio.mov | 125 | True | 0
+cellC_hap1_1080w_nonaligned.mov | 8 | True | 0
+DXT1-DXV_DXV Normal Quality With Alpha [1280x720] [00.00.00-00.00.00].mov | 174 | True | 0
+DXT1-DXV_DXV Normal Quality With Alpha [1280x720].mov | 300 | True | 0
+DXT1-DXV_DXV Normal Quality With Alpha [1920x1080].mov | 300 | True | 0
+DXT1-DXV_DXV Normal Quality With Alpha [800x800].mov | 300 | True | 0
+DXT1-DXV.mov | 300 | True | 0
+DXT5-DXV3_HapM.mov | 300 | True | 0
+DXT5-DXV3.mov | 300 | True | 0
+glenc_hap1_1920x1080_chunks4.mov | 90 | True | 0
+glenc_hap5_1080w_nonaligned_chunks4.mov | 90 | True | 0
+glenc_hap5_1080w_nonaligned_single.mov | 90 | True | 0
+glenc_hap5_1920x1080_chunks4.mov | 90 | True | 0
+glenc_hap5_1920x1080_single.mov | 90 | True | 0
+glenc_hap5_alpha_real_chunks4.mov | 60 | True | 0
+glenc_hap5_alpha_real_single.mov | 60 | True | 0
+glenc_hap5_LEAKTEST_chunks4.mov | 60 | True | 0
+glenc_hap5_LEAKTEST_fromMaster.mov | 90 | True | 0
+glenc_hap5_LEAKTEST_single.mov | 60 | True | 0
+glenc_hap5_synth_straight_chunks4.mov | 60 | True | 0
+glenc_hap5_synth_straight_single.mov | 60 | True | 0
+glenc_hapm_aligned_alpha.mov | 90 | True | 0
+glenc_hapm_LEAKTEST_4k.mov | 90 | True | 0
+glenc_hapm_LEAKTEST_chunks4_aligned.mov | 90 | True | 0
+glenc_hapm_LEAKTEST_chunks4_nonaligned.mov | 90 | True | 0
+glenc_hapm_LEAKTEST_single_aligned.mov | 90 | True | 0
+glenc_hapm_LEAKTEST_single_nonaligned.mov | 90 | True | 0
+glenc_hapm_portrait_nonaligned_alpha.mov | 90 | True | 0
+glenc_hapy_fromMaster.mov | 90 | True | 0
+glenc_hapy_portrait_nonaligned_single.mov | 90 | True | 0
+hap-testclips/glenc_hapM_996x288.mov | 150 | True | 0
+hap-testclips/glenc_hapY_996x288.mov | 150 | True | 0
+hap-testclips/glenc_hapY_chunked.mov | 150 | True | 0
+hap-testclips/glenc-hapm-gate_Hap5_HEVC.mp4 | 30 | True | 4
+hap-testclips/glenc-hapm-gate_Hap5.mov | 30 | True | 0
+hap-testclips/glenc-hapm-gate.mov | 30 | True | 0
+hap-testclips/hap_a_reference.mov | 149 | True | 0
+hap-testclips/source_DXV High Quality With Alpha.mov | 150 | True | 0
+hap-testclips/source_DXV High Quality.mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality With Alpha_DXV Normal Quality With Alpha [333x221]_DXV Normal Quality With Alpha_2.mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality With Alpha_DXV Normal Quality With Alpha [333x221]_DXV Normal Quality With Alpha.mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality With Alpha_DXV Normal Quality With Alpha [333x221].mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality With Alpha.mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality_2.mov | 150 | True | 0
+hap-testclips/source_DXV Normal Quality.mov | 150 | True | 0
+hap-testclips/source_Hap1.mov | 150 | True | 0
+hap-testclips/source_Hap5.mov | 150 | True | 0
+hap-testclips/source_HapA.mov | 150 | True | 0
+hap-testclips/source_HapM_2_Hap5 [999x666].mov | 150 | True | 0
+hap-testclips/source_HapM_2.mov | 150 | True | 0
+hap-testclips/source_HapM_3.mov | 150 | True | 0
+hap-testclips/source_HapM.mov | 150 | True | 0
+hap-testclips/source_HapY.mov | 150 | True | 0
+hap-testclips/source.mov | 150 | True | 0
+hap-testclips/std_h264_audio_DXV Normal Quality With Alpha.mov | 150 | True | 0
+hap-testclips/std_h264_audio_H.264.mp4 | 150 | True | 0
+hap-testclips/std_h264_audio.mov | 150 | True | 0
+hap-testclips/std_hevc_audio.mov | 150 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV High Quality With Alpha [00.00.00-00.10.00].mov | 251 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha [00.00.00-00.04.24].mov | 107 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha [00.00.00-00.04.40].mov | 111 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha [00.00.00-00.05.63].mov | 142 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha [00.02.60-00.13.64].mov | 277 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha [00.03.04-00.17.64].mov | 366 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_2.mov | 751 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_3.mov | 120 | True | 0
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_H.264 [00.00.00-00.00.00]_2.mp4 | 615 | True | 92
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha_H.264 [00.00.00-00.00.00].mp4 | 434 | True | 67
+hap-testclips/std_indigofera_h264_audio_DXV Normal Quality With Alpha.mov | 751 | True | 0
+hap-testclips/std_indigofera_h264_audio.mov | 751 | True | 0
+hap-testclips/std_indigofera_h264_audio.mp4 | 768 | True | 1
+hap-testclips/std_prores_audio.mov | 150 | True | 0
+hap-testclips/test-hap1-audio_DXV Normal Quality With Alpha.mov | 150 | True | 0
+hap-testclips/test-hap1-audio.mov | 150 | True | 0
+hap-testclips/test-hap1.mov | 150 | True | 0
+hap-testclips/test-hap5.mov | 150 | True | 0
+hap-testclips/test-hapm.mov | 149 | True | 0
+hap-testclips/test-hapy.mov | 150 | True | 0
+hq-16px-test/ycg6-bothN16-1284x724.mov | 30 | True | 0
+hq-16px-test/ycg6-control-1280x720.mov | 30 | True | 0
+hq-16px-test/ycg6-width16-1280x724.mov | 30 | True | 0
+hq-16px-test/ycg6-widthN16-1284x720.mov | 30 | True | 0
+hq-16px-test/yg10-bothN16-1284x724.mov | 30 | True | 0
+hq-16px-test/yg10-control-1280x720.mov | 30 | True | 0
+hq-16px-test/yg10-width16-1280x724.mov | 30 | True | 0
+hq-16px-test/yg10-widthN16-1284x720.mov | 30 | True | 0
+Metric_01_DXV Normal Quality With Alpha_Hap5.mov | 201 | True | 0
+Metric_01_DXV Normal Quality With Alpha.mov | 201 | True | 0
+Metric_01_Hap1.mov | 201 | True | 0
+Metric_01_Hap5.mov | 201 | True | 0
+Metric_01_HapM.mov | 201 | True | 0
+Metric_01_HapY_2.mov | 201 | True | 0
+Metric_01_HapY.mov | 201 | True | 0
+Metric_01.mov | 201 | True | 0
+Old Testfiles/DXT1-DXV_DXV Normal Quality With Alpha [1280x720].mov | 300 | True | 0
+Old Testfiles/DXT1-DXV_DXV Normal Quality With Alpha [1336x852].mov | 300 | True | 0
+Old Testfiles/DXT1-DXV_DXV Normal Quality.mov | 300 | True | 0
+Old Testfiles/DXT1-DXV_Hap5 [1280x720].mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV High Quality With Alpha [1280x720].mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha [1080x720].mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha_2.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha_3.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha_4.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha_5.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha_6.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_DXV Normal Quality With Alpha.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_Hap1.mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_HapM [1280x720].mov | 300 | True | 0
+Old Testfiles/DXT5-DXV3_HapY.mov | 300 | True | 0
+Old Testfiles/dxv3-dxt1.mov | 559 | True | 0
+Old Testfiles/dxv3-dxt5.mov | 559 | True | 0
+Old Testfiles/dxv3-ycg6.mov | 559 | True | 0
+Old Testfiles/dxv3-yg10.mov | 559 | True | 0
+Old Testfiles/YCG6-DXV3_DXV Normal Quality [1280x720].mov | 300 | True | 0
+Old Testfiles/YG10-DXV3_DXV High Quality [1280x720].mov | 300 | True | 0
+Old Testfiles/YG10-DXV3_HapY [1280x720].mov | 300 | True | 0
+SCANTEST/scantest1.mp4 | 121 | True | 0
+SCANTEST/scantest2.mp4 | 121 | True | 0
+SCANTEST/scantest3.mp4 | 121 | True | 0
+SCANTEST/scantest4.mp4 | 605 | True | 0
+SCANTEST/scantest5.mp4 | 605 | True | 0
+SCANTEST/scantest6.mp4 | 605 | True | 0
+SCANTEST/scantestB1.mp4 | 121 | True | 0
+SCANTEST/scantestB2.mp4 | 121 | True | 0
+SCANTEST/scantestB3.mp4 | 121 | True | 0
+SCANTEST/scantestB4.mp4 | 605 | True | 0
+SCANTEST/scantestB5.mp4 | 605 | True | 0
+SCANTEST/scantestB6.mp4 | 605 | True | 0
+SCANTEST/scantestC1.mp4 | 605 | True | 0
+SCANTEST/scantestC2.mp4 | 605 | True | 0
+SCANTEST/scantestC3.mp4 | 605 | True | 0
+SCANTEST/scantestC4.mp4 | 605 | True | 0
+SCANTEST/scantestC5.mp4 | 605 | True | 0
+SCANTEST/scantestC6.mp4 | 605 | True | 0
+ShroomsProRes 4444.mov | 300 | True | 0
+v0.5.0-candidate/alley-dxt1.mov | 30 | True | 0
+v0.5.0-candidate/alley-dxt5.mov | 30 | True | 0
+v0.5.0-candidate/alley-ycg6.mov | 30 | True | 0
+v0.5.0-candidate/alley-yg10.mov | 30 | True | 0
+v0.5.0-candidate/ame-dxt1.mov | 30 | True | 0
+v0.5.0-candidate/ame-dxt5.mov | 30 | True | 0
+v0.5.0-candidate/ame-ycg6.mov | 30 | True | 0
+v0.5.0-candidate/ame-yg10.mov | 30 | True | 0
+v0.5.0-candidate/glenc-dxt1.mov | 30 | True | 0
+v0.5.0-candidate/glenc-dxt5.mov | 30 | True | 0
+v0.5.0-candidate/glenc-ycg6.mov | 30 | True | 0
+v0.5.0-candidate/glenc-yg10.mov | 30 | True | 0
+v0.5.0-candidate/Test/DXT1-DXV.mov | 300 | True | 0
+v0.5.0-candidate/Test/YCG6-DXV3.mov | 300 | True | 0
+v0.5.0-candidate/Test/YG10-DXV3.mov | 300 | True | 0
+YCG6-DXV3_DXV Normal Quality With Alpha.mov | 300 | True | 0
+YCG6-DXV3_DXV Normal Quality.mov | 300 | True | 0
+YCG6-DXV3.mov | 300 | True | 0
+YG10-DXV3_HapM.mov | 300 | True | 0
+YG10-DXV3.mov | 300 | True | 0
+edit_dxt1_empty_trim.mov | 24 | True | 0
+edit_h264_bframes.mov | 22 | True | 1
+edit_hap1_empty_trim_repeat.mov | 14 | True | 0
+edit_hap1_scaled.mov | 24 | True | 0
+jitter_prores4444_30.mov | 24 | True | 0
+# total: 173 / 173 movies match
+# rule 1 (mean, snapped) on edit_h264_bframes.mov: stts durations sum 440 -> 30.000000000000004 fps -> (30, 1); cursor durations sum 460 -> 28.6957 fps -> None (Swift falls through to dominantDelta)

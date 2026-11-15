@@ -1,0 +1,32 @@
+# W3: glance-core @ a0c2d04 (git archive into a scratch copy; glance-core untouched) built against this tree (path dependencies) with W2's one compile change (MediaInfo literal lib.rs:88 + ..MediaInfo::default()); cargo test --workspace --release --no-fail-fast, Mac17,6, 2026-11-15.
+# Result: 27 passed, 5 failed — the same 5 tests as on 0.9.0 (docs/data/w2-glance-core-c1-tests-on-0.9.0.txt), with identical panic messages (only a temp path differs): the expected W2 behaviour changes, nothing new from W3.
+test a_clip_larger_than_the_gpu_allows_is_an_error_value ... FAILED
+test a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track ... FAILED
+test amrits_test_files_come_back ... FAILED
+test amrits_test_files_route_key_and_probe_as_in_swift_glance ... FAILED
+test what_nothing_plays_gets_swift_glances_line ... FAILED
+# panic messages:
+thread 'a_clip_larger_than_the_gpu_allows_is_an_error_value' (39730447) panicked at crates/glance-gpu/tests/exact.rs:248:113:
+called `Result::unwrap()` on an `Err` value: Hap("frame size 16388x4 out of range")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+thread 'a_movie_with_a_dxv_and_a_hap_track_plays_the_hap_track' (39731608) panicked at crates/glance-media/tests/routing.rs:128:5:
+assertion `left == right` failed
+  left: Dxv
+ right: Hap
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+thread 'what_nothing_plays_gets_swift_glances_line' (39731613) panicked at crates/glance-media/tests/routing.rs:16:21:
+<tmp>/glance-core-messages-2428/cut.MoV routed to Hap
+
+174 files, 6 refused:
+thread 'amrits_test_files_come_back' (39731609) panicked at crates/glance-media/tests/routing.rs:252:5:
+assertion `left == right` failed
+  left: (174, 6)
+ right: (174, 7)
+
+thread 'amrits_test_files_route_key_and_probe_as_in_swift_glance' (39742136) panicked at crates/glance-media/tests/swift_parity.rs:98:5:
+1 differences from Swift Glance:
+adv_trunc_hapm_midframe.mov: route: Rust "hap", Swift "hap"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+

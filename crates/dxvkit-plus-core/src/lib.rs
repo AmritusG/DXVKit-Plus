@@ -25,6 +25,8 @@
 //!   rational speed; frame-exact seek, step, scrub, cues; beat and timecode sync.
 //! - [`names`]: codec and container display names, and the line for a file nothing plays.
 //! - [`time`]: exact integer media time ([`time::Tick`]) and timecode formatting.
+//! - [`timing`]: what "frame n" means — every frame's real start through the edit list, the exact
+//!   rate (Swift Glance's FrameTiming rule), for every decode path.
 #![forbid(unsafe_code)]
 
 pub mod backend;
@@ -42,6 +44,7 @@ pub mod names;
 pub mod source;
 pub mod testpattern;
 pub mod time;
+pub mod timing;
 pub mod transport;
 
 pub use error::MediaError;

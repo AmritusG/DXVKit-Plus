@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.10.0 — 2026-11-15
+
+**Container timing: every frame at its real start, on every path** (W3). Frame `n` is now the same
+picture on the DXV, HAP, LMBD and native paths, and the same frame Swift Glance's
+`GlanceCore.FrameTiming` names `n`. Every change to the API is an addition, except the meaning of
+three existing numbers (below).
+
+- **`core::timing`** (new): `FrameTiming` — the frame count, the exact rate (`FrameRate`) and the rule
+  that gave it (`RateSource`, `#[repr(u32)]` 0..4, pinned), every frame's real start
+  (`time_of_frame`, an exact `MediaTime` in the media time scale, or the least common multiple with
+  the movie time scale when an edit starts between media ticks), the inverse (`frame_at`, floor),
+  and the sample that shows a frame (`sample_of_frame`). Built from `stts` + `ctts` + `elst` with
+  `mdhd` / `mvhd` time scales by Swift's rule: presentation times mapped through the edit list,
+  samples outside every edit dropped, a sample in two edits two frames, empty edits shifting;
+  the grid when an edit changes speed or nothing maps. Rate: Swift's five rules (mean snapped,
+  dominant duration snapped, shortest sample when it agrees with the mean, nominal, shortest; else
+  30) — never the shortest sample alone. Also `rate_of`, `snap`, `STANDARD_RATES`, `Edit`, `Tables`.
+- **Container**: reads `mvhd`, `elst` and `ctts` (`VideoTrack::edits`, `ctts`, `movie_timescale`,
+  `timing`, `frames()`); the `elst` / `ctts` readers are ported from Loombda-rs `loombda-media`
+  (Amrit's, MIT by the author's leave; `ATTRIBUTION.md`). An edit list whose count runs past its atom or
+  exceeds `MAX_EDITS` (65 536) is not applied; mapped frames are capped at `MAX_SAMPLES`; every
+  hostile table takes the grid or the stored times, never a panic or a hang (fuzzed).
+- **Every path numbers frames by it**: DXV and HAP decode frame `n` from `sample_of_frame(n)`;
+  `MediaInfo::frames` / `rate` are the timing's (served frames, exact rate) for every movie;
+  `FrameSource::timing()` and `NativeDecoder::timing()` (new, defaulted) hand it out; LMBD,
+  sequences and stills give their grid.
+- **Native (Apple island)**: `NativeReader` takes its frames, count and exact-seek rule from core's
+  timing of the same file (the grid of Swift's rules over AVFoundation's own timing only where core
+  cannot parse the file — fragmented MP4). AVAssetReader serves exactly those starts (measured).
+  Fixed: the four real clips that seeked one frame off on 0.8.0 / 0.9.0 (the grid of
+  `minFrameDuration`, the SHORTEST sample: 19 / 600 or 23 / 600) and the H.264 clip counted 753 frames
+  of which AVFoundation serves 751 — all now pass `verify --block-path exact`.
+- **Changed meaning** (same fields): `VideoTrack::frame_rate()` is the timing's rate (was timescale /
+  first `stts` delta); `NativeInfo::frame_count` is the frames served and `frame_duration` one period
+  at the exact rate (were duration / `minFrameDuration` and `minFrameDuration`).
+  `VideoTrack::frame_count()` stays the number of samples in the table.
+- **Cross-test** against Swift FrameTiming (a probe built from glance's own source,
+  `scripts/swift-frametiming-probe.swift`; comparer `scripts/crosstest-frame-timing.py`; example
+  `frame_times`): rate, rule, count and every frame start equal on all 168 movies of the test folder
+  that either side opens (6 open on neither), Glance's 11 frame-timing fixtures and the 5 new ones.
+- **Fixtures** (ours, CC0, `scripts/make-edit-list-fixtures.swift`, AVFoundation): an empty + trimming
+  edit on DXV, empty / copied / repeating edits on HAP (17 frames from 14 samples), a speed edit,
+  H.264 with B-frames and a trim, ProRes 4444 on jittered timing.
+
 ## 0.9.0 — 2026-11-14
 
 **The probe opens files as Swift Glance does; BC7 on the exact path; the MediaInfo gaps** (W2: the

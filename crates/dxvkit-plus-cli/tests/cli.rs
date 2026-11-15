@@ -23,11 +23,22 @@ fn run(cmd: &mut Command) -> Vec<serde_json::Value> {
     String::from_utf8(out.stdout).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
+/// 0.10.0: the timed fixtures (scripts/make-edit-list-fixtures.swift): (name, frames that play, the
+/// source frame frame 2 shows).
+const TIMED: [(&str, u64, u32); 5] = [
+    ("edit_dxt1_empty_trim.mov", 9, 6),
+    ("edit_h264_bframes.mov", 18, 5),
+    ("edit_hap1_empty_trim_repeat.mov", 17, 7),
+    ("edit_hap1_scaled.mov", 36, 2),
+    ("jitter_prores4444_30.mov", 24, 2),
+];
+
 #[test]
 fn every_command_works_on_every_fixture() {
     let files = fixtures();
-    // 16 tile movies, HAP R and HAP HDR, and (0.9.0) a fragmented MP4 only the platform reads.
-    assert_eq!(files.len(), 19);
+    // 16 tile movies, HAP R and HAP HDR, (0.9.0) a fragmented MP4 only the platform reads, and
+    // (0.10.0) four movies with edit lists / composition offsets and one on jittered timing.
+    assert_eq!(files.len(), 24);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     for f in &files {
@@ -38,6 +49,8 @@ fn every_command_works_on_every_fixture() {
             assert_eq!((p["width"].as_u64(), p["height"].as_u64(), p["frames"].as_u64()), (Some(128), Some(72), Some(24)), "{name}");
         } else if name.starts_with("frag_") {
             assert_eq!((p["kind"].as_str(), p["frames"].as_u64(), p["codec_name"].as_str()), (Some("native"), Some(60), Some("H.264")), "{name}");
+        } else if let Some(&(_, frames, _)) = TIMED.iter().find(|t| t.0 == name) {
+            assert_eq!(p["frames"].as_u64(), Some(frames), "{name}");
         } else {
             assert_eq!(p["frames"].as_u64(), Some(3), "{name}");
         }
@@ -67,13 +80,18 @@ fn every_command_works_on_every_fixture() {
             if tiles && !name.contains("hapa") {
                 assert_eq!(dxvkit_plus_core::testpattern::read_frame_id(&buf, 128, 72), Some(11), "{name} {route}");
             }
+            if let Some(&(_, _, source)) = TIMED.iter().find(|t| t.0 == name) {
+                assert_eq!(dxvkit_plus_core::testpattern::read_frame_id(&buf, 128, 72), Some(source), "{name} {route}: frame 2's source frame");
+            }
         }
     }
     let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) =
         files.iter().filter(|f| !f.to_str().unwrap().contains("frag_")).partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
     let v = run(bin().args(["verify", "--tiles", "--source-tolerance", "255"]).args(&tile_files));
     let v2 = run(bin().arg("verify").args(&synthetic));
-    assert_eq!((v.len(), v2.len()), (16, 2));
+    // HAP R, HAP HDR and (0.10.0) the five timed fixtures, verified without frame identity (their
+    // frame n shows another source frame by design; checked above and in core's tests/timing.rs).
+    assert_eq!((v.len(), v2.len()), (16, 7));
     // DXV: probe names the variant; both alpha modes verify.
     let dxv: Vec<&PathBuf> =
         tile_files.iter().copied().filter(|f| f.to_str().unwrap().contains("tiles_dxt") || f.to_str().unwrap().contains("tiles_y")).collect();

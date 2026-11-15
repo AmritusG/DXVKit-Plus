@@ -1,0 +1,8 @@
+asset: tests/fixtures/edit_h264_bframes.mov
+title: H.264 High with B-frames (ctts) and a trimming edit
+author: Amrit Rosell — derived from our own CC0 fixtures (procedural pattern dxvkit_plus_core::testpattern::tiles; the top tile row encodes the source frame index)
+source: Written by scripts/make-edit-list-fixtures.swift with AVFoundation (AVMutableMovie edits, AVAssetWriter for the H.264) on macOS 27.0.1 from tiles_prores4444.mov decoded and re-encoded by VideoToolbox (H.264 High, frame reordering, key frame every 12), then an edit keeping source frames 3..20 (22 samples, 18 frames play)
+license: CC0-1.0
+added: 2026-11-15
+sha256: 4bf76f88d92603c0849a2082c51f9a17c690f1cff7c74dced555209d98ba0a87
+notes: W3 container timing (edit lists / composition offsets). Self-contained (one self-reference dref entry, no paths). Swift Glance FrameTiming and DXVKit Plus agree on every frame start (docs/data/w3-crosstest-fixtures.jsonl). The script's output differs from the committed bytes only in the movie header creation dates.

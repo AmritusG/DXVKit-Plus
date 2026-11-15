@@ -161,3 +161,67 @@ pub fn bc6h_solid(rw: u128, gw: u128, bw: u128) -> [u8; 16] {
     }
     b.0.to_le_bytes()
 }
+
+/// Timing tables for [`timed_movie`] (0.10.0, W3): `stts` runs, optional `ctts` runs (signed
+/// offsets), an optional raw `elst` body (version / flags + count + entries, as written), the media
+/// and movie time scales.
+pub struct Timed<'a> {
+    pub stts: &'a [(u32, u32)],
+    pub ctts: Option<&'a [(u32, i32)]>,
+    pub elst: Option<Vec<u8>>,
+    pub media_timescale: u32,
+    pub movie_timescale: u32,
+}
+
+/// A version-0 `elst` body of `(duration, media_time, rate 16.16)` entries.
+pub fn elst_v0(entries: &[(u32, i32, i32)]) -> Vec<u8> {
+    let mut b = [0u32.to_be_bytes(), (entries.len() as u32).to_be_bytes()].concat();
+    for &(d, t, r) in entries {
+        b.extend_from_slice(&d.to_be_bytes());
+        b.extend_from_slice(&t.to_be_bytes());
+        b.extend_from_slice(&r.to_be_bytes());
+    }
+    b
+}
+
+/// A one-track QuickTime movie of `samples` (`fourcc`, `w` x `h`) with the timing tables of `t` and
+/// an `mvhd` carrying the movie time scale.
+pub fn timed_movie(fourcc: &[u8; 4], w: u16, h: u16, samples: &[Vec<u8>], t: &Timed<'_>) -> Vec<u8> {
+    let ftyp = atom(b"ftyp", b"qt  \0\0\0\0qt  ");
+    let mdat = atom(b"mdat", &samples.concat());
+    let n = samples.len() as u32;
+    let offset = (ftyp.len() + 8) as u32;
+    let stsd = full(b"stsd", &[&1u32.to_be_bytes()[..], &sample_entry(fourcc, w, h)].concat());
+    let mut s = (t.stts.len() as u32).to_be_bytes().to_vec();
+    for &(c, d) in t.stts {
+        s.extend_from_slice(&c.to_be_bytes());
+        s.extend_from_slice(&d.to_be_bytes());
+    }
+    let stts = full(b"stts", &s);
+    let ctts = t.ctts.map(|runs| {
+        let mut c = (runs.len() as u32).to_be_bytes().to_vec();
+        for &(k, o) in runs {
+            c.extend_from_slice(&k.to_be_bytes());
+            c.extend_from_slice(&o.to_be_bytes());
+        }
+        full(b"ctts", &c)
+    });
+    let stsc = full(b"stsc", &[1u32.to_be_bytes(), 1u32.to_be_bytes(), n.to_be_bytes(), 1u32.to_be_bytes()].concat());
+    let mut z = [0u32.to_be_bytes(), n.to_be_bytes()].concat();
+    for x in samples {
+        z.extend_from_slice(&(x.len() as u32).to_be_bytes());
+    }
+    let stsz = full(b"stsz", &z);
+    let stco = full(b"stco", &[1u32.to_be_bytes(), offset.to_be_bytes()].concat());
+    let stbl = atom(b"stbl", &[stsd, stts, ctts.unwrap_or_default(), stsc, stsz, stco].concat());
+    let total: u64 = t.stts.iter().map(|&(c, d)| u64::from(c) * u64::from(d)).sum();
+    let hdlr = atom(b"hdlr", &[&[0u8; 8][..], b"vide", &[0u8; 12]].concat());
+    let mut mdhd = vec![0u8; 24];
+    mdhd[12..16].copy_from_slice(&t.media_timescale.to_be_bytes());
+    mdhd[16..20].copy_from_slice(&(total as u32).to_be_bytes());
+    let edts = t.elst.as_ref().map(|e| atom(b"edts", &atom(b"elst", e))).unwrap_or_default();
+    let trak = atom(b"trak", &[edts, atom(b"mdia", &[atom(b"mdhd", &mdhd), hdlr, atom(b"minf", &stbl)].concat())].concat());
+    let mut mvhd = vec![0u8; 100];
+    mvhd[12..16].copy_from_slice(&t.movie_timescale.to_be_bytes());
+    [ftyp, mdat, atom(b"moov", &[atom(b"mvhd", &mvhd), trak].concat())].concat()
+}
