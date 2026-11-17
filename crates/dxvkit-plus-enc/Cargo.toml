@@ -1,0 +1,22 @@
+[package]
+name = "dxvkit-plus-enc"
+description = "The DXV3 and HAP encoders and the QuickTime writer for them: RGBA frames to DXV3 (DXT1 / DXT5 / YCG6 / YG10) and HAP (Hap1 / Hap5 / HapY / HapA / HapM, single and chunked) packets, written into a .mov with an optional PCM audio track. Byte-identical to Swift GlEnc 1.6.2 (DXVKit 1.0.0 as SwiftPM builds it) for the same pixels."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+dxvkit-plus-core = { workspace = true, features = ["zstd-c"] }
+sha2 = "0.10.9"
+png = { workspace = true }

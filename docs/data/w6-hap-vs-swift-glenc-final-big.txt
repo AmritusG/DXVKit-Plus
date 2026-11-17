@@ -1,0 +1,7 @@
+hap5  4096x4096 chunks  1 straight noise      frames   1  identical
+hap5  4096x4096 chunks  2 straight noise      frames   1  identical
+hapm  4096x4096 chunks  1 straight noise      frames   1  identical
+hapm  4096x4096 chunks  2 straight noise      frames   1  identical
+hapy  4096x4096 chunks  1 straight noise      frames   1  identical
+hapy  4096x4096 chunks  2 straight noise      frames   1  identical
+TOTAL: 6 cases, 6 packets compared (refusals count as one), 6 identical, 0 cases with differences

@@ -16,6 +16,12 @@
 //!   luma plane and an `RG8` chroma plane, alpha codecs as one `BGRA8` plane.
 //! - [`audio::AacDecoder`] (0.11.0): AAC packets to `f32` through AudioToolbox's `AudioConverter`,
 //!   offered as `Backend::audio_decoder`; the core demuxes, trims the edit list and priming.
+//! - GlEnc's AVFoundation / Accelerate pieces (macOS; mirroring Swift GlEnc 1.6.2 so a Rust GlEnc
+//!   writes what the Swift one writes): [`bgra::BgraReader`] (sequential 32BGRA frames,
+//!   `AVAssetReaderSourceReader`), [`pcm::read_pcm_s32`] (the first audio track as interleaved
+//!   s32le PCM, `SourceAudioReader.readInterleavedPCM`), [`writer::AvWriter`] (ProRes, H.264, HEVC,
+//!   Motion JPEG through `AVAssetWriter`, `AVAssetWriterVideoSink`) and [`scale::scale_bgra`]
+//!   (`vImageScale_ARGB8888`, `FrameResizer`).
 //! - Both routes are measured by `dxvkit-plus bench --import`; the faster one (the cache route) is
 //!   the default (numbers in `docs/ARCHITECTURE.md`).
 //!
@@ -26,12 +32,27 @@
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod audio;
+#[cfg(target_os = "macos")]
+pub mod bgra;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod decode;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod objc;
+#[cfg(target_os = "macos")]
+pub mod pcm;
+#[cfg(target_os = "macos")]
+pub mod scale;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod surface;
+#[cfg(target_os = "macos")]
+pub mod writer;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use decode::{AppleBackend, NativeReader};
+#[cfg(target_os = "macos")]
+pub use {
+    bgra::{AlphaFacts, BgraFrame, BgraReader, FrameAttachments, SourceReaderError},
+    pcm::{PcmAudio, PcmError, read_pcm_s32},
+    scale::{ScaleError, ScaleFilter, scale_bgra},
+    writer::{AvCodec, AvContainer, AvWriter, CompressionProps, H264Profile, MJPEG_DEFAULT_QUALITY, WriterError},
+};

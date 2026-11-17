@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.0 — 2026-11-17
+
+**Encoders: DXV3 and HAP, the QuickTime writer, and GlEnc's AVFoundation / Accelerate pieces** (W6, made from
+glenc-rs's goal run). Byte for byte what Swift GlEnc 1.6.2 writes for the same pixels, proven against an oracle built
+from Swift GlEnc's own source. Every API change is an addition.
+
+- **`dxvkit-plus-enc`** (new crate, safe Rust):
+  - `dxv`: DXV3 DXT1 / DXT5 / YCG6 / YG10 (`DxvEncoder`, `compress`, `DxvPacker`) — DXVKit 1.0.0's encoder by way of
+    Loombda-rs's port, at DXVKit's BEST effort, with the 24 fused multiply-adds Apple clang forms when SwiftPM builds
+    DXVKit's C core (`enc_bc.o`: the BC1 principal-axis search and `dxvk_bc4_encode_fine`'s refit). 364 / 364 packets
+    equal to Swift GlEnc's on generated frames (1x1 … 1920x1080) and three testsrc2 PNG frames, 320 / 320 on 80 real
+    1080p frames; fused and unfused gave the same blocks on 20 million random blocks (a session measurement). Tests: packets decode to the packed planes; 48 golden hashes.
+  - `hap`: Hap1 / Hap5 / HapY / HapA / HapM, single section and chunked (2…64), the 8-byte section header past
+    16 MiB, raw chunk fallback — a port of Swift GlEnc's own BC1 (its port of FFmpeg's `texturedspenc.c`), BC4 (simple
+    and refined), BC3, scaled-YCoCg and alpha packers, Snappy compressor and section writers. 10,275 packets equal to
+    Swift GlEnc's (+ 10,224 with refined BC4), 1080p Hap5 7.1 ms on 18 threads. Tests: 12 structural, 56 golden.
+  - `mov`: the QuickTime writer for both (`MovWriter`, `derive_timescale`): one sample per chunk, `co64` and the
+    largesize `mdat` past 4 GiB, the `in32` v1 / `lpcm` v2 audio track, `udta/©swr`. of 123 generated cases 105 files equal
+    to Swift GlEnc's `VariantMOVWriter` and 18 refused by both, plus 6 / 6 real > 4 GiB layouts equal. Tests: 20 structural, 2 golden / round trip.
+  - `alpha`: the straight-alpha rule (Swift's `AlphaNormalization`).
+- **`dxvkit-plus-apple`** (macOS): `BgraReader` (AVAssetReader 32BGRA with GlEnc's settings, frames and timestamps
+  equal to Swift's on 1,948 frames of 18 movies; the buffer's attachments, which change an encoded file's `colr`),
+  `read_pcm_s32` (interleaved s32le at a chosen rate, Swift's rules and words), `AvWriter` (AVAssetWriter: ProRes 422 /
+  HQ / LT / Proxy / 4444, H.264, HEVC, Motion JPEG; LPCM in `.mov`, AAC 256 kbit/s in `.mp4`; ProRes and MJPEG files
+  equal to Swift GlEnc's but for the creation times), `scale_bgra` (vImage Bilinear / Lanczos, equal to Swift's in
+  22 / 22 cases). Tests: 13.
+- Briefed by glenc-rs (`AmritusG/glenc-rs` E1); no change to existing crates' behaviour.
+
 ## 0.11.0 — 2026-11-15
 
 **Audio tracks, and the transport on real frame starts** (W4). The input glance-core's audio-master

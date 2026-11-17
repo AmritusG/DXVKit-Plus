@@ -56,6 +56,14 @@ objc2-core-video = { workspace = true, features = ["objc2-io-surface"] }
 objc2-core-media = { workspace = true }
 objc2-av-foundation = { workspace = true, features = ["objc2-core-media"] }
 
+# GlEnc's AVFoundation pieces (bgra / pcm / writer / scale, macOS only): the AVAudioSettings keys,
+# the AudioStreamBasicDescription type and the finishWriting completion block. Same objc2 family
+# and versions the crates above already pull in (Zlib OR Apache-2.0 OR MIT).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-avf-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+block2 = "0.6.2"
+
 [dev-dependencies]
 serde_json = { workspace = true }
 dxvkit-plus-wgpu = { workspace = true }

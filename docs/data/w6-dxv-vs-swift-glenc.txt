@@ -1,0 +1,5 @@
+# Rust DXV3 encoder vs Swift GlEnc 1.6.2's (encoder oracle), 2026-11-17.
+## generated (8 sizes x 4 patterns, 88 frames) + 3 testsrc2 PNG frames, x 4 variants
+364 / 364 packets identical
+## 80 real 1080p frames (40 of a ProRes 4444 clip, 40 of a DXV clip, decoded by ffmpeg to RGBA in scratch), x 4 variants
+320 / 320 packets identical

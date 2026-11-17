@@ -1,0 +1,8 @@
+large: mdat = u32::MAX exactly (32-bit)              identical (4294968013 B; ftyp wide mdat moov [stco])
+large: mdat = u32::MAX + 1 (largesize, stco)         identical (4294968014 B; ftyp mdat(64) moov [stco])
+large: last offset = u32::MAX (32-bit mdat, stco)    identical (4294967998 B; ftyp wide mdat moov [stco])
+large: last offset = u32::MAX + 1 (32-bit mdat, co64) identical (4294968011 B; ftyp wide mdat moov [co64])
+large: video stco + audio co64                       identical (4295352579 B; ftyp mdat(64) moov [stco,co64])
+large: video co64 + audio co64 (lpcm v2)             identical (4295739569 B; ftyp mdat(64) moov [co64,co64])
+
+6 cases: 6 identical, 0 refused by both, 0 different

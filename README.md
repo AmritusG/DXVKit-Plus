@@ -107,8 +107,9 @@ every frame of every fixture), and every error is a value — hostile files neve
 |---|---|
 | [`dxvkit-plus-core`](crates/dxvkit-plus-core) | demux, DXV, HAP, the LMBD container (read and write), CPU block decoders, frame cache, transport, the platform `Backend` trait. `#![forbid(unsafe_code)]`, no GPU dependency. Links libzstd (C) for LMBD by default; pure Rust with the `zstd-rust` feature ([below](#zstd-decode-backend)). |
 | [`dxvkit-plus-lmbd-enc`](crates/dxvkit-plus-lmbd-enc) | the LMBD encoder: 4-mode BC7 + rate-distortion optimisation (a faithful port of bc7enc_rdo) + Zstd. Byte-identical to the original LMBD encoder. |
+| [`dxvkit-plus-enc`](crates/dxvkit-plus-enc) | the DXV3 (DXT1 / DXT5 / YCG6 / YG10) and HAP (Hap1 / Hap5 / HapY / HapA / HapM, chunked) encoders and their QuickTime writer (PCM audio, > 4 GiB files). Byte-identical to Swift GlEnc 1.6.2 for the same pixels (0.12.0). |
 | [`dxvkit-plus-wgpu`](crates/dxvkit-plus-wgpu) | BC texture upload and WGSL conversion on wgpu 30, on two block paths (`BlockPath`: sampled — the GPU's BC decode — or exact — decoded in the shader, bit-exact with the CPU); persistent staging and pipelined submission (`Uploader`, `StagedFrame`), direct sampling of plain-BC frames (`DirectView`); `LmbdTexture` (GPU LMBD decode, with an sRGB view). |
-| [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS (Apple silicon and Intel; iOS builds): AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy. The only crate with `unsafe`. |
+| [`dxvkit-plus-apple`](crates/dxvkit-plus-apple) | macOS (Apple silicon and Intel; iOS builds): AVFoundation / VideoToolbox → IOSurface → wgpu Metal texture, zero-copy; since 0.12.0 also GlEnc's 32BGRA reader, s32le audio reader, AVAssetWriter writer (ProRes / H.264 / HEVC / MJPEG) and vImage scaler. The only crate with `unsafe`. |
 | [`dxvkit-plus-cli`](crates/dxvkit-plus-cli) | the `dxvkit-plus` command. |
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
@@ -784,8 +785,7 @@ only). Builds and tests run on the Mac Studio; there is no remote CI yet.
   on noise-like detail at LMB7's bytes (at a 2-4 minute BC7 encode per 1080p frame); not in v3.
 - **Windows** — Media Foundation decode and DX12 shared-handle zero-copy import behind the existing
   `Backend` trait.
-- **Encoders** — HAP and DXV encode (LMBD encode ships in 0.2.0). (HAP Q encoding will be written from the YCoCg-DXT paper the
-  HAP spec cites, never from `hap-qt-codec`'s LGPL-2.1 YCoCg encoder.)
+- **Encoders** — DXV3 and HAP encode ship in 0.12.0 (`dxvkit-plus-enc`; LMBD encode in 0.2.0). Next: Windows writers.
 - **C ABI** — a C wrapper over the public API (already kept C-wrappable; see `docs/ARCHITECTURE.md`).
 - **crates.io** — publishing the crates.
 
