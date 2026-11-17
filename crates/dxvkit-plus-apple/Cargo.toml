@@ -61,6 +61,11 @@ objc2-av-foundation = { workspace = true, features = ["objc2-core-media"] }
 # and versions the crates above already pull in (Zlib OR Apache-2.0 OR MIT).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-avf-audio = "0.3.2"
+# MaCrate's pieces (track / plane / grab): the async loadTracks completion block and the CGImage of
+# AVAssetImageGenerator, drawn through CoreGraphics. Same objc2 family and version (already in the
+# lock file through the crates above).
+objc2-av-foundation = { workspace = true, features = ["block2", "objc2-core-graphics"] }
+objc2-core-graphics = { workspace = true }
 objc2-core-audio-types = "0.3.2"
 block2 = "0.6.2"
 

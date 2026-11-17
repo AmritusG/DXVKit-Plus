@@ -22,6 +22,11 @@
 //!   s32le PCM, `SourceAudioReader.readInterleavedPCM`), [`writer::AvWriter`] (ProRes, H.264, HEVC,
 //!   Motion JPEG through `AVAssetWriter`, `AVAssetWriterVideoSink`) and [`scale::scale_bgra`]
 //!   (`vImageScale_ARGB8888`, `FrameResizer`).
+//! - MaCrate's AVFoundation pieces (0.13.0, macOS; mirroring Swift MaCrate 0.16.4):
+//!   [`track::track_facts`] (the first video track's size, rate, duration, leading empty edits and
+//!   format-description tags, `AVFoundationSource.open()`), [`plane::PlaneReader`] (sequential
+//!   plane 0 — BGRA, or the Y plane of `420v` / `420f` — with its stride, the measurement reader)
+//!   and [`grab::FrameGrabber`] (`AVAssetImageGenerator` pictures as RGBA8, the thumbnail path).
 //! - Both routes are measured by `dxvkit-plus bench --import`; the faster one (the cache route) is
 //!   the default (numbers in `docs/ARCHITECTURE.md`).
 //!
@@ -36,14 +41,20 @@ pub mod audio;
 pub mod bgra;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod decode;
+#[cfg(target_os = "macos")]
+pub mod grab;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod objc;
 #[cfg(target_os = "macos")]
 pub mod pcm;
 #[cfg(target_os = "macos")]
+pub mod plane;
+#[cfg(target_os = "macos")]
 pub mod scale;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod surface;
+#[cfg(target_os = "macos")]
+pub mod track;
 #[cfg(target_os = "macos")]
 pub mod writer;
 
@@ -52,7 +63,10 @@ pub use decode::{AppleBackend, NativeReader};
 #[cfg(target_os = "macos")]
 pub use {
     bgra::{AlphaFacts, BgraFrame, BgraReader, FrameAttachments, SourceReaderError},
+    grab::{FrameGrabber, GrabAlpha, GrabbedImage, THUMBNAIL_MAX_SIZE},
     pcm::{PcmAudio, PcmError, read_pcm_s32},
+    plane::{PlaneFormat, PlaneFrame, PlaneInfo, PlaneReader},
     scale::{ScaleError, ScaleFilter, scale_bgra},
+    track::{AvError, TrackFacts, track_facts},
     writer::{AvCodec, AvContainer, AvWriter, CompressionProps, H264Profile, MJPEG_DEFAULT_QUALITY, WriterError},
 };

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.13.0 — 2026-11-17
+
+**MaCrate's AVFoundation pieces** (W9, briefed by macrate-rs: its measurement scanner's gap G4 and its grid's
+thumbnail grab). What Swift MaCrate 0.16.4 asks AVFoundation for, asked the same way, on the CPU. Every API change is
+an addition; nothing existing changes behaviour.
+
+- **`dxvkit-plus-apple`** (macOS):
+  - `track_facts(path) -> TrackFacts` — `AVFoundationSource.open()`'s facts of the first video track: `AVURLAsset`
+    with no options, tracks loaded asynchronously (`loadTracksWithMediaType:completionHandler:`, so a failure is the
+    `NSError` Swift sees: description, domain, code), `Int(naturalSize)`, `nominalFrameRate`, the time range's
+    duration, the end of the leading empty edit segments, and the first format description's media subtype,
+    `YCbCrMatrix` tag, `colr` atom presence, `FullRangeVideo`, `ContainsAlphaChannel`, `Depth` (alpha = contains
+    alpha or depth 32).
+  - `PlaneReader::open(path, PlaneFormat)` → `next_frame()` / `next_frame_into(&mut Vec<u8>)` / `finish()` — the
+    measurement reader: `AVAssetReaderTrackOutput` with only `kCVPixelBufferPixelFormatTypeKey` (32BGRA, `420v`,
+    `420f`), `alwaysCopiesSampleData = false`, sequential; per sample with an image buffer its presentation time and
+    plane 0 (BGRA, or the Y plane) with the buffer's own stride; a reader that ends `.failed` is `ReadFailed` with
+    the reader's error. `PlaneFormat` is `#[repr(u32)]` (pinned).
+  - `FrameGrabber::open(path, max_w, max_h)` → `grab(MediaTime, GrabAlpha)` / `grab_seconds(s, timescale, …)` — the
+    thumbnail path: `AVAssetImageGenerator` with `appliesPreferredTrackTransform`, a `maximumSize`
+    (`THUMBNAIL_MAX_SIZE` = Swift's 1920×1080), zero tolerance, `copyCGImage(at:actualTime:)`; the CGImage drawn
+    into a device-RGB `premultipliedLast` RGBA8 context (Swift's luminance-check / checkerboard context) and handed
+    over straight or premultiplied, with the actual time, whether the image has alpha and whether the track states
+    alpha. `GrabAlpha` is `#[repr(u32)]` (pinned).
+  - `AvError` (stable codes 1–7, pinned).
+- Proof: facts, every plane-0 hash (3 formats × 5 fixtures), frame times and grabs (incl. rotated copies and size
+  caps) equal to `scripts/macrate-av-ref.swift`, which asks AVFoundation / CoreGraphics as Swift MaCrate does; on
+  47 of the briefing app's own files the facts equal the scanner's cross-tested prototype, and on the 35 that decode
+  every frame (36,201 over the three formats: PTS, size, stride, bytes) does. Tests: 10 (`tests/macrate_av.rs`).
+- Dependencies: `objc2-core-graphics` 0.3.2 (already in the lock file; Zlib OR Apache-2.0 OR MIT), the `block2` and
+  `objc2-core-graphics` features of `objc2-av-foundation`.
+
 ## 0.12.0 — 2026-11-17
 
 **Encoders: DXV3 and HAP, the QuickTime writer, and GlEnc's AVFoundation / Accelerate pieces** (W6, made from
