@@ -12,7 +12,7 @@
 //! [`Decoded::to_rgba`] turns any CPU-decoded frame (blocks or RGBA8) into straight RGBA8 on the
 //! CPU when asked — the oracle for the GPU path, and the route for tools without a GPU.
 
-use crate::backend::{Backend, NativeDecoder, NativeFrame, PixelLayout};
+use crate::backend::{Backend, CpuFrame, NativeDecoder, NativeFrame, PixelLayout};
 use crate::container::{Codec, DamagedTrack, Movie, VideoTrack};
 use crate::error::MediaError;
 use crate::hap;
@@ -1179,6 +1179,29 @@ impl FrameSource for ImageSource {
     }
 }
 
+/// A backend's frame as it goes on: imported zero-copy (`Native`), or, when the backend handed it over as a
+/// [`CpuFrame`], an RGBA8 plane (the bytes moved, not copied, when nothing else holds the frame).
+fn native_or_cpu(f: NativeFrame) -> Result<Decoded, MediaError> {
+    let NativeFrame { index, width, height, layout, matrix, surface_id, handle } = f;
+    match handle.downcast::<CpuFrame>() {
+        Ok(cpu) => {
+            let CpuFrame { rgba, opaque } = std::sync::Arc::try_unwrap(cpu).unwrap_or_else(|shared| (*shared).clone());
+            let want = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+            if rgba.len() != want {
+                return Err(MediaError::Invalid(format!("frame {index}: {} RGBA bytes for {width} x {height}", rgba.len())));
+            }
+            Ok(Decoded::Planes {
+                index,
+                width,
+                height,
+                shading: Shading::Rgba { opaque },
+                planes: vec![Plane { format: PixelFormat::Rgba8, width, height, data: rgba }],
+            })
+        }
+        Err(handle) => Ok(Decoded::Native(NativeFrame { index, width, height, layout, matrix, surface_id, handle })),
+    }
+}
+
 struct NativeSource {
     info: MediaInfo,
     decoder: Box<dyn NativeDecoder>,
@@ -1195,7 +1218,7 @@ impl FrameSource for NativeSource {
         if frame >= count {
             return Err(MediaError::Range { index: frame, count });
         }
-        Ok(Decoded::Native(self.decoder.frame(frame)?))
+        native_or_cpu(self.decoder.frame(frame)?)
     }
     fn fork(&self) -> Option<Box<dyn FrameSource>> {
         None
@@ -1209,5 +1232,32 @@ impl FrameSource for NativeSource {
             Decoded::Native(f) => self.decoder.cpu_rgba(f),
             other => other.to_rgba(),
         }
+    }
+}
+
+#[cfg(test)]
+mod cpu_frame_tests {
+    use super::*;
+    use crate::backend::YuvMatrix;
+    use std::sync::Arc;
+
+    fn frame(handle: Arc<dyn std::any::Any + Send + Sync>, w: u32, h: u32) -> NativeFrame {
+        NativeFrame { index: 7, width: w, height: h, layout: PixelLayout::Bgra, matrix: YuvMatrix::Bt709, surface_id: 0, handle }
+    }
+
+    #[test]
+    fn a_cpu_frame_becomes_an_rgba8_plane_and_anything_else_stays_native() {
+        let rgba: Vec<u8> = (0..2 * 3 * 4).map(|i| i as u8).collect();
+        match native_or_cpu(frame(Arc::new(CpuFrame { rgba: rgba.clone(), opaque: true }), 2, 3)) {
+            Ok(Decoded::Planes { index: 7, width: 2, height: 3, shading: Shading::Rgba { opaque: true }, planes }) => {
+                assert_eq!(planes.len(), 1);
+                assert_eq!(planes[0].format, PixelFormat::Rgba8);
+                assert_eq!(planes[0].data, rgba);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(native_or_cpu(frame(Arc::new(5u32), 2, 3)), Ok(Decoded::Native(_))));
+        // A size that does not match is an error, never a short plane.
+        assert!(native_or_cpu(frame(Arc::new(CpuFrame { rgba: vec![0; 5], opaque: true }), 2, 3)).is_err());
     }
 }

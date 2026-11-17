@@ -114,6 +114,17 @@ impl std::fmt::Debug for NativeFrame {
 }
 
 /// A frame-accurate decoder for one clip. Used from one thread at a time (`&mut self`).
+/// A frame a backend hands over as tight **straight RGBA8** in [`NativeFrame::handle`] (0.13.0), for a platform
+/// whose zero-copy GPU import is not built yet (Windows' first Media Foundation reader). The source turns it into an
+/// ordinary RGBA8 plane ([`crate::source::Decoded::Planes`]), so every renderer draws it with no platform code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CpuFrame {
+    /// `width * height * 4` bytes, rows top to bottom.
+    pub rgba: Vec<u8>,
+    /// Every alpha is 255 (the codec has no alpha).
+    pub opaque: bool,
+}
+
 pub trait NativeDecoder: Send {
     fn info(&self) -> &NativeInfo;
     /// Decode frame `index` exactly: the frame [`NativeDecoder::timing`] numbers `index` (0.10.0;

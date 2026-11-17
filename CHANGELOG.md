@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.0 — 2026-11-17 (tagged once the Windows reader has run on Windows)
+
+**Windows: a Media Foundation reader** (made from GlancEhr's goal run).
+
+- **`dxvkit-plus-windows`** (new crate, the second island allowed `unsafe`): `MediaFoundationBackend` — an
+  `IMFSourceReader` with a DXGI device manager over a D3D11 video device (hardware decode), RGB32 out through the video
+  processor, frame-exact seek (target minus half a frame, then read on), the codec named when Windows has no decoder
+  ("HEVC needs Microsoft's HEVC Video Extensions…", "ProRes cannot play on Windows…").
+- **`dxvkit-plus-core`**: `backend::CpuFrame` — a backend may hand a frame over as straight RGBA8; the source turns it
+  into an ordinary RGBA8 plane (moved, not copied), so the existing renderers draw it with no platform code. The
+  zero-copy D3D12 import stays the design for the next step.
 ## 0.13.0 — 2026-11-17
 
 **MaCrate's AVFoundation pieces** (W9, briefed by macrate-rs: its measurement scanner's gap G4 and its grid's

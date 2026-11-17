@@ -1,0 +1,52 @@
+[package]
+name = "dxvkit-plus-windows"
+description = "DXVKit Plus native island for Windows: Media Foundation decode (H.264; HEVC, VP9, AV1 when Windows has the decoder; MJPEG), hardware accelerated through a D3D11 device manager. The second crate allowed unsafe."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+# NOT `workspace = true`: like dxvkit-plus-apple, an island allowed `unsafe`, every block with a `// SAFETY:` comment.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+dbg_macro = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+chunks_exact_to_as_chunks = "allow"
+undocumented_unsafe_blocks = "deny"
+
+[features]
+default = ["zstd-c"]
+zstd-c = ["dxvkit-plus-core/zstd-c"]
+zstd-rust = ["dxvkit-plus-core/zstd-rust"]
+
+[dependencies]
+dxvkit-plus-core = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+] }
