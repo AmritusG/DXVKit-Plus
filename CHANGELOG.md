@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.14.0 — 2026-11-17 (tagged once the Windows reader has run on Windows)
+## 0.14.0 — 2026-11-17
 
 **Windows: a Media Foundation reader** (made from GlancEhr's goal run).
 

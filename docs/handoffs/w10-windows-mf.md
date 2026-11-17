@@ -9,3 +9,10 @@
 - Seen while gating, not from this change (fails the same with it stashed): `dxvkit-plus-apple`
   `glenc_av::bgra_reader_serves_what_glencs_avassetreader_serves` — `tiles_h264.mp4` frames hash differently from Swift
   GlEnc's reader on macOS 27.2.1.
+
+## Windows run (the tag's condition)
+
+- `.github/workflows/windows.yml` (this repo's first workflow: the Windows island cannot run elsewhere), run 44171687138
+  on windows-latest: `tiles_h264.mp4` 128 x 72, 24 frames at 30 fps decoded in order; a seek back to frame 3 and a jump
+  to 8 return the same bytes as reading in order; `tiles_hevc.mp4` refused with "HEVC needs Microsoft's HEVC Video
+  Extensions (Microsoft Store) on this PC" (the runner has no HEVC extension). Tagged v0.14.0.
