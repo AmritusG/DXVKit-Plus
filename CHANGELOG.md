@@ -11,6 +11,8 @@
 - **`dxvkit-plus-core`**: `backend::CpuFrame` — a backend may hand a frame over as straight RGBA8; the source turns it
   into an ordinary RGBA8 plane (moved, not copied), so the existing renderers draw it with no platform code. The
   zero-copy D3D12 import stays the design for the next step.
+- **`dxvkit-plus-wgpu`**: `Gpu::with_adapter` asks for wgpu's default limits lowered to what the adapter has (the iOS
+  Simulator's GPU refused the device: 15 inter-stage shader variables, the defaults ask 16).
 ## 0.13.0 — 2026-11-17
 
 **MaCrate's AVFoundation pieces** (W9, briefed by macrate-rs: its measurement scanner's gap G4 and its grid's

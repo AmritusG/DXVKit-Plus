@@ -115,7 +115,10 @@ impl Gpu {
     /// default limits stop at 8192; Apple silicon offers 16384 and more).
     pub fn with_adapter(instance: wgpu::Instance, adapter: wgpu::Adapter) -> Result<Gpu, GpuError> {
         let required_features = adapter.features() & (wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::TIMESTAMP_QUERY);
-        let required_limits = wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(MAX_EDGE), ..wgpu::Limits::default() };
+        // wgpu's defaults, never more than the adapter has (the iOS Simulator's GPU has 15 inter-stage variables where
+        // the defaults ask 16: requesting more fails the device; 0.14.0).
+        let base = wgpu::Limits::default().or_worse_values_from(&adapter.limits());
+        let required_limits = wgpu::Limits { max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d.min(MAX_EDGE), ..base };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("dxvkit-plus"),
             required_features,
