@@ -1,0 +1,23 @@
+# The Windows island (dxvkit-plus-windows) can only run on Windows: its Media Foundation tests run here on every push.
+# The rest of the workspace is gated locally (CONTRIBUTING.md).
+name: Windows
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  media-foundation:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (the Windows island)
+        run: cargo clippy -p dxvkit-plus-windows --all-targets -- -D warnings
+      - name: Media Foundation decode on the repo's own clips
+        run: cargo test -p dxvkit-plus-windows -- --nocapture
