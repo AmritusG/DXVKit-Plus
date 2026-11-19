@@ -28,7 +28,7 @@
 //! Lint note: `arithmetic_side_effects` is allowed for the row copies, bounded by the checked
 //! frame size and the buffer's own stride.
 
-use crate::bgra::{FrameAttachments, swift_optional_error};
+use crate::bgra::{DecodedBuffer, FrameAttachments, swift_optional_error};
 use crate::objc::{cmtime, dict, ns, number_bool, number_u32};
 use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
@@ -528,20 +528,41 @@ impl AvWriter {
             if !ok {
                 return Err(WriterError::Frame("pixel buffer has no CPU base address".into()));
             }
-            self.wait_ready(&self.input);
-            // Swift appends unconditionally here; AVFoundation raises an exception when the input
-            // is not ready (a failed writer, or the wait timed out). That is an error here.
-            // SAFETY: property read.
-            if !unsafe { self.input.isReadyForMoreMediaData() } {
-                return Err(WriterError::AppendFailed { seconds });
-            }
-            // SAFETY: the input is attached, the session started and the input is ready; the
-            // buffer is a 32BGRA buffer of the output size, not touched after this call.
-            if !unsafe { self.adaptor.appendPixelBuffer_withPresentationTime(&pb, pts) } {
-                return Err(WriterError::AppendFailed { seconds });
-            }
-            Ok(())
+            self.append_pixel_buffer(&pb, pts, seconds)
         })
+    }
+
+    /// Append the decoder's own buffer as it is, attachments included (0.15.1): Swift GlEnc's pass-through, for a
+    /// frame it neither crops, resizes nor un-premultiplies. No copy. The buffer must be the output's size.
+    pub fn append_buffer(&mut self, frame: &DecodedBuffer) -> Result<(), WriterError> {
+        if (frame.width, frame.height) != (self.width, self.height) {
+            return Err(WriterError::Frame(format!("a {}×{} buffer for a {}×{} output", frame.width, frame.height, self.width, self.height)));
+        }
+        let pts = cmtime(frame.pts_value, frame.pts_timescale);
+        let seconds = if frame.pts_timescale > 0 { frame.pts_value as f64 / f64::from(frame.pts_timescale) } else { f64::NAN };
+        autoreleasepool(|_| {
+            if !self.started {
+                self.start(pts)?;
+            }
+            self.append_pixel_buffer(&frame.buffer, pts, seconds)
+        })
+    }
+
+    /// The common tail of an append: wait for the input, then append `pb` at `pts`.
+    fn append_pixel_buffer(&mut self, pb: &CVPixelBuffer, pts: CMTime, seconds: f64) -> Result<(), WriterError> {
+        self.wait_ready(&self.input);
+        // Swift appends unconditionally here; AVFoundation raises an exception when the input
+        // is not ready (a failed writer, or the wait timed out). That is an error here.
+        // SAFETY: property read.
+        if !unsafe { self.input.isReadyForMoreMediaData() } {
+            return Err(WriterError::AppendFailed { seconds });
+        }
+        // SAFETY: the input is attached, the session started and the input is ready; the
+        // buffer is a 32BGRA buffer of the output size, not written to after this call.
+        if !unsafe { self.adaptor.appendPixelBuffer_withPresentationTime(pb, pts) } {
+            return Err(WriterError::AppendFailed { seconds });
+        }
+        Ok(())
     }
 
     /// Finish the file; the audio warning (Swift's wording) if the audio could not be written.

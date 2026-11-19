@@ -309,6 +309,45 @@ fn prores_is_deterministic_and_the_decoded_attachments_give_the_colr_atom() {
     assert!(differing <= 24, "{differing} bytes differ");
 }
 
+/// 0.15.1: the decoder's own buffer appended as it is (`next_buffer` + `append_buffer`, no copy) writes the same
+/// ProRes file as its tight copy with the attachments (`next_frame` + `append_with_attachments`), apart from the
+/// creation / modification times; the same frames and times reach the writer, and a buffer of another size is refused.
+#[test]
+fn the_decoders_own_buffer_writes_what_its_copy_writes() {
+    let enc = |name: &str, own: bool| {
+        let path = out(name);
+        let mut r = BgraReader::open(&fixture("tiles_prores422.mov")).unwrap();
+        let mut w = AvWriter::create(&path, AvCodec::ProRes422, AvContainer::Mov, W, H, CompressionProps::default(), None).unwrap();
+        let mut n = 0;
+        if own {
+            while let Some(b) = r.next_buffer().unwrap() {
+                assert_eq!((b.width, b.height), (W, H));
+                w.append_buffer(&b).unwrap();
+                n += 1;
+            }
+        } else {
+            while let Some(f) = r.next_frame().unwrap() {
+                w.append_with_attachments(&f.data, f.pts_value, f.pts_timescale, f.attachments.as_ref()).unwrap();
+                n += 1;
+            }
+        }
+        w.finish().unwrap();
+        (n, std::fs::read(&path).unwrap())
+    };
+    let ((n1, copied), (n2, own)) = (enc("copied.mov", false), enc("own.mov", true));
+    assert_eq!((n1, n2), (24, 24));
+    assert_eq!(copied.len(), own.len());
+    let differing = copied.iter().zip(&own).filter(|(a, b)| a != b).count();
+    assert!(differing <= 24, "{differing} bytes differ");
+    // The copy out of a buffer is the frame `next_frame` serves.
+    let (mut a, mut b) = (BgraReader::open(&fixture("tiles_prores422.mov")).unwrap(), BgraReader::open(&fixture("tiles_prores422.mov")).unwrap());
+    assert_eq!(a.next_buffer().unwrap().unwrap().to_frame().unwrap(), b.next_frame().unwrap().unwrap());
+    // A buffer of another size than the output: refused, no crash.
+    let small = BgraReader::open(&fixture("tiles_prores422.mov")).unwrap().next_buffer().unwrap().unwrap();
+    let mut w = AvWriter::create(&out("bigger.mov"), AvCodec::ProRes422, AvContainer::Mov, W * 2, H * 2, CompressionProps::default(), None).unwrap();
+    assert!(matches!(w.append_buffer(&small), Err(WriterError::Frame(_))));
+}
+
 #[test]
 fn writer_errors_read_as_glencs_and_never_crash() {
     // AAC tops out at 48 kHz: GlEnc's canApply check refuses 96 kHz in .mp4.

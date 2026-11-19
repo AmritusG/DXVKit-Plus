@@ -21,6 +21,10 @@ gets its exact sample table in every app. Every encoder output is byte-identical
   alpha) compute every pixel's error to every palette entry and keep the first least per pixel; vectorisable, the
   same choices and totals as the C loops. `try_pair` no longer returns the error (no caller used it).
 - **`DxvEncoder::set_threads`**: an encoder's threads per frame (1 = the calling thread), as HAP's.
+- **0.15.1, the decoder's own buffer** (`dxvkit-plus-apple`): `BgraReader::next_buffer` / `DecodedBuffer` and
+  `AvWriter::append_buffer` — Swift GlEnc's pass-through without the two copies (decoder buffer → bytes → a new
+  writer buffer). Test `the_decoders_own_buffer_writes_what_its_copy_writes`: the same ProRes file apart from its
+  times; another size refused. 0.15.1 gates: 254 passed / 0 failed (GPU required), clippy release + debug, deny.
 
 ## How it was proven
 | What | Against | Result |

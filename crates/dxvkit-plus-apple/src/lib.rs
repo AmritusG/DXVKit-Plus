@@ -62,7 +62,7 @@ pub mod writer;
 pub use decode::{AppleBackend, NativeReader};
 #[cfg(target_os = "macos")]
 pub use {
-    bgra::{AlphaFacts, BgraFrame, BgraReader, FrameAttachments, SourceReaderError},
+    bgra::{AlphaFacts, BgraFrame, BgraReader, DecodedBuffer, FrameAttachments, SourceReaderError},
     grab::{FrameGrabber, GrabAlpha, GrabbedImage, THUMBNAIL_MAX_SIZE},
     pcm::{PcmAudio, PcmError, read_pcm_s32},
     plane::{PlaneFormat, PlaneFrame, PlaneInfo, PlaneReader},

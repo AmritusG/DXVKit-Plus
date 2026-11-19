@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 — 2026-11-19
+
+- **`dxvkit-plus-apple`: the decoder's own buffer, no copy.** `BgraReader::next_buffer` → `DecodedBuffer` (the
+  32BGRA `CVPixelBuffer` AVAssetReader decoded, with its time and size; `to_frame` copies it out as `next_frame` did,
+  which now calls it) and `AvWriter::append_buffer` (appends it as it is, attachments included; another size is
+  refused). Swift GlEnc's pass-through, for a frame it neither crops, resizes nor un-premultiplies: the same ProRes
+  file as the copy path apart from its times (`the_decoders_own_buffer_writes_what_its_copy_writes`). GlEnc's
+  ProRes / H.264 output from a native source: 4K CPU 0.39 → 0.10 s per 60 frames, level with Swift GlEnc 1.6.2.
+
 ## 0.15.0 — 2026-11-19
 
 **Fragmented MP4, and faster DXV encode / CPU decode** (made from glenc-rs's speed-build brief). Every encoder output

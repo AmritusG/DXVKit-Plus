@@ -1,6 +1,6 @@
 # DXVKit-Plus CHECKPOINT
 
-Wave: w10-fragments-and-speed (v0.15.0) — CLOSED 2026-11-19. Brief: glenc-rs session
+Wave: w10-fragments-and-speed (v0.15.0, v0.15.1) — CLOSED 2026-11-19. Brief: glenc-rs session
 (~/claude-handoffs/glenc-rs_2026-11-19_speed-build-and-fragmented-mp4_brief.md). Machine: <host> (M5 Max).
 
 ## DONE
@@ -12,14 +12,13 @@ Wave: w10-fragments-and-speed (v0.15.0) — CLOSED 2026-11-19. Brief: glenc-rs s
 - Consumer: glance-core v0.8.0, then the four apps' releases (glenc-rs session).
 
 ## STATE
-- Tag v0.15.0 on this commit.
+- Tags v0.15.0 (fragments, encoder / decoder speed) and v0.15.1 (the decoder's own buffer to AvWriter).
 
 ## OPEN
 
 ## IDEAS
 - (carried) BC7 exact-path pre-pass; Windows writers; a Media Foundation twin of the MaCrate pieces.
 - Fragmented audio tracks: their tables stay unread (a fragmented file's sound track is damaged, as before).
-- Zero-copy hand-over of the reader's CVPixelBuffer to AvWriter (GlEnc's ProRes pass-through; not built).
 
 ---
 ## Previous wave

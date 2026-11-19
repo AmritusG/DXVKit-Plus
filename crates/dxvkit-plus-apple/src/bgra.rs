@@ -118,6 +118,42 @@ pub struct BgraFrame {
     pub attachments: Option<FrameAttachments>,
 }
 
+/// One decoded frame as the decoder's own pixel buffer (32BGRA), not copied (0.15.1): what Swift GlEnc hands to
+/// `AVAssetWriter` when it neither crops, resizes nor un-premultiplies. [`AvWriter::append_buffer`] appends it as it
+/// is (its attachments included); [`DecodedBuffer::to_frame`] copies it out when the pixels are needed.
+///
+/// [`AvWriter::append_buffer`]: crate::writer::AvWriter::append_buffer
+#[derive(Clone)]
+pub struct DecodedBuffer {
+    pub pts_value: i64,
+    pub pts_timescale: i32,
+    pub width: u32,
+    pub height: u32,
+    pub(crate) buffer: CFRetained<objc2_core_video::CVPixelBuffer>,
+}
+
+// SAFETY: a CVPixelBuffer's retain / release are atomic, and nothing writes to a decoded buffer: the reader hands it
+// over (AVAssetReader does not reuse a buffer while it is retained), it is only read (`to_frame`'s read-only lock) or
+// appended to a writer, which reads it.
+unsafe impl Send for DecodedBuffer {}
+// SAFETY: as above — only reads through `&DecodedBuffer`.
+unsafe impl Sync for DecodedBuffer {}
+
+impl fmt::Debug for DecodedBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DecodedBuffer").field("pts", &(self.pts_value, self.pts_timescale)).field("size", &(self.width, self.height)).finish()
+    }
+}
+
+impl DecodedBuffer {
+    /// The pixels as tight BGRA8 with the buffer's attachments: [`BgraReader::next_frame`]'s frame.
+    pub fn to_frame(&self) -> Result<BgraFrame, SourceReaderError> {
+        let (width, height, data) = tight_bgra(&self.buffer)?;
+        let attachments = FrameAttachments::of(&self.buffer);
+        Ok(BgraFrame { pts_value: self.pts_value, pts_timescale: self.pts_timescale, width, height, data, attachments })
+    }
+}
+
 /// A `CVBuffer`'s attachments, both modes (`kCVAttachmentMode_ShouldPropagate` and
 /// `…ShouldNotPropagate`), as CoreVideo copies them. Opaque; compared with `CFEqual`.
 #[derive(Clone)]
@@ -362,6 +398,11 @@ impl BgraReader {
     /// error; a reader that is no longer reading, no sample, or a sample without an image buffer
     /// ends the stream.
     pub fn next_frame(&mut self) -> Result<Option<BgraFrame>, SourceReaderError> {
+        self.next_buffer()?.map(|b| b.to_frame()).transpose()
+    }
+
+    /// [`BgraReader::next_frame`] without the copy: the decoder's own buffer (0.15.1).
+    pub fn next_buffer(&mut self) -> Result<Option<DecodedBuffer>, SourceReaderError> {
         autoreleasepool(|_| {
             // SAFETY: property reads on a started reader.
             let status = unsafe { self.reader.status() };
@@ -385,9 +426,18 @@ impl BgraReader {
             let pts = unsafe { sample.presentation_time_stamp() };
             // SAFETY: as above; returns a +1 retained image buffer or None.
             let Some(image) = (unsafe { sample.image_buffer() }) else { return Ok(None) };
-            let (width, height, data) = tight_bgra(&image)?;
-            let attachments = FrameAttachments::of(&image);
-            Ok(Some(BgraFrame { pts_value: pts.value, pts_timescale: pts.timescale, width, height, data, attachments }))
+            let format = CVPixelBufferGetPixelFormatType(&image);
+            if format != kCVPixelFormatType_32BGRA {
+                return Err(SourceReaderError::PixelBuffer(format!("decoded pixel format {:?} is not 32BGRA", format.to_be_bytes())));
+            }
+            let (width, height) = (CVPixelBufferGetWidth(&image), CVPixelBufferGetHeight(&image));
+            Ok(Some(DecodedBuffer {
+                pts_value: pts.value,
+                pts_timescale: pts.timescale,
+                width: u32::try_from(width).unwrap_or(0),
+                height: u32::try_from(height).unwrap_or(0),
+                buffer: image,
+            }))
         })
     }
 }
