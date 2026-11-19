@@ -68,12 +68,23 @@ the same files the same way:
 
 **Damage is per track.** A video track whose sample tables do not parse is listed in
 `Movie::damaged` (`DamagedTrack`: index, FourCC if readable, the error) and the other tracks still
-open. A movie our parser cannot read — a damaged first track, a `moov` that does not parse, a
-fragmented MP4 (its `moov` has empty sample tables; fragments are not read) — is offered to the
+open. A movie our parser cannot read — a damaged first track, a `moov` that does not parse (up to
+0.14.0 also a fragmented MP4, whose `moov` has empty sample tables) — is offered to the
 platform backend, **unless a DXV or HAP track was identified** in it (by the damaged track's FourCC,
 or by `container::first_video_fourcc` when the `moov` itself is unreadable): the platform decodes
 neither, so our parser's `Corrupt` stands. Without a backend the answer is our parser's error.
 Verified on a real fragmented MP4 written by AVFoundation (`tests/fixtures/frag_h264.mp4`).
+
+**Fragmented MP4 (0.15.0).** When the `moov` has `mvex`, every top-level `moof` is read (at most
+64 MB each, 256 MB in all) and each track fragment adds its samples after the `moov`'s own (ISO/IEC
+14496-12 §8.8): sizes and durations from the `trun`, else the `tfhd` defaults, else the `trex` ones;
+data offsets from the `tfhd` base-data-offset, else the `moof` (`default-base-is-moof`, or the first
+`traf`), else the end of the previous `traf`'s data; composition offsets into `ctts`; a `tfdt` later
+than the samples before it lengthens the previous sample. The media duration is the samples' (an
+`mdhd` describes only the `moov`'s). Four remuxes of `tiles_h264.mp4` (default-base-is-moof,
+explicit base offsets, samples in the `moov` and in fragments, a `sidx`) equal it sample for
+sample (`tests/fragments.rs`); a user's 694-fragment capture that AVFoundation calls 7397.6 s
+reads as its 110,964 samples, 3698.8 s. `Movie::fragments` counts the `moof`s.
 
 **A cut-off track keeps its whole samples.** A sample that lies past the end of the file stays in
 the sample table; `Movie::read_sample` fails it (`Corrupt`, nothing read or allocated), so a file cut
@@ -189,7 +200,7 @@ Frame `i` is frame `i` of core's `FrameTiming` of the same file (0.10.0; see
 [Frame timing](#frame-timing-0100)): the reader seeks to `time_of_frame(i)` and names each decoded
 sample by `frame_at(pts)` (floor). AVAssetReader's output presentation times are the edited movie
 times, and equal the timing's starts on every clip measured (`docs/data/w3-native-diagnosis.txt`).
-Only where core cannot parse the file (fragmented MP4) is the grid of Swift's rate rules over
+Only where core cannot parse the file (up to 0.14.0 a fragmented MP4) is the grid of Swift's rate rules over
 AVFoundation's own `minFrameDuration`, `nominalFrameRate` and duration used. Up to 0.9.0 the grid
 was `start + i * minFrameDuration` — the shortest sample, so jittered clips (ProRes at 1/600 with
 19 / 20 / 21-tick samples) were read at 31.58 fps and seeked one frame off. Sequential reads reuse

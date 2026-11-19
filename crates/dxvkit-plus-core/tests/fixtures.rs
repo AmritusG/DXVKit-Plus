@@ -126,8 +126,9 @@ fn every_fixture_has_a_cc0_sidecar_with_a_matching_hash() {
     // 0.9.0: + frag_h264.mp4 (a fragmented MP4, ours). 0.10.0: + the four edit_*.mov (edit lists,
     // composition offsets) and jitter_prores4444_30.mov (scripts/make-edit-list-fixtures.swift).
     // 0.11.0: + the five audio_* movies (scripts/make-audio-fixtures.py) and the three
-    // audio_aac_*.avf7.f32 AVFoundation references (scripts/swift-audio-probe.swift).
-    assert_eq!(media, 51);
+    // audio_aac_*.avf7.f32 AVFoundation references (scripts/swift-audio-probe.swift). 0.15.0: + the four
+    // fragmented remuxes of tiles_h264.mp4 (tests/fragments.rs).
+    assert_eq!(media, 55);
     let mut vectors = 0;
     for group in ["glenc", "synthetic", "invalid"] {
         vectors += sidecars_match(&fixtures().join("dxvkit/streams").join(group), "license: MIT (LICENSES/DXVKit-MIT.txt)");

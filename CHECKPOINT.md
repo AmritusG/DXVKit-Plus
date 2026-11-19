@@ -1,5 +1,28 @@
 # DXVKit-Plus CHECKPOINT
 
+Wave: w10-fragments-and-speed (v0.15.0) — CLOSED 2026-11-19. Brief: glenc-rs session
+(~/claude-handoffs/glenc-rs_2026-11-19_speed-build-and-fragmented-mp4_brief.md). Machine: <host> (M5 Max).
+
+## DONE
+- Fragmented MP4 read (container.rs, ISO/IEC 14496-12 §8.8); DXV CPU decode without per-row allocation; vectorisable
+  `try_pair` / `bc4_eval`; `DxvEncoder::set_threads`. docs/handoffs/w10-fragments-and-speed.md.
+- Gates: fmt, clippy (release + debug), 253 tests / 0 failed (GPU required), deny, fuzz 0 crashes.
+
+## NEXT
+- Consumer: glance-core v0.8.0, then the four apps' releases (glenc-rs session).
+
+## STATE
+- Tag v0.15.0 on this commit.
+
+## OPEN
+
+## IDEAS
+- (carried) BC7 exact-path pre-pass; Windows writers; a Media Foundation twin of the MaCrate pieces.
+- Fragmented audio tracks: their tables stay unread (a fragmented file's sound track is damaged, as before).
+- Zero-copy hand-over of the reader's CVPixelBuffer to AvWriter (GlEnc's ProRes pass-through; not built).
+
+---
+## Previous wave
 Wave: w9-macrate-native (v0.13.0). Brief: the macrate-rs session (MaCrate's Rust rebuild; its scanner's gap G4 and
 the grid's thumbnail grab). Machine: Mac17,6 (Apple M5 Max). Base: 4343fe9 (v0.12.0).
 

@@ -98,9 +98,10 @@ fn rows_bc(l: &Layout, plane: &[u8], rgba: &mut [u8], stride: usize, premultiply
                     }
                 }
             }
+            let texels = px.as_flattened();
             for y in 0..rows as usize {
-                let row: Vec<u8> = px.iter().skip(y * 4).take(cols).flatten().copied().collect();
-                put(rgba, (y0 as usize + y) * stride + x0 as usize * 4, &row).ok_or(DxvError::BufferTooSmall)?;
+                let row = texels.get(y * 16..y * 16 + cols * 4).ok_or(DxvError::BufferTooSmall)?;
+                put(rgba, (y0 as usize + y) * stride + x0 as usize * 4, row).ok_or(DxvError::BufferTooSmall)?;
             }
         }
     }

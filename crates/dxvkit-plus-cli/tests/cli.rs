@@ -36,10 +36,12 @@ const TIMED: [(&str, u64, u32); 5] = [
 #[test]
 fn every_command_works_on_every_fixture() {
     let files = fixtures();
-    // 16 tile movies, HAP R and HAP HDR, (0.9.0) a fragmented MP4 only the platform reads,
+    // 16 tile movies, HAP R and HAP HDR, (0.9.0) a fragmented MP4 (AVFoundation's CMAF),
     // (0.10.0) four movies with edit lists / composition offsets and one on jittered timing, and
-    // (0.11.0) five movies with sound tracks (scripts/make-audio-fixtures.py; 16x16 Hap1 video).
-    assert_eq!(files.len(), 29);
+    // (0.11.0) five movies with sound tracks (scripts/make-audio-fixtures.py; 16x16 Hap1 video), and
+    // (0.15.0) four fragmented remuxes of tiles_h264.mp4 (tiles_ names: 24 frames like the rest). Since
+    // 0.15.0 our parser reads the fragmented ones too.
+    assert_eq!(files.len(), 33);
     let tmp = std::env::temp_dir().join(format!("dxvkit-plus-cli-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     for f in &files {
@@ -92,14 +94,17 @@ fn every_command_works_on_every_fixture() {
             }
         }
     }
-    let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) =
-        files.iter().filter(|f| !f.to_str().unwrap().contains("frag_")).partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
+    let (tile_files, synthetic): (Vec<&PathBuf>, Vec<&PathBuf>) = files
+        .iter()
+        .filter(|f| !f.file_name().unwrap().to_str().unwrap().starts_with("frag_"))
+        .partition(|f| f.file_name().unwrap().to_str().unwrap().starts_with("tiles_"));
     let v = run(bin().args(["verify", "--tiles", "--source-tolerance", "255"]).args(&tile_files));
     let v2 = run(bin().arg("verify").args(&synthetic));
     // HAP R, HAP HDR, (0.10.0) the five timed fixtures, verified without frame identity (their
     // frame n shows another source frame by design; checked above and in core's tests/timing.rs),
-    // and (0.11.0) the five audio fixtures' black Hap1 video.
-    assert_eq!((v.len(), v2.len()), (16, 12));
+    // and (0.11.0) the five audio fixtures' black Hap1 video. (0.15.0) The tiles include the four
+    // fragmented remuxes, verified with frame identity like the rest.
+    assert_eq!((v.len(), v2.len()), (20, 12));
     // DXV: probe names the variant; both alpha modes verify.
     let dxv: Vec<&PathBuf> =
         tile_files.iter().copied().filter(|f| f.to_str().unwrap().contains("tiles_dxt") || f.to_str().unwrap().contains("tiles_y")).collect();

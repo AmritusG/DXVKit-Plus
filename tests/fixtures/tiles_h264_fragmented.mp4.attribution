@@ -1,0 +1,8 @@
+asset: tests/fixtures/tiles_h264_fragmented.mp4
+title: H.264 (fragmented mp4) 128x72
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern::tiles (carried over from Loombda-rs loombda_media::testpattern)
+source: tests/fixtures/tiles_h264.mp4 (this folder; 24 frames, 30 fps) remuxed without re-encoding into a fragmented MP4 — samples in moof / trun fragments, the moov's sample tables empty, as in a DASH / streaming capture — by the ffmpeg 9.0.2 binary used as a black-box tool only (`ffmpeg -i tiles_h264.mp4 -c copy -movflags +frag_keyframe+empty_moov+default_base_moof -frag_duration 100000`); no FFmpeg code is linked or bundled
+license: CC0-1.0
+added: 2026-11-19 (copied unchanged, cp -p, from glance-core tests/fixtures, where it was added 2026-11-18)
+sha256: 22a34425032af725c14aa4e43473e9a18f5d8e57c68db4286d043a67cfe99cad
+notes: Our own footage, no third-party content. DXVKit Plus 0.15.0: its samples equal tiles_h264.mp4's (tests/fragments.rs). The layout of a user's fragmented MP4 that GlEnc 1.7.0 / 1.7.1 refused with "source reports an invalid frame rate (0.0 fps)" while Swift GlEnc converts it; glance-encode's test that the native reader takes the platform's timing when the core's demuxer does not read the tables.

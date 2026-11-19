@@ -1,0 +1,8 @@
+asset: tests/fixtures/tiles_h264_frag_moov_first.mp4
+title: H.264 (fragmented mp4) 128x72 — the first samples in the moov, the rest in fragments
+author: Amrit Rosell — procedural pattern dxvkit_plus_core::testpattern::tiles (carried over from Loombda-rs loombda_media::testpattern)
+source: tests/fixtures/tiles_h264.mp4 (this folder; 24 frames, 30 fps) remuxed without re-encoding into a fragmented MP4 by the ffmpeg 9.0.2 binary used as a black-box tool only (`ffmpeg -i tiles_h264.mp4 -c copy -movflags +frag_keyframe -frag_duration 100000`); no FFmpeg code is linked or bundled
+license: CC0-1.0
+added: 2026-11-19
+sha256: 9957e67966fc257c9dc4ce5addab3ee8ba0ee72e760ed5046adc6c2f1425ad5c
+notes: Our own footage, no third-party content. DXVKit Plus 0.15.0's fragment reader (container.rs Fragments): its samples equal tiles_h264.mp4's, sample for sample (tests/fragments.rs).

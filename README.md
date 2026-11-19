@@ -27,7 +27,8 @@ serves and no longer seek one frame off on jittered timing ([Frame timing](#fram
 covers **BC7**. Which track of a movie plays follows Swift Glance's order (DXV first; HAP only when
 it is the first video track; else the platform decoder), and a chosen track can be opened; the
 content decides before the file name; a file cut off in its sample data plays up to the cut; a movie
-our parser cannot read (a fragmented MP4) goes to the platform decoder unless it holds DXV or HAP; a
+our parser cannot read goes to the platform decoder unless it holds DXV or HAP (a fragmented MP4 is
+read since 0.15.0: its `moof` fragments give the exact sample table); a
 frame larger than the GPU's largest texture is an error value, and the device asks for the adapter's
 own limit (16384, not wgpu's 8192). `MediaInfo` now says which track plays, the DXV variant, the
 alpha the clip states and the display names for "<codec> in <CONTAINER> is not supported"
@@ -79,7 +80,7 @@ codec — BC7 with rate-distortion optimisation, then Zstd, in a documented cont
 | HAP Alpha-Only (`HapA`) | ✅ pure Rust | BC4 | GPU: sampled ≤ 1/255, or exact |
 | HAP R (`Hap7`) | ✅ pure Rust | BC7 blocks | GPU: sampled (the GPU's BC7 decode, bit-exact on Apple M5 Max) or exact (decoded in the shader, 0.9.0) |
 | HAP HDR (`HapH`) | ✅ pure Rust | BC6H blocks (unsigned and signed) | GPU only (no CPU BC6H decoder) |
-| H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020; fragmented MP4 through the platform (0.9.0) |
+| H.264, HEVC | ✅ macOS (VideoToolbox) | NV12 planes, zero-copy | WGSL BT.601 / 709 / 2020; fragmented MP4 (0.9.0 through the platform; 0.15.0 its fragments read for the sample table) |
 | ProRes 422 / 4444 (alpha) | ✅ macOS | BGRA, zero-copy | |
 | MJPEG | ✅ macOS | BGRA, zero-copy | |
 | LMBD (`LMB7`: BC7 + RDO + Zstd) | ✅ Rust + libzstd (pure Rust with `zstd-rust`), **and encode** | BC7 blocks | chunks decompress in parallel; GPU decode bit-exact with the CPU (sampled or exact); both Zstd backends decode identically |
@@ -302,8 +303,9 @@ while let Some(block) = r.read(4096)? {
   movie named `clip.png` is HAP. The extension speaks only when the content cannot.
 - **Damaged files.** A track whose tables do not parse does not stop the others
   (`Movie::damaged`). A file cut off inside its sample data opens with its whole frames; the cut
-  ones fail one by one. A movie our parser cannot read (a fragmented MP4) goes to the platform
-  decoder — unless a DXV or HAP track was found in it.
+  ones fail one by one. A movie our parser cannot read goes to the platform decoder — unless a
+  DXV or HAP track was found in it. A fragmented MP4 is read (0.15.0): `moof` / `traf` / `trun` with
+  the `trex` defaults.
 - **What it says.** `MediaInfo::dxv_variant`, `alpha` (`StatedAlpha`: none / straight /
   premultiplied / unstated — a DXV clip's alpha is the user's choice), `codec_name` and
   `container_name`; `names::unsupported_message(path)` is Swift Glance's "HAP Q in MOV is not

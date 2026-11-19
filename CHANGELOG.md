@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.15.0 — 2026-11-19
+
+**Fragmented MP4, and faster DXV encode / CPU decode** (made from glenc-rs's speed-build brief). Every encoder output
+is byte-identical to 0.14.0 (Swift GlEnc 1.6.2's goldens pass unchanged).
+
+- **`dxvkit-plus-core` — fragmented MP4 is read** (`container.rs`, ISO/IEC 14496-12 §8.8): when the `moov` has `mvex`,
+  every top-level `moof` is read and its track fragments (`tfhd`, `tfdt`, `trun`, with the `trex` defaults; base
+  offsets by `default-base-is-moof`, explicit base-data-offset or the previous `traf`) add their samples after the
+  `moov`'s own, with composition offsets and the media duration of all samples. Up to 0.14.0 such a track was damaged
+  and the file went to the platform, which counts AVFoundation's length (a user's 694-fragment capture: 7397.6 s for
+  3698.8 s of samples; now 110,964 frames, 3698.8 s). New: `Movie::fragments`, `Movie::from_source_all`,
+  `MAX_FRAGMENT_BYTES`. The Apple backend takes core's timing for such a file, so the platform path counts the
+  samples too. Fixtures: four remuxes of `tiles_h264.mp4` (default-base-is-moof, explicit base offset, samples in the
+  `moov` and in fragments, a `sidx`), equal to it sample for sample (`tests/fragments.rs`).
+- **`dxvkit-plus-core` — DXV CPU decode** (`dxv::rgba::blocks_to_rgba`, the oracle and GlEnc's DXV source reader): no
+  allocation per block row; 2.5× faster on a 4K DXT5 frame (39 → 15 ms, one thread). The GPU-ready path
+  (`decode_blocks`, what playback uses) is unchanged.
+- **`dxvkit-plus-enc` — BC1 / BC4 search of the DXV encoder**: `try_pair` and `bc4_eval` compute every pixel's error to
+  every palette entry and keep the first least one per pixel, a form the compiler vectorises; the same choices and
+  totals as the C loops (exact integer arithmetic, the same tie rule; tests `try_pair_chooses_what_the_c_loop_chooses`,
+  `bc4_search_keeps_what_the_c_loop_keeps`). DXT1 / DXT5 from native sources 1.15–1.8× in GlEnc. Tried and not kept
+  (slower or within noise, measured on one thread): the same form for `bc4f_eval` (YCG6 / YG10), HAP's BC4 search and
+  HAP's `match_colors`.
+- **`dxvkit-plus-enc`: `DxvEncoder::set_threads`** (as `HapEncoder::set_threads`): an encoder's threads for one frame,
+  1 = on the calling thread (GlEnc runs one encoder per worker); the packets do not depend on it (test).
+
 ## 0.14.0 — 2026-11-17
 
 **Windows: a Media Foundation reader** (made from GlancEhr's goal run).

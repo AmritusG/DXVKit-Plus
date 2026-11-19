@@ -184,14 +184,14 @@ fn native_clips_state_their_alpha() {
 
 /// glance-core C1 finding 5, on a real fragmented MP4 written by AVFoundation
 /// (`tests/fixtures/frag_h264.mp4`, scripts/make-fragmented-mp4.swift): its moov has empty sample
-/// tables, so our parser refuses the track; the probe offers the file to AVFoundation, which plays
-/// it — every frame decodes.
+/// tables. Since 0.15.0 our parser reads the fragments (up to 0.14.0 it refused the track and the
+/// probe offered the file to AVFoundation); the platform decodes every frame.
 #[test]
 fn a_fragmented_mp4_plays_through_the_platform() {
     use dxvkit_plus_core::source::{self, ImportOptions, SourceKind};
     let path = fixture("frag_h264.mp4");
-    let m = dxvkit_plus_core::container::Movie::open(&path);
-    assert!(matches!(m, Err(dxvkit_plus_core::MediaError::Corrupt(_))), "our parser: {m:?}");
+    let m = dxvkit_plus_core::container::Movie::open(&path).unwrap();
+    assert_eq!(m.first().map(|t| t.frames()), Some(60), "our parser");
     let opts = ImportOptions { backend: Some(std::sync::Arc::new(AppleBackend)), ..ImportOptions::default() };
     let info = source::probe(path.to_str().unwrap(), &opts).unwrap();
     assert_eq!((info.kind, info.width, info.height, info.frames, info.codec_name.as_str()), (SourceKind::Native, 64, 48, 60, "H.264"));
@@ -200,8 +200,8 @@ fn a_fragmented_mp4_plays_through_the_platform() {
         assert_eq!(src.decode(f).unwrap().size(), (64, 48), "frame {f}");
     }
     assert!(src.decode(info.frames).is_err());
-    // Control: without a backend it is our parser's error.
-    assert!(matches!(source::probe(path.to_str().unwrap(), &ImportOptions::default()), Err(dxvkit_plus_core::MediaError::Corrupt(_))));
+    // Control: without a backend the parsed H.264 track needs one (up to 0.14.0: our parser's Corrupt).
+    assert!(matches!(source::probe(path.to_str().unwrap(), &ImportOptions::default()), Err(dxvkit_plus_core::MediaError::Unsupported(_))));
 }
 
 /// glance-core C1 finding 1 in the island: a frame larger than the device's largest texture is an
@@ -270,16 +270,16 @@ fn edit_lists_and_composition_offsets_number_native_frames() {
     assert_eq!((info.frames, info.rate), (18, dxvkit_plus_core::time::FrameRate::FPS_30));
 }
 
-/// W3: a file core cannot parse (the fragmented MP4) gets the grid from Swift's rate rules over
-/// AVFoundation's own timing: 60 frames at 30 fps.
+/// W3 / 0.15.0: the fragmented MP4 gets core's sample table (its fragments), 60 frames at 30 fps; up to
+/// 0.14.0 core could not parse it and the reader took the grid from Swift's rate rules over AVFoundation's
+/// timing. The same timing either way for this file; a file whose AVFoundation length is wrong (twice its
+/// samples) now gets its samples' count (core tests/fragments.rs).
 #[test]
-fn a_fragmented_mp4_gets_the_grid_timing() {
+fn a_fragmented_mp4_gets_its_sample_table() {
     let rd = AppleBackend.open(&fixture("frag_h264.mp4"), PixelLayout::Bgra).unwrap();
     let t = rd.timing().unwrap();
-    assert!(!t.has_table());
+    assert!(t.has_table());
     assert_eq!((t.frame_count(), t.rate), (60, dxvkit_plus_core::time::FrameRate::FPS_30));
-    // Control: core's parser does refuse the file.
-    assert!(dxvkit_plus_core::container::Movie::open(&fixture("frag_h264.mp4")).is_err());
 }
 
 /// W3: jittered native timing (frames 3, 10, 17 one tick late at 1/600, shortest sample 19 ticks).

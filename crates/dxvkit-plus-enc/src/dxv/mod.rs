@@ -133,14 +133,18 @@ fn pixel(rgba: &[u8], w: u32, h: u32, x: u32, y: u32) -> [u8; 4] {
     }
 }
 
-fn threads() -> usize {
-    std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4).clamp(1, 64)
+/// Worker threads for one frame: `asked` (0 = the machine's parallelism), 1 ..= 64.
+fn threads(asked: usize) -> usize {
+    if asked > 0 { asked.min(64) } else { std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4).clamp(1, 64) }
 }
 
-/// Run `f(first_unit, units)` over bands on worker threads; concatenate in order (the output does
-/// not depend on the thread count).
-fn bands(units: usize, f: impl Fn(usize, usize) -> Vec<u8> + Sync) -> Vec<u8> {
-    let t = threads().min(units.max(1));
+/// Run `f(first_unit, units)` over bands on `t` threads (one band runs on the calling thread when
+/// `t` is 1); concatenate in order (the output does not depend on the thread count).
+fn bands(units: usize, t: usize, f: impl Fn(usize, usize) -> Vec<u8> + Sync) -> Vec<u8> {
+    if t <= 1 {
+        return f(0, units);
+    }
+    let t = t.min(units.max(1));
     let per = units.div_ceil(t).max(1);
     let starts: Vec<usize> = (0..units).step_by(per).collect();
     std::thread::scope(|s| {
@@ -155,15 +159,21 @@ fn bands(units: usize, f: impl Fn(usize, usize) -> Vec<u8> + Sync) -> Vec<u8> {
     })
 }
 
-/// RGBA8 (display size, tightly packed, top row first) → block planes (`dxvk_encoder_compress`).
+/// RGBA8 (display size, tightly packed, top row first) → block planes (`dxvk_encoder_compress`), on the
+/// machine's parallelism.
 pub fn compress(variant: DxvVariant, width: u32, height: u32, rgba: &[u8], effort: DxvEffort) -> Result<DxvPlanes, EncodeError> {
+    compress_on(variant, width, height, rgba, effort, threads(0))
+}
+
+/// [`compress`] on `t` threads (0.15.0; the same planes for any count).
+fn compress_on(variant: DxvVariant, width: u32, height: u32, rgba: &[u8], effort: DxvEffort, t: usize) -> Result<DxvPlanes, EncodeError> {
     let l = DxvLayout::new(variant, width, height)?;
     check_frame(rgba, width, height)?;
     let best = effort == DxvEffort::Best;
     if !variant.hq() {
         let bc3 = variant == DxvVariant::Dxt5;
         let (bx, by) = l.blocks[0];
-        let p0 = bands(by as usize, |r0, rows| {
+        let p0 = bands(by as usize, t, |r0, rows| {
             let mut out = Vec::with_capacity(rows.saturating_mul(bx as usize).saturating_mul(16));
             for by in r0..r0.saturating_add(rows) {
                 for bxi in 0..bx {
@@ -195,7 +205,7 @@ pub fn compress(variant: DxvVariant, width: u32, height: u32, rgba: &[u8], effor
     let ybytes = if ya { 16usize } else { 8 };
     // Each band returns its chroma rows: [plane-0 rows (2 block rows per chroma row) | plane-1 rows].
     let rows: Vec<(Vec<u8>, Vec<u8>)> = {
-        let t = threads().min((cby as usize).max(1));
+        let t = t.min((cby as usize).max(1));
         let per = (cby as usize).div_ceil(t).max(1);
         let starts: Vec<usize> = (0..cby as usize).step_by(per).collect();
         std::thread::scope(|s| {
@@ -349,20 +359,26 @@ pub struct DxvEncoder {
     width: u32,
     height: u32,
     packer: DxvPacker,
+    threads: usize,
 }
 
 impl DxvEncoder {
     /// An encoder for frames of `width` × `height` (1 ..= 16384 each).
     pub fn new(variant: DxvVariant, width: u32, height: u32, effort: DxvEffort) -> Result<DxvEncoder, EncodeError> {
         let layout = DxvLayout::new(variant, width, height)?;
-        Ok(DxvEncoder { variant, effort, width, height, packer: DxvPacker::new(layout, effort) })
+        Ok(DxvEncoder { variant, effort, width, height, packer: DxvPacker::new(layout, effort), threads: 0 })
+    }
+    /// Worker threads for one frame (0 = the machine's parallelism, the default; 0.15.0). Output is the same
+    /// for any count.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
     }
     pub fn variant(&self) -> DxvVariant {
         self.variant
     }
     /// Straight RGBA8 at the presentation size → one DXV3 packet.
     pub fn encode(&mut self, rgba: &[u8]) -> Result<Vec<u8>, EncodeError> {
-        let planes = compress(self.variant, self.width, self.height, rgba, self.effort)?;
+        let planes = compress_on(self.variant, self.width, self.height, rgba, self.effort, threads(self.threads))?;
         self.packer.pack(&planes)
     }
 }

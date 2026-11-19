@@ -89,6 +89,8 @@ fn pack565(q: &[i32; 3]) -> u16 {
 
 struct Bc1 {
     px: [[i32; 3]; 16],
+    /// The same pixels as three planes (R, G, B), for the error loop of [`Bc1::try_pair`].
+    planes: [[i32; 16]; 3],
     best_err: u32,
     best: [u8; 8],
     best_q: [[i32; 3]; 2],
@@ -98,7 +100,7 @@ struct Bc1 {
 
 impl Bc1 {
     /// `bc1_try`: endpoints in the requested mode, ordered as the decoder needs; keeps the best.
-    fn try_pair(&mut self, q0: &[i32; 3], q1: &[i32; 3], mut three: bool) -> u32 {
+    fn try_pair(&mut self, q0: &[i32; 3], q1: &[i32; 3], mut three: bool) {
         let (p0, p1) = (pack565(q0), pack565(q1));
         let (mut a, mut b) = (q0, q1);
         let (mut usable, mut swapped) = (4usize, false);
@@ -130,25 +132,34 @@ impl Bc1 {
                 pal[3][k] = (ea + 2 * eb) / 3;
             }
         }
-        let (mut err, mut idx) = (0u32, 0u32);
-        let mut chosen = [0u8; 16];
-        for i in 0..16 {
-            let (mut be, mut bi) = (u32::MAX, 0usize);
-            for (j, p) in pal.iter().enumerate().take(usable) {
-                let (dr, dg, db) = (self.px[i][0] - p[0], self.px[i][1] - p[1], self.px[i][2] - p[2]);
-                let e = (dr * dr + dg * dg + db * db) as u32;
-                if e < be {
-                    be = e;
-                    bi = j;
-                }
+        // Every pixel's squared error to every usable palette entry, then per pixel the first entry of least
+        // error: the C loop's choice (strict `<`, lowest index wins a tie) and its total, written so that the
+        // compiler vectorises it over the 16 pixels. The C loop also stops once its running total reaches the
+        // best; errors are >= 0, so such a pair's full total is >= the best too and it is rejected here as well
+        // (totals stay below 16 * 3 * 255^2, far from u32's range).
+        let mut be = [u32::MAX; 16];
+        let mut bi = [0u8; 16];
+        for (j, p) in pal.iter().enumerate().take(usable) {
+            let mut e = [0u32; 16];
+            for i in 0..16 {
+                let (dr, dg, db) = (self.planes[0][i] - p[0], self.planes[1][i] - p[1], self.planes[2][i] - p[2]);
+                e[i] = (dr * dr + dg * dg + db * db) as u32;
             }
-            err = err.wrapping_add(be);
-            chosen[i] = bi as u8;
-            idx |= (bi as u32) << (2 * i);
-            if err >= self.best_err {
-                return err;
+            for i in 0..16 {
+                let lt = e[i] < be[i];
+                be[i] = if lt { e[i] } else { be[i] };
+                bi[i] = if lt { j as u8 } else { bi[i] };
             }
         }
+        let err = be.iter().fold(0u32, |s, &e| s.wrapping_add(e));
+        if err >= self.best_err {
+            return;
+        }
+        let mut idx = 0u32;
+        for i in 0..16 {
+            idx |= u32::from(bi[i]) << (2 * i);
+        }
+        let chosen = bi;
         self.best_err = err;
         self.best[0..2].copy_from_slice(&pack565(a).to_le_bytes());
         self.best[2..4].copy_from_slice(&pack565(b).to_le_bytes());
@@ -163,7 +174,6 @@ impl Bc1 {
             }
             self.best_idx[i] = s;
         }
-        err
     }
 
     /// Least-squares endpoints for the current best indices (`bc1_refit`).
@@ -238,13 +248,14 @@ fn quantize(c: &[f32; 3]) -> [i32; 3] {
 /// One BC1 colour block from 16 RGBA pixels (pixel (x, y) at `4y + x`). `bc3_colour` = the colour
 /// half of a BC3 block (four-colour only).
 pub fn bc1_encode(px: &[[u8; 4]; 16], best: bool, bc3_colour: bool) -> [u8; 8] {
-    let mut c = Bc1 { px: [[0; 3]; 16], best_err: u32::MAX, best: [0; 8], best_q: [[0; 3]; 2], best_three: false, best_idx: [0; 16] };
+    let mut c = Bc1 { px: [[0; 3]; 16], planes: [[0; 16]; 3], best_err: u32::MAX, best: [0; 8], best_q: [[0; 3]; 2], best_three: false, best_idx: [0; 16] };
     let (mut mn, mut mx) = ([255i32; 3], [0i32; 3]);
     let mut mean = [0f32; 3];
     for i in 0..16 {
         for k in 0..3 {
             let v = i32::from(px[i][k]);
             c.px[i][k] = v;
+            c.planes[k][i] = v;
             mn[k] = mn[k].min(v);
             mx[k] = mx[k].max(v);
             mean[k] += v as f32;
@@ -400,23 +411,24 @@ fn bc4_eval(v: &[u8; 16], a0: i32, a1: i32, limit: u32) -> (u32, u64) {
         pal[6] = 0;
         pal[7] = 255;
     }
-    let (mut err, mut idx) = (0u32, 0u64);
-    for i in 0..16 {
-        let (mut be, mut bi) = (1i32 << 30, 0u64);
-        for (j, p) in pal.iter().enumerate() {
-            let d = i32::from(v[i]) - p;
-            let d = d * d;
-            if d < be {
-                be = d;
-                bi = j as u64;
-            }
-        }
-        err = err.wrapping_add(be as u32);
-        idx |= bi << (3 * i);
-        if err > limit {
-            return (err, 0);
+    // Every value's squared error to every entry, then per value the first entry of least error (the C loop's
+    // choice), vectorisable over the 16 values. The C loop stops once its running total passes `limit`; errors
+    // are >= 0, so such a pair's full total passes it too, and the caller rejects both alike.
+    let x = v.map(i32::from);
+    let (mut be, mut bi) = ([1i32 << 30; 16], [0u8; 16]);
+    for (j, p) in pal.iter().enumerate() {
+        for i in 0..16 {
+            let d = (x[i] - p) * (x[i] - p);
+            let lt = d < be[i];
+            be[i] = if lt { d } else { be[i] };
+            bi[i] = if lt { j as u8 } else { bi[i] };
         }
     }
+    let err = be.iter().fold(0u32, |s, &e| s.wrapping_add(e as u32));
+    if err > limit {
+        return (err, 0);
+    }
+    let idx = bi.iter().enumerate().fold(0u64, |a, (i, &b)| a | (u64::from(b) << (3 * i)));
     (err, idx)
 }
 
@@ -652,6 +664,161 @@ mod tests {
         // DXVKit's generated table, first entries: {0,0},{0,0},{0,1},{0,1},{1,0}
         assert_eq!(&t.four5[0..5], &[[0, 0], [0, 0], [0, 1], [0, 1], [1, 0]]);
         assert_eq!(t.four5[11], [0, 4]);
+    }
+
+    /// The C loop of `bc1_try` (enc_bc.c) as it was ported before the vectorised form: pixel by pixel, the
+    /// first palette entry of least error, stopping once the running total reaches the best.
+    fn try_pair_c(c: &mut Bc1, q0: &[i32; 3], q1: &[i32; 3], mut three: bool) {
+        let (p0, p1) = (pack565(q0), pack565(q1));
+        let (mut a, mut b) = (q0, q1);
+        let (mut usable, mut swapped) = (4usize, false);
+        if three {
+            if p0 > p1 {
+                (a, b, swapped) = (q1, q0, true);
+            }
+            usable = 3;
+        } else if p0 < p1 {
+            (a, b, swapped) = (q1, q0, true);
+        } else if p0 == p1 {
+            usable = 1;
+            three = true;
+        }
+        let mut pal = [[0i32; 3]; 4];
+        for k in 0..3 {
+            let (ea, eb) = if k == 1 { (exp6(a[k]), exp6(b[k])) } else { (exp5(a[k]), exp5(b[k])) };
+            pal[0][k] = ea;
+            pal[1][k] = eb;
+            (pal[2][k], pal[3][k]) = if three { ((ea + eb) / 2, 0) } else { ((2 * ea + eb) / 3, (ea + 2 * eb) / 3) };
+        }
+        let (mut err, mut idx) = (0u32, 0u32);
+        let mut chosen = [0u8; 16];
+        for i in 0..16 {
+            let (mut be, mut bi) = (u32::MAX, 0usize);
+            for (j, p) in pal.iter().enumerate().take(usable) {
+                let (dr, dg, db) = (c.px[i][0] - p[0], c.px[i][1] - p[1], c.px[i][2] - p[2]);
+                let e = (dr * dr + dg * dg + db * db) as u32;
+                if e < be {
+                    (be, bi) = (e, j);
+                }
+            }
+            err = err.wrapping_add(be);
+            chosen[i] = bi as u8;
+            idx |= (bi as u32) << (2 * i);
+            if err >= c.best_err {
+                return;
+            }
+        }
+        c.best_err = err;
+        c.best[0..2].copy_from_slice(&pack565(a).to_le_bytes());
+        c.best[2..4].copy_from_slice(&pack565(b).to_le_bytes());
+        c.best[4..8].copy_from_slice(&idx.to_le_bytes());
+        c.best_q = [*q0, *q1];
+        c.best_three = three && usable == 3;
+        for i in 0..16 {
+            let s = chosen[i];
+            c.best_idx[i] = if swapped && (s < 2 || !three) { s ^ 1 } else { s };
+        }
+    }
+
+    #[test]
+    fn try_pair_chooses_what_the_c_loop_chooses() {
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |n: u64| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((rng >> 33) % n) as i32
+        };
+        let (mut kept, mut rejected) = (0, 0);
+        for round in 0..20_000 {
+            // Noise, near-flat and two-colour blocks; ties are common in the last two.
+            let spread = [256, 8, 2][round % 3];
+            let base = [next(256 - spread as u64 + 1), next(256 - spread as u64 + 1), next(256 - spread as u64 + 1)];
+            let mut px = [[0i32; 3]; 16];
+            for p in &mut px {
+                for k in 0..3 {
+                    p[k] = base[k] + next(spread as u64);
+                }
+            }
+            let mut c = Bc1 { px, planes: [[0; 16]; 3], best_err: u32::MAX, best: [0; 8], best_q: [[0; 3]; 2], best_three: false, best_idx: [0; 16] };
+            for i in 0..16 {
+                for k in 0..3 {
+                    c.planes[k][i] = px[i][k];
+                }
+            }
+            let mut r = Bc1 { px, planes: c.planes, best_err: u32::MAX, best: [0; 8], best_q: [[0; 3]; 2], best_three: false, best_idx: [0; 16] };
+            // A sequence of pairs against one running best, as the search makes them (including equal endpoints).
+            for _ in 0..6 {
+                let q0 = [next(32), next(64), next(32)];
+                let q1 = if next(8) == 0 { q0 } else { [next(32), next(64), next(32)] };
+                let three = next(2) == 0;
+                let before = c.best_err;
+                c.try_pair(&q0, &q1, three);
+                try_pair_c(&mut r, &q0, &q1, three);
+                assert_eq!((c.best_err, c.best, c.best_q, c.best_three, c.best_idx), (r.best_err, r.best, r.best_q, r.best_three, r.best_idx), "round {round}");
+                if c.best_err < before { kept += 1 } else { rejected += 1 }
+            }
+        }
+        // Both outcomes were exercised.
+        assert!(kept > 10_000 && rejected > 10_000, "kept {kept} rejected {rejected}");
+    }
+
+    /// The C loop of `bc4_eval` before the vectorised form: value by value, stopping once past `limit`.
+    fn bc4_eval_c(v: &[u8; 16], a0: i32, a1: i32, limit: u32) -> (u32, u64) {
+        let mut pal = [0i32; 8];
+        (pal[0], pal[1]) = (a0, a1);
+        if a0 > a1 {
+            for i in 1..=6 {
+                pal[1 + i] = ((7 - i as i32) * a0 + i as i32 * a1) / 7;
+            }
+        } else {
+            for i in 1..=4 {
+                pal[1 + i] = ((5 - i as i32) * a0 + i as i32 * a1) / 5;
+            }
+            (pal[6], pal[7]) = (0, 255);
+        }
+        let (mut err, mut idx) = (0u32, 0u64);
+        for i in 0..16 {
+            let (mut be, mut bi) = (1i32 << 30, 0u64);
+            for (j, p) in pal.iter().enumerate() {
+                let d = (i32::from(v[i]) - p) * (i32::from(v[i]) - p);
+                if d < be {
+                    (be, bi) = (d, j as u64);
+                }
+            }
+            err = err.wrapping_add(be as u32);
+            idx |= bi << (3 * i);
+            if err > limit {
+                return (err, 0);
+            }
+        }
+        (err, idx)
+    }
+
+    #[test]
+    fn bc4_search_keeps_what_the_c_loop_keeps() {
+        let mut rng = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move |n: u64| {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((rng >> 33) % n) as i32
+        };
+        for round in 0..50_000 {
+            let spread = [256, 16, 3][round % 3];
+            let base = next(256 - spread as u64 + 1);
+            let v: [u8; 16] = std::array::from_fn(|_| (base + next(spread as u64)) as u8);
+            let (a0, a1) = (next(256), next(256));
+            let limit = [u32::MAX, next(2000) as u32, 0][round % 3];
+            let (e, bits) = bc4_eval(&v, a0, a1, limit);
+            let (ec, bc) = bc4_eval_c(&v, a0, a1, limit);
+            // What the search uses: whether the pair beats `limit`, and then its total and indices.
+            assert_eq!(e < limit, ec < limit, "round {round}");
+            if ec <= limit {
+                assert_eq!((e, bits), (ec, bc), "round {round}");
+            }
+        }
+        // And whole blocks against the search that uses it.
+        for _ in 0..20_000 {
+            let v: [u8; 16] = std::array::from_fn(|_| next(256) as u8);
+            let _ = bc4_encode(&v, true);
+        }
     }
 
     #[test]

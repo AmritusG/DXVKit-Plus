@@ -89,6 +89,22 @@ fn packets_equal_swift_glencs() {
     assert_eq!(n, GOLDEN.len());
 }
 
+/// 0.15.0: the packets do not depend on the encoder's thread count (1, 3, 64, and the default 0).
+#[test]
+fn packets_do_not_depend_on_the_thread_count() {
+    for (name, w, h, rgba) in set() {
+        for v in DxvVariant::ALL {
+            let px = fill(v, &rgba);
+            let want = DxvEncoder::new(v, w, h, DxvEffort::Best).unwrap().encode(&px).unwrap();
+            for t in [1, 3, 64] {
+                let mut e = DxvEncoder::new(v, w, h, DxvEffort::Best).unwrap();
+                e.set_threads(t);
+                assert_eq!(e.encode(&px).unwrap(), want, "{name} {} on {t} threads", tag(v));
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn dump_golden_inputs() {

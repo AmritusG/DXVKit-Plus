@@ -13,9 +13,13 @@
 //! FrameTiming rule over `stts` + `ctts` + `elst`, `mdhd` and `mvhd` time scales), so frame `n` is
 //! the same picture on every decode path. The `elst` / `ctts` readers are ported from Loombda-rs
 //! `loombda-media` `container.rs` (`read_edits`, `read_ctts`; Amrit Rosell, MIT by the author's
-//! leave, `ATTRIBUTION.md`). Fragmented MP4 (`moof`) is
-//! not read: its `moov` has empty sample tables, so the track is [`DamagedTrack`] and
-//! `source::probe` offers the file to the platform backend.
+//! leave, `ATTRIBUTION.md`).
+//!
+//! Fragmented MP4 (0.15.0): when the `moov` has `mvex`, every top-level `moof` is read and its track
+//! fragments (`traf`: `tfhd`, `tfdt`, `trun`, with the `trex` defaults) add their samples to the
+//! track's table after the `moov`'s own, written from ISO/IEC 14496-12 §8.8 (see [`Fragments`]).
+//! Up to 0.14.0 such a track was a [`DamagedTrack`] (its `moov` tables are empty) and `source::probe`
+//! offered the file to the platform backend, which counts AVFoundation's length.
 //!
 //! Damage is per track (0.9.0): a track whose tables do not parse is listed in [`Movie::damaged`]
 //! and the other tracks still open. A sample that lies past the end of the file (a cut-off file)
@@ -38,6 +42,8 @@ pub const MAX_SAMPLES: u32 = 1 << 24;
 /// Largest single sample accepted (bytes): a 16384² BC7 frame is 256 MB uncompressed; HAP adds a
 /// few bytes of headers.
 pub const MAX_SAMPLE_BYTES: u32 = 300 << 20;
+/// Most bytes of movie fragments (`moof` boxes, all of them) read from one file (0.15.0).
+pub const MAX_FRAGMENT_BYTES: u64 = 256 << 20;
 /// Most edit-list entries read; a longer list (or one whose count runs past its atom) is not
 /// applied (0.10.0).
 pub const MAX_EDITS: u32 = 1 << 16;
@@ -291,6 +297,9 @@ pub struct Movie {
     /// Sound tracks whose description or tables did not parse (0.11.0; [`DamagedTrack::index`]
     /// counts among the audio tracks). A damaged sound track never fails the movie.
     pub damaged_audio: Vec<DamagedTrack>,
+    /// Movie fragments (`moof`) read (0.15.0): 0 for a file that is not fragmented. Their samples are in the
+    /// tracks' tables; a fragmented file's container length (AVFoundation's) can disagree with them.
+    pub fragments: usize,
     source: Arc<dyn ReadAt>,
 }
 
@@ -302,6 +311,7 @@ impl std::fmt::Debug for Movie {
             .field("damaged", &self.damaged)
             .field("audio", &self.audio)
             .field("damaged_audio", &self.damaged_audio)
+            .field("fragments", &self.fragments)
             .finish()
     }
 }
@@ -842,8 +852,186 @@ fn movie_timescale(moov: Span<'_>) -> u32 {
     }
 }
 
+/// The movie fragments of a fragmented file (0.15.0; ISO/IEC 14496-12 §8.8): the `mvex > trex`
+/// defaults per track and every top-level `moof`, file order. A file is fragmented when its `moov` has
+/// `mvex`; its fragments are found by walking the top-level boxes (a `sidx` indexes the same `moof`s
+/// for a reader that seeks; the walk reaches every one without it).
+#[derive(Default)]
+struct Fragments {
+    /// (track ID, default sample duration, size, flags) from each `trex`.
+    trex: Vec<(u32, u32, u32, u32)>,
+    /// Each `moof`: the file offset of its box (the base of `default-base-is-moof`) and its body.
+    moofs: Vec<(u64, Vec<u8>)>,
+}
+
+/// The samples a track's fragments add, decode order.
+#[derive(Default)]
+struct FragmentSamples {
+    samples: Vec<(u64, u32)>,
+    durations: Vec<u32>,
+    /// Composition offsets, when any `trun` stated them (0 for the others).
+    cts: Vec<i64>,
+    any_cts: bool,
+    /// Ticks the first fragment starts after the `moov`'s samples end (added to the last of them).
+    lead_gap: u32,
+}
+
+// tfhd flags (§8.8.7.1).
+const TFHD_BASE_DATA_OFFSET: u32 = 0x00_0001;
+const TFHD_SAMPLE_DESCRIPTION: u32 = 0x00_0002;
+const TFHD_DEFAULT_DURATION: u32 = 0x00_0008;
+const TFHD_DEFAULT_SIZE: u32 = 0x00_0010;
+const TFHD_DEFAULT_FLAGS: u32 = 0x00_0020;
+const TFHD_DURATION_IS_EMPTY: u32 = 0x01_0000;
+const TFHD_DEFAULT_BASE_IS_MOOF: u32 = 0x02_0000;
+// trun flags (§8.8.8.1).
+const TRUN_DATA_OFFSET: u32 = 0x00_0001;
+const TRUN_FIRST_SAMPLE_FLAGS: u32 = 0x00_0004;
+const TRUN_DURATION: u32 = 0x00_0100;
+const TRUN_SIZE: u32 = 0x00_0200;
+const TRUN_FLAGS: u32 = 0x00_0400;
+const TRUN_CTS: u32 = 0x00_0800;
+
+impl Fragments {
+    /// Every sample `track_id`'s fragments carry, at most `limit`, after `moov` samples that end at decode
+    /// time `start`. Data offsets follow §8.8.7.1 /
+    /// §8.8.8.1: a `tfhd` base-data-offset; else the `moof` (`default-base-is-moof`, or the first
+    /// `traf` of a `moof`); else the end of the previous `traf`'s data. A `trun` without a data offset
+    /// starts where the previous `trun` of its `traf` ended. Sizes and durations come from the `trun`,
+    /// else the `tfhd` defaults, else the `trex` ones. A `tfdt` later than the samples before it
+    /// lengthens the previous sample by the gap (a `moov` sample: [`FragmentSamples::lead_gap`]), so every
+    /// sample keeps its decode time.
+    fn samples(&self, track_id: u32, limit: usize, start: u64) -> Result<FragmentSamples, MediaError> {
+        let trex = self.trex.iter().find(|t| t.0 == track_id).copied().unwrap_or((track_id, 0, 0, 0));
+        let mut out = FragmentSamples::default();
+        let mut decode_time = start;
+        for (moof_at, body) in &self.moofs {
+            let mut previous_end: Option<u64> = None;
+            let mut it = 0usize;
+            while let Some((ty, traf)) = next_atom(Span(body), &mut it)? {
+                if ty != fourcc(b"traf") {
+                    continue;
+                }
+                let tfhd = find(traf, fourcc(b"tfhd"))?.ok_or_else(|| corrupt("track fragment without tfhd"))?.0;
+                let flags = be32(tfhd, 0).unwrap_or(0) & 0x00FF_FFFF;
+                let id = be32(tfhd, 4).ok_or_else(|| corrupt("tfhd shorter than its fields"))?;
+                let mut at = 8usize;
+                let mut field = |present: bool, bytes: usize| -> Result<Option<u64>, MediaError> {
+                    if !present {
+                        return Ok(None);
+                    }
+                    let v = if bytes == 8 { be64(tfhd, at) } else { be32(tfhd, at).map(u64::from) };
+                    at = at.saturating_add(bytes);
+                    v.map(Some).ok_or_else(|| corrupt("tfhd shorter than its fields"))
+                };
+                let base_offset = field(flags & TFHD_BASE_DATA_OFFSET != 0, 8)?;
+                field(flags & TFHD_SAMPLE_DESCRIPTION != 0, 4)?;
+                let default_duration = field(flags & TFHD_DEFAULT_DURATION != 0, 4)?.map_or(trex.1, |v| v as u32);
+                let default_size = field(flags & TFHD_DEFAULT_SIZE != 0, 4)?.map_or(trex.2, |v| v as u32);
+                field(flags & TFHD_DEFAULT_FLAGS != 0, 4)?;
+                let base = match base_offset {
+                    Some(b) => b,
+                    None if flags & TFHD_DEFAULT_BASE_IS_MOOF != 0 => *moof_at,
+                    None => previous_end.unwrap_or(*moof_at),
+                };
+                let mine = id == track_id && flags & TFHD_DURATION_IS_EMPTY == 0;
+                if mine && let Some(t) = find(traf, fourcc(b"tfdt"))? {
+                    let t = t.0;
+                    let start = if t.first() == Some(&1) { be64(t, 4) } else { be32(t, 4).map(u64::from) };
+                    if let Some(start) = start
+                        && start > decode_time
+                    {
+                        let gap = u32::try_from(start.saturating_sub(decode_time)).unwrap_or(u32::MAX);
+                        match out.durations.last_mut() {
+                            Some(last) => *last = last.saturating_add(gap),
+                            None => out.lead_gap = out.lead_gap.saturating_add(gap),
+                        }
+                        decode_time = start;
+                    }
+                }
+                let mut data = base;
+                let mut tr = 0usize;
+                while let Some((ty, trun)) = next_atom(traf, &mut tr)? {
+                    if ty != fourcc(b"trun") {
+                        continue;
+                    }
+                    let t = trun.0;
+                    let flags = be32(t, 0).unwrap_or(0) & 0x00FF_FFFF;
+                    let count = be32(t, 4).ok_or_else(|| corrupt("trun shorter than its fields"))? as usize;
+                    let mut at = 8usize;
+                    if flags & TRUN_DATA_OFFSET != 0 {
+                        let off = i64::from(be32(t, at).ok_or_else(|| corrupt("trun shorter than its fields"))? as i32);
+                        data = base.saturating_add_signed(off);
+                        at = at.saturating_add(4);
+                    }
+                    if flags & TRUN_FIRST_SAMPLE_FLAGS != 0 {
+                        at = at.saturating_add(4);
+                    }
+                    let per = [TRUN_DURATION, TRUN_SIZE, TRUN_FLAGS, TRUN_CTS].iter().filter(|&&f| flags & f != 0).count().saturating_mul(4);
+                    if count.saturating_mul(per) > t.len().saturating_sub(at) || (per == 0 && count > MAX_SAMPLES as usize) {
+                        return Err(corrupt("trun sample count runs past its box"));
+                    }
+                    if !mine && flags & TRUN_SIZE == 0 {
+                        // Another track's run of default-size samples: only where its data ends matters.
+                        data = data.saturating_add((count as u64).saturating_mul(u64::from(default_size)));
+                        continue;
+                    }
+                    for _ in 0..count {
+                        let mut next = |present: u32| -> Option<u32> {
+                            if flags & present == 0 {
+                                return None;
+                            }
+                            let v = be32(t, at);
+                            at = at.saturating_add(4);
+                            v
+                        };
+                        let duration = next(TRUN_DURATION).unwrap_or(default_duration);
+                        let size = next(TRUN_SIZE).unwrap_or(default_size);
+                        next(TRUN_FLAGS);
+                        // Signed in version 1; version 0 offsets are unsigned in the standard and read as
+                        // signed too, as `ctts` is (writers commonly store negative ones there).
+                        let cts = next(TRUN_CTS).map(|v| i64::from(v as i32));
+                        if size > MAX_SAMPLE_BYTES {
+                            return Err(corrupt("sample larger than 300 MB"));
+                        }
+                        if mine {
+                            if out.samples.len() >= limit {
+                                return Err(corrupt("more than 2^24 samples"));
+                            }
+                            out.samples.push((data, size));
+                            out.durations.push(duration);
+                            out.cts.push(cts.unwrap_or(0));
+                            out.any_cts |= cts.is_some();
+                            decode_time = decode_time.saturating_add(u64::from(duration));
+                        }
+                        data = data.saturating_add(u64::from(size));
+                    }
+                }
+                previous_end = Some(data);
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `mvex > trex` of a `moov`, `None` when the file is not fragmented.
+fn read_trex(moov: Span<'_>) -> Result<Option<Vec<(u32, u32, u32, u32)>>, MediaError> {
+    let Some(mvex) = find(moov, fourcc(b"mvex"))? else { return Ok(None) };
+    let mut out = Vec::new();
+    let mut it = 0usize;
+    while let Some((ty, b)) = next_atom(mvex, &mut it)? {
+        // trex: version/flags, track ID, default description index, duration, size, flags.
+        if ty == fourcc(b"trex")
+            && let (Some(id), Some(d), Some(z), Some(f)) = (be32(b.0, 4), be32(b.0, 12), be32(b.0, 16), be32(b.0, 20))
+        {
+            out.push((id, d, z, f));
+        }
+    }
+    Ok(Some(out))
+}
+
 /// Parse one `trak`. `Ok(None)` for a non-video track or one without a sample table.
-fn read_track(trak: Span<'_>, file_size: u64, movie_ts: u32) -> Result<Option<VideoTrack>, MediaError> {
+fn read_track(trak: Span<'_>, file_size: u64, movie_ts: u32, fragments: Option<&Fragments>) -> Result<Option<VideoTrack>, MediaError> {
     let Some(stbl) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"minf"), fourcc(b"stbl")])? else { return Ok(None) };
     if let Some(hdlr) = find_path(trak, &[fourcc(b"mdia"), fourcc(b"hdlr")])?
         && let Some(handler) = be32(hdlr.0, 8)
@@ -923,7 +1111,10 @@ fn read_track(trak: Span<'_>, file_size: u64, movie_ts: u32) -> Result<Option<Vi
             }
         }
     }
-    build_samples(&mut track, stsz.0, stsc.0, stco.0, co64, file_size)?;
+    // A fragmented file's `moov` may describe no samples at all (they are all in fragments).
+    if fragments.is_none() || be32(stsz.0, 8).unwrap_or(0) != 0 {
+        build_samples(&mut track, stsz.0, stsc.0, stco.0, co64, file_size)?;
+    }
     if track.width == 0 || track.height == 0 {
         return Err(corrupt("video track with a zero dimension"));
     }
@@ -932,6 +1123,38 @@ fn read_track(trak: Span<'_>, file_size: u64, movie_ts: u32) -> Result<Option<Vi
     }
     if let Some(c) = find(stbl, fourcc(b"ctts"))? {
         track.ctts = read_ctts(c.0, track.samples.len());
+    }
+    if let Some(f) = fragments {
+        let moov_end = track.stts.iter().fold(0u64, |a, &(n, d)| a.saturating_add(u64::from(n).saturating_mul(u64::from(d))));
+        let more = f.samples(track.track_id, (MAX_SAMPLES as usize).saturating_sub(track.samples.len()), moov_end)?;
+        if track.samples.is_empty() && more.samples.is_empty() {
+            return Err(corrupt("fragmented track without samples"));
+        }
+        // A gap before the first fragment lengthens the moov's last sample (its own stts run).
+        if more.lead_gap > 0
+            && !track.samples.is_empty()
+            && let Some((n, d)) = track.stts.pop()
+        {
+            if n > 1 {
+                track.stts.push((n.saturating_sub(1), d));
+            }
+            track.stts.push((1, d.saturating_add(more.lead_gap)));
+        }
+        if more.any_cts {
+            track.ctts.resize(track.samples.len(), 0);
+            track.ctts.extend_from_slice(&more.cts);
+        }
+        for d in more.durations {
+            match track.stts.last_mut() {
+                Some((n, delta)) if *delta == d && *n < u32::MAX => *n = n.saturating_add(1),
+                _ => track.stts.push((1, d)),
+            }
+        }
+        track.max_sample = more.samples.iter().fold(track.max_sample, |m, s| m.max(s.1));
+        track.samples.extend(more.samples);
+        // The media duration of the moov's samples and the fragments' together (an `mdhd` describes
+        // only the moov's, often 0).
+        track.duration = track.stts.iter().fold(0u64, |a, &(n, d)| a.saturating_add(u64::from(n).saturating_mul(u64::from(d))));
     }
     track.timing = FrameTiming::from_tables(&Tables {
         samples: track.frame_count(),
@@ -1114,6 +1337,47 @@ fn sample_table(stsz: &[u8], stsc: &[u8], stco: &[u8], co64: bool, file_size: u6
     Ok((samples, max))
 }
 
+/// Every top-level `moof` of a file, in file order (0.15.0). The walk ends at the first top-level box
+/// that does not fit the file (a cut-off capture keeps the fragments before it); a `moof` over 64 MB,
+/// or more than [`MAX_FRAGMENT_BYTES`] of them, is refused.
+fn read_moofs(source: &dyn ReadAt) -> Result<Vec<(u64, Vec<u8>)>, MediaError> {
+    let size = source.size();
+    let io = |e: std::io::Error| MediaError::Io(e.to_string());
+    let (mut pos, mut total) = (0u64, 0u64);
+    let mut out = Vec::new();
+    let mut h = [0u8; 16];
+    while pos.saturating_add(8) <= size {
+        source.read_exact_at(pos, h.get_mut(..8).unwrap_or_default()).map_err(io)?;
+        let mut asize = u64::from(be32(&h, 0).unwrap_or(0));
+        let mut header = 8u64;
+        if asize == 1 {
+            if pos.saturating_add(16) > size {
+                break;
+            }
+            source.read_exact_at(pos.saturating_add(8), h.get_mut(8..16).unwrap_or_default()).map_err(io)?;
+            asize = be64(&h, 8).unwrap_or(0);
+            header = 16;
+        } else if asize == 0 {
+            asize = size.saturating_sub(pos);
+        }
+        if asize < header || asize > size.saturating_sub(pos) {
+            break;
+        }
+        if be32(&h, 4) == Some(fourcc(b"moof")) {
+            let body = asize.saturating_sub(header);
+            total = total.saturating_add(body);
+            if body > MAX_MOOV_BYTES || total > MAX_FRAGMENT_BYTES {
+                return Err(corrupt("movie fragments larger than 64 MB each or 256 MB in all"));
+            }
+            let mut b = vec![0u8; body as usize];
+            source.read_exact_at(pos.saturating_add(header), &mut b).map_err(io)?;
+            out.push((pos, b));
+        }
+        pos = pos.saturating_add(asize);
+    }
+    Ok(out)
+}
+
 fn printable(b: &[u8]) -> bool {
     b.iter().all(|c| (0x20..=0x7E).contains(c))
 }
@@ -1140,7 +1404,12 @@ impl Movie {
     /// track of another codec. `Err` when there is no movie, no video track, or the `moov` itself
     /// does not parse.
     pub fn open_all(path: &Path) -> Result<Movie, MediaError> {
-        let movie = Movie::parse(Arc::new(FileSource::open(path)?))?;
+        Movie::from_source_all(Arc::new(FileSource::open(path)?))
+    }
+
+    /// [`Movie::open_all`] over any byte source (0.15.0).
+    pub fn from_source_all(source: Arc<dyn ReadAt>) -> Result<Movie, MediaError> {
+        let movie = Movie::parse(source)?;
         if movie.tracks.is_empty() && movie.damaged.is_empty() {
             return Err(MediaError::NoVideoTrack);
         }
@@ -1186,6 +1455,10 @@ impl Movie {
         }
         let mut buf = vec![0u8; moov_size as usize];
         source.read_exact_at(moov_pos, &mut buf).map_err(io)?;
+        let fragments = match read_trex(Span(&buf))? {
+            Some(trex) => Some(Fragments { trex, moofs: read_moofs(&*source)? }),
+            None => None,
+        };
         let mut tracks = Vec::new();
         let mut damaged = Vec::new();
         let mut timecode = None;
@@ -1218,7 +1491,7 @@ impl Movie {
                 audio_index = audio_index.saturating_add(1);
                 continue;
             }
-            match read_track(body, size, movie_ts) {
+            match read_track(body, size, movie_ts, fragments.as_ref()) {
                 Ok(Some(mut t)) => {
                     t.index = index;
                     tracks.push(t);
@@ -1236,7 +1509,8 @@ impl Movie {
                 }
             }
         }
-        Ok(Movie { tracks, timecode, damaged, audio, damaged_audio, source })
+        let fragments = fragments.map_or(0, |f| f.moofs.len());
+        Ok(Movie { tracks, timecode, damaged, audio, damaged_audio, fragments, source })
     }
 
     /// Fill `buf` from file offset `offset` (audio blocks; 0.11.0).
