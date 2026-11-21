@@ -2,8 +2,12 @@
 # The rest of the workspace is gated locally (CONTRIBUTING.md).
 name: Windows
 
+# guard/<sha> branches carry a commit to the path-guard job before it may reach main
+# (tools/push-main.sh, .github/workflows/path-guard.yml); this workflow runs when it is on main.
 on:
   push:
+    branches-ignore: ["guard/**"]
+    tags: ["**"]
   pull_request:
 
 concurrency:
